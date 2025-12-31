@@ -1,0 +1,67 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+
+# Local configuration
+.env
+.env.local
+*.local
+
+# Generated protobuf
+api/grpc/gen/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+ENV/
+
+# Documentation build
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+node_modules/
+
+# SQLite databases (for development)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Plan files
+plan.md
+.claude/
