@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "membrane-client"
+version = "0.1.0"
+description = "Python client for the Membrane memory substrate"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["grpcio>=1.60.0"]
+
+[project.optional-dependencies]
+dev = ["pytest", "grpcio-tools"]
+
+[tool.setuptools.packages.find]
+include = ["membrane*"]
