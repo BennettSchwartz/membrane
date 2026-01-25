@@ -41,9 +41,9 @@ func New(cfg *Config) (*Membrane, error) {
 
 	// Ingestion
 	classifier := ingestion.NewClassifier()
-	policyEngine := ingestion.NewPolicyEngine(ingestion.PolicyDefaults{
-		Sensitivity: schema.Sensitivity(cfg.DefaultSensitivity),
-	})
+	policyDefaults := ingestion.DefaultPolicyDefaults()
+	policyDefaults.Sensitivity = schema.Sensitivity(cfg.DefaultSensitivity)
+	policyEngine := ingestion.NewPolicyEngine(policyDefaults)
 	ingestionSvc := ingestion.NewService(store, classifier, policyEngine)
 
 	// Retrieval

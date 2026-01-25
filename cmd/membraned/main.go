@@ -68,6 +68,7 @@ func main() {
 	// Wait for shutdown signal or server error.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	select {
 	case sig := <-sigCh:
