@@ -9,11 +9,12 @@ import (
 
 // Scheduler runs periodic decay sweeps across all records.
 type Scheduler struct {
-	service  *Service
-	interval time.Duration
-	stopCh   chan struct{}
-	done     chan struct{}
-	started  sync.Once
+	service    *Service
+	interval   time.Duration
+	stopCh     chan struct{}
+	done       chan struct{}
+	started    sync.Once
+	wasStarted bool
 }
 
 // NewScheduler creates a new decay scheduler that runs ApplyDecayAll
@@ -31,6 +32,7 @@ func NewScheduler(service *Service, interval time.Duration) *Scheduler {
 // the context is cancelled or Stop is called.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.started.Do(func() {
+		s.wasStarted = true
 		go func() {
 			defer close(s.done)
 			defer func() {
@@ -70,6 +72,8 @@ func (s *Scheduler) Stop() {
 		return
 	default:
 		close(s.stopCh)
+	}
+	if s.wasStarted {
 		<-s.done
 	}
 }
