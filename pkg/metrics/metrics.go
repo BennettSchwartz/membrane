@@ -4,7 +4,9 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/GustyCube/membrane/pkg/schema"
 	"github.com/GustyCube/membrane/pkg/storage"
 )
 
@@ -23,6 +25,13 @@ type Snapshot struct {
 	ActiveRecords        int            `json:"active_records"`
 	PinnedRecords        int            `json:"pinned_records"`
 	TotalAuditEntries    int            `json:"total_audit_entries"`
+
+	// RFC 15.10 metrics
+	MemoryGrowthRate      float64 `json:"memory_growth_rate"`
+	RetrievalUsefulness   float64 `json:"retrieval_usefulness"`
+	CompetenceSuccessRate float64 `json:"competence_success_rate"`
+	PlanReuseFrequency    float64 `json:"plan_reuse_frequency"`
+	RevisionRate          float64 `json:"revision_rate"`
 }
 
 // NewCollector creates a new Collector backed by the given store.
@@ -49,6 +58,15 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 	}
 
 	var totalSalience, totalConfidence float64
+
+	// RFC 15.10 accumulators
+	cutoff24h := time.Now().UTC().Add(-24 * time.Hour)
+	var recentRecords int
+	var reinforceCount, revisionCount, totalAuditCount int
+	var competenceSuccessSum float64
+	var competenceCount int
+	var planExecSum float64
+	var planCount int
 
 	for _, rec := range records {
 		snap.TotalRecords++
@@ -83,11 +101,53 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 
 		// Count audit entries.
 		snap.TotalAuditEntries += len(rec.AuditLog)
+
+		// RFC 15.10: Memory growth rate – count records created in last 24h.
+		if rec.CreatedAt.After(cutoff24h) {
+			recentRecords++
+		}
+
+		// RFC 15.10: Retrieval usefulness & revision rate – scan audit log.
+		for _, entry := range rec.AuditLog {
+			totalAuditCount++
+			if entry.Action == schema.AuditActionReinforce {
+				reinforceCount++
+			}
+			if entry.Action == schema.AuditActionRevise || entry.Action == schema.AuditActionFork || entry.Action == schema.AuditActionMerge {
+				revisionCount++
+			}
+		}
+
+		// RFC 15.10: Competence success rate.
+		if cp, ok := rec.Payload.(*schema.CompetencePayload); ok && cp.Performance != nil {
+			competenceSuccessSum += cp.Performance.SuccessRate
+			competenceCount++
+		}
+
+		// RFC 15.10: Plan reuse frequency.
+		if pg, ok := rec.Payload.(*schema.PlanGraphPayload); ok && pg.Metrics != nil {
+			planExecSum += float64(pg.Metrics.ExecutionCount)
+			planCount++
+		}
 	}
 
 	if snap.TotalRecords > 0 {
 		snap.AvgSalience = totalSalience / float64(snap.TotalRecords)
 		snap.AvgConfidence = totalConfidence / float64(snap.TotalRecords)
+		snap.MemoryGrowthRate = float64(recentRecords) / float64(snap.TotalRecords)
+	}
+
+	if totalAuditCount > 0 {
+		snap.RetrievalUsefulness = float64(reinforceCount) / float64(totalAuditCount)
+		snap.RevisionRate = float64(revisionCount) / float64(totalAuditCount)
+	}
+
+	if competenceCount > 0 {
+		snap.CompetenceSuccessRate = competenceSuccessSum / float64(competenceCount)
+	}
+
+	if planCount > 0 {
+		snap.PlanReuseFrequency = planExecSum / float64(planCount)
 	}
 
 	return snap, nil
