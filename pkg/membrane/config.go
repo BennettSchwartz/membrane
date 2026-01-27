@@ -31,6 +31,27 @@ type Config struct {
 	// SelectionConfidenceThreshold is the minimum confidence for the retrieval
 	// selector to consider a competence or plan_graph candidate (default: 0.7).
 	SelectionConfidenceThreshold float64 `yaml:"selection_confidence_threshold"`
+
+	// EncryptionKey is the SQLCipher encryption key for the database.
+	// If empty, the database is not encrypted. Read from MEMBRANE_ENCRYPTION_KEY
+	// environment variable if not set in config.
+	EncryptionKey string `yaml:"encryption_key"`
+
+	// TLSCertFile is the path to the TLS certificate PEM file.
+	// If empty, the server runs without TLS.
+	TLSCertFile string `yaml:"tls_cert_file"`
+
+	// TLSKeyFile is the path to the TLS private key PEM file.
+	TLSKeyFile string `yaml:"tls_key_file"`
+
+	// APIKey is a shared secret for authenticating gRPC clients.
+	// If empty, authentication is disabled. Read from MEMBRANE_API_KEY
+	// environment variable if not set in config.
+	APIKey string `yaml:"api_key"`
+
+	// RateLimitPerSecond is the maximum requests per second per client.
+	// 0 means no rate limiting. Default: 100.
+	RateLimitPerSecond int `yaml:"rate_limit_per_second"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -42,6 +63,8 @@ func DefaultConfig() *Config {
 		ConsolidationInterval:        6 * time.Hour,
 		DefaultSensitivity:           "low",
 		SelectionConfidenceThreshold: 0.7,
+		EncryptionKey:                "",
+		RateLimitPerSecond:           100,
 	}
 }
 

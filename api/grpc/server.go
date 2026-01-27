@@ -4,10 +4,17 @@
 package grpc
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/GustyCube/membrane/pkg/membrane"
 )
@@ -19,15 +26,34 @@ type Server struct {
 	listener net.Listener
 }
 
-// NewServer creates a Server that will listen on addr and serve RPCs backed
-// by the given Membrane instance.
-func NewServer(m *membrane.Membrane, addr string) (*Server, error) {
-	lis, err := net.Listen("tcp", addr)
+// NewServer creates a Server that will listen on the configured address and
+// serve RPCs backed by the given Membrane instance. It configures TLS,
+// authentication, and rate limiting based on the provided config.
+func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
+	lis, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("grpc: listen %s: %w", addr, err)
+		return nil, fmt.Errorf("grpc: listen %s: %w", cfg.ListenAddr, err)
 	}
 
-	gs := grpc.NewServer()
+	var opts []grpc.ServerOption
+
+	// TLS.
+	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		creds, err := credentials.NewServerTLSFromFile(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			lis.Close()
+			return nil, fmt.Errorf("grpc: load TLS credentials: %w", err)
+		}
+		opts = append(opts, grpc.Creds(creds))
+	}
+
+	// Build interceptor chain.
+	apiKey := cfg.APIKey
+	rateLimit := cfg.RateLimitPerSecond
+	interceptor := chainInterceptors(apiKey, rateLimit)
+	opts = append(opts, grpc.UnaryInterceptor(interceptor))
+
+	gs := grpc.NewServer(opts...)
 
 	handler := &Handler{membrane: m}
 	registerMembraneService(gs, handler)
@@ -37,6 +63,75 @@ func NewServer(m *membrane.Membrane, addr string) (*Server, error) {
 		grpc:     gs,
 		listener: lis,
 	}, nil
+}
+
+// chainInterceptors builds a unary server interceptor that applies
+// authentication and rate limiting.
+func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterceptor {
+	var limiter *rateLimiter
+	if ratePerSecond > 0 {
+		limiter = newRateLimiter(ratePerSecond)
+	}
+
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		// Authentication.
+		if apiKey != "" {
+			md, ok := metadata.FromIncomingContext(ctx)
+			if !ok {
+				return nil, status.Error(codes.Unauthenticated, "missing metadata")
+			}
+			tokens := md.Get("authorization")
+			if len(tokens) == 0 || tokens[0] != "Bearer "+apiKey {
+				return nil, status.Error(codes.Unauthenticated, "invalid or missing API key")
+			}
+		}
+
+		// Rate limiting.
+		if limiter != nil {
+			if !limiter.allow() {
+				return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+			}
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+// rateLimiter implements a simple token bucket rate limiter.
+type rateLimiter struct {
+	mu         sync.Mutex
+	tokens     float64
+	maxTokens  float64
+	refillRate float64
+	lastRefill time.Time
+}
+
+func newRateLimiter(perSecond int) *rateLimiter {
+	return &rateLimiter{
+		tokens:     float64(perSecond),
+		maxTokens:  float64(perSecond),
+		refillRate: float64(perSecond),
+		lastRefill: time.Now(),
+	}
+}
+
+func (r *rateLimiter) allow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(r.lastRefill).Seconds()
+	r.tokens += elapsed * r.refillRate
+	if r.tokens > r.maxTokens {
+		r.tokens = r.maxTokens
+	}
+	r.lastRefill = now
+
+	if r.tokens < 1 {
+		return false
+	}
+	r.tokens--
+	return true
 }
 
 // Start serves gRPC requests. It blocks until Stop is called or an

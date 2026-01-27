@@ -62,17 +62,19 @@ func (c *EpisodicConsolidator) Consolidate(ctx context.Context) (int, error) {
 			newSalience = compressedSalienceFloor
 		}
 
-		if err := c.store.UpdateSalience(ctx, rec.ID, newSalience); err != nil {
-			return compressed, err
-		}
-
-		entry := schema.AuditEntry{
-			Action:    schema.AuditActionDecay,
-			Actor:     "consolidation/episodic",
-			Timestamp: now,
-			Rationale: "Episodic compression: record exceeded age threshold",
-		}
-		if err := c.store.AddAuditEntry(ctx, rec.ID, entry); err != nil {
+		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+			if err := tx.UpdateSalience(ctx, rec.ID, newSalience); err != nil {
+				return err
+			}
+			entry := schema.AuditEntry{
+				Action:    schema.AuditActionDecay,
+				Actor:     "consolidation/episodic",
+				Timestamp: now,
+				Rationale: "Episodic compression: record exceeded age threshold",
+			}
+			return tx.AddAuditEntry(ctx, rec.ID, entry)
+		})
+		if err != nil {
 			return compressed, err
 		}
 

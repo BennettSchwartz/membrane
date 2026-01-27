@@ -3,6 +3,7 @@ package membrane
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/GustyCube/membrane/pkg/consolidation"
 	"github.com/GustyCube/membrane/pkg/decay"
@@ -34,7 +35,11 @@ type Membrane struct {
 // New initialises all subsystems from the provided Config and returns a
 // ready-to-start Membrane instance.
 func New(cfg *Config) (*Membrane, error) {
-	store, err := sqlite.Open(cfg.DBPath)
+	encKey := cfg.EncryptionKey
+	if encKey == "" {
+		encKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
+	}
+	store, err := sqlite.Open(cfg.DBPath, encKey)
 	if err != nil {
 		return nil, fmt.Errorf("membrane: open store: %w", err)
 	}

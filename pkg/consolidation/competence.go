@@ -97,21 +97,23 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
 
 		skillName := "skill:" + g.signature
 		if existingRec, found := existingSkills[skillName]; found {
-			// Reinforce the existing competence record.
-			newSalience := existingRec.Salience + 0.1
-			if newSalience > 1.0 {
-				newSalience = 1.0
-			}
-			if err := c.store.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
-				return created, err
-			}
-			entry := schema.AuditEntry{
-				Action:    schema.AuditActionReinforce,
-				Actor:     "consolidation/competence",
-				Timestamp: now,
-				Rationale: fmt.Sprintf("Reinforced: %d episodes match pattern", len(g.records)),
-			}
-			if err := c.store.AddAuditEntry(ctx, existingRec.ID, entry); err != nil {
+			err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+				newSalience := existingRec.Salience + 0.1
+				if newSalience > 1.0 {
+					newSalience = 1.0
+				}
+				if err := tx.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
+					return err
+				}
+				entry := schema.AuditEntry{
+					Action:    schema.AuditActionReinforce,
+					Actor:     "consolidation/competence",
+					Timestamp: now,
+					Rationale: fmt.Sprintf("Reinforced: %d episodes match pattern", len(g.records)),
+				}
+				return tx.AddAuditEntry(ctx, existingRec.ID, entry)
+			})
+			if err != nil {
 				return created, err
 			}
 			continue
@@ -165,21 +167,25 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
 			},
 		}
 
-		if err := c.store.Create(ctx, newRec); err != nil {
+		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+			if err := tx.Create(ctx, newRec); err != nil {
+				return err
+			}
+			for _, src := range g.records {
+				rel := schema.Relation{
+					Predicate: "derived_from",
+					TargetID:  src.ID,
+					Weight:    1.0,
+					CreatedAt: now,
+				}
+				if err := tx.AddRelation(ctx, newRec.ID, rel); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
 			return created, err
-		}
-
-		// Add derived_from relations to source episodes.
-		for _, src := range g.records {
-			rel := schema.Relation{
-				Predicate: "derived_from",
-				TargetID:  src.ID,
-				Weight:    1.0,
-				CreatedAt: now,
-			}
-			if err := c.store.AddRelation(ctx, newRec.ID, rel); err != nil {
-				return created, err
-			}
 		}
 
 		existingSkills[skillName] = newRec

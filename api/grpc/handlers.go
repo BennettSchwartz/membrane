@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	grpclib "google.golang.org/grpc"
@@ -230,11 +231,54 @@ type Handler struct {
 	membrane *membrane.Membrane
 }
 
+const (
+	maxPayloadSize  = 10 * 1024 * 1024 // 10 MB
+	maxStringLength = 100_000           // 100 KB
+	maxTags         = 100
+	maxTagLength    = 256
+	maxLimit        = 10_000
+)
+
+// validateStringField checks that a string doesn't exceed the maximum length.
+func validateStringField(name, value string) error {
+	if len(value) > maxStringLength {
+		return status.Errorf(codes.InvalidArgument, "%s exceeds maximum length of %d", name, maxStringLength)
+	}
+	return nil
+}
+
+// validateTags checks tag count and individual tag lengths.
+func validateTags(tags []string) error {
+	if len(tags) > maxTags {
+		return status.Errorf(codes.InvalidArgument, "too many tags: %d (max %d)", len(tags), maxTags)
+	}
+	for _, tag := range tags {
+		if len(tag) > maxTagLength {
+			return status.Errorf(codes.InvalidArgument, "tag exceeds maximum length of %d", maxTagLength)
+		}
+	}
+	return nil
+}
+
+// validateJSONPayload checks that a JSON payload doesn't exceed the max size.
+func validateJSONPayload(name string, data []byte) error {
+	if len(data) > maxPayloadSize {
+		return status.Errorf(codes.InvalidArgument, "%s exceeds maximum payload size of %d bytes", name, maxPayloadSize)
+	}
+	return nil
+}
+
 // compile-time assertion
 var _ MembraneServiceServer = (*Handler)(nil)
 
 // IngestEvent converts the gRPC request and delegates to Membrane.IngestEvent.
 func (h *Handler) IngestEvent(ctx context.Context, req *IngestEventRequest) (*IngestResponse, error) {
+	if err := validateStringField("source", req.Source); err != nil { return nil, err }
+	if err := validateStringField("event_kind", req.EventKind); err != nil { return nil, err }
+	if err := validateStringField("ref", req.Ref); err != nil { return nil, err }
+	if err := validateStringField("summary", req.Summary); err != nil { return nil, err }
+	if err := validateTags(req.Tags); err != nil { return nil, err }
+
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
@@ -259,6 +303,12 @@ func (h *Handler) IngestEvent(ctx context.Context, req *IngestEventRequest) (*In
 
 // IngestToolOutput converts the gRPC request and delegates to Membrane.IngestToolOutput.
 func (h *Handler) IngestToolOutput(ctx context.Context, req *IngestToolOutputRequest) (*IngestResponse, error) {
+	if err := validateStringField("source", req.Source); err != nil { return nil, err }
+	if err := validateStringField("tool_name", req.ToolName); err != nil { return nil, err }
+	if err := validateJSONPayload("args", req.Args); err != nil { return nil, err }
+	if err := validateJSONPayload("result", req.Result); err != nil { return nil, err }
+	if err := validateTags(req.Tags); err != nil { return nil, err }
+
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
@@ -298,6 +348,12 @@ func (h *Handler) IngestToolOutput(ctx context.Context, req *IngestToolOutputReq
 
 // IngestObservation converts the gRPC request and delegates to Membrane.IngestObservation.
 func (h *Handler) IngestObservation(ctx context.Context, req *IngestObservationRequest) (*IngestResponse, error) {
+	if err := validateStringField("source", req.Source); err != nil { return nil, err }
+	if err := validateStringField("subject", req.Subject); err != nil { return nil, err }
+	if err := validateStringField("predicate", req.Predicate); err != nil { return nil, err }
+	if err := validateJSONPayload("object", req.Object); err != nil { return nil, err }
+	if err := validateTags(req.Tags); err != nil { return nil, err }
+
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
@@ -351,6 +407,13 @@ func (h *Handler) IngestOutcome(ctx context.Context, req *IngestOutcomeRequest) 
 func (h *Handler) Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error) {
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
+	}
+
+	if req.MinSalience < 0 || math.IsNaN(req.MinSalience) || math.IsInf(req.MinSalience, 0) {
+		return nil, status.Error(codes.InvalidArgument, "min_salience must be non-negative and finite")
+	}
+	if req.Limit < 0 || req.Limit > maxLimit {
+		return nil, status.Errorf(codes.InvalidArgument, "limit must be between 0 and %d", maxLimit)
 	}
 
 	memTypes := make([]schema.MemoryType, len(req.MemoryTypes))
@@ -412,6 +475,8 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *RetrieveByIDRequest) (*
 
 // Supersede converts the gRPC request and delegates to Membrane.Supersede.
 func (h *Handler) Supersede(ctx context.Context, req *SupersedeRequest) (*MemoryRecordResponse, error) {
+	if err := validateJSONPayload("new_record", req.NewRecord); err != nil { return nil, err }
+
 	newRec, err := unmarshalRecord(req.NewRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid new_record: %v", err)
@@ -427,6 +492,8 @@ func (h *Handler) Supersede(ctx context.Context, req *SupersedeRequest) (*Memory
 
 // Fork converts the gRPC request and delegates to Membrane.Fork.
 func (h *Handler) Fork(ctx context.Context, req *ForkRequest) (*MemoryRecordResponse, error) {
+	if err := validateJSONPayload("forked_record", req.ForkedRecord); err != nil { return nil, err }
+
 	forkedRec, err := unmarshalRecord(req.ForkedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid forked_record: %v", err)
@@ -450,6 +517,8 @@ func (h *Handler) Retract(ctx context.Context, req *RetractRequest) (*RetractRes
 
 // Merge converts the gRPC request and delegates to Membrane.Merge.
 func (h *Handler) Merge(ctx context.Context, req *MergeRequest) (*MemoryRecordResponse, error) {
+	if err := validateJSONPayload("merged_record", req.MergedRecord); err != nil { return nil, err }
+
 	mergedRec, err := unmarshalRecord(req.MergedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid merged_record: %v", err)
@@ -465,6 +534,9 @@ func (h *Handler) Merge(ctx context.Context, req *MergeRequest) (*MemoryRecordRe
 
 // Reinforce converts the gRPC request and delegates to Membrane.Reinforce.
 func (h *Handler) Reinforce(ctx context.Context, req *ReinforceRequest) (*ReinforceResponse, error) {
+	if err := validateStringField("actor", req.Actor); err != nil { return nil, err }
+	if err := validateStringField("rationale", req.Rationale); err != nil { return nil, err }
+
 	if err := h.membrane.Reinforce(ctx, req.ID, req.Actor, req.Rationale); err != nil {
 		return nil, internalErr(err)
 	}
@@ -473,6 +545,12 @@ func (h *Handler) Reinforce(ctx context.Context, req *ReinforceRequest) (*Reinfo
 
 // Penalize converts the gRPC request and delegates to Membrane.Penalize.
 func (h *Handler) Penalize(ctx context.Context, req *PenalizeRequest) (*PenalizeResponse, error) {
+	if req.Amount < 0 || math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
+		return nil, status.Error(codes.InvalidArgument, "amount must be non-negative and finite")
+	}
+	if err := validateStringField("actor", req.Actor); err != nil { return nil, err }
+	if err := validateStringField("rationale", req.Rationale); err != nil { return nil, err }
+
 	if err := h.membrane.Penalize(ctx, req.ID, req.Amount, req.Actor, req.Rationale); err != nil {
 		return nil, internalErr(err)
 	}

@@ -83,21 +83,23 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 
 			key := semKey{subject, predicate}
 			if existingRec, found := existing[key]; found {
-				// Reinforce the existing semantic record.
-				newSalience := existingRec.Salience + 0.1
-				if newSalience > 1.0 {
-					newSalience = 1.0
-				}
-				if err := c.store.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
-					return created, err
-				}
-				entry := schema.AuditEntry{
-					Action:    schema.AuditActionReinforce,
-					Actor:     "consolidation/semantic",
-					Timestamp: now,
-					Rationale: fmt.Sprintf("Reinforced from episodic record %s", rec.ID),
-				}
-				if err := c.store.AddAuditEntry(ctx, existingRec.ID, entry); err != nil {
+				err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+					newSalience := existingRec.Salience + 0.1
+					if newSalience > 1.0 {
+						newSalience = 1.0
+					}
+					if err := tx.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
+						return err
+					}
+					entry := schema.AuditEntry{
+						Action:    schema.AuditActionReinforce,
+						Actor:     "consolidation/semantic",
+						Timestamp: now,
+						Rationale: fmt.Sprintf("Reinforced from episodic record %s", rec.ID),
+					}
+					return tx.AddAuditEntry(ctx, existingRec.ID, entry)
+				})
+				if err != nil {
 					return created, err
 				}
 				continue
@@ -151,19 +153,19 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 				},
 			}
 
-			if err := c.store.Create(ctx, newRec); err != nil {
-				return created, err
-			}
-
-			// Add a derived_from relation from the new semantic record
-			// back to its episodic source.
-			rel := schema.Relation{
-				Predicate: "derived_from",
-				TargetID:  rec.ID,
-				Weight:    1.0,
-				CreatedAt: now,
-			}
-			if err := c.store.AddRelation(ctx, newRec.ID, rel); err != nil {
+			err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+				if err := tx.Create(ctx, newRec); err != nil {
+					return err
+				}
+				rel := schema.Relation{
+					Predicate: "derived_from",
+					TargetID:  rec.ID,
+					Weight:    1.0,
+					CreatedAt: now,
+				}
+				return tx.AddRelation(ctx, newRec.ID, rel)
+			})
+			if err != nil {
 				return created, err
 			}
 

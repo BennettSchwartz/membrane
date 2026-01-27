@@ -38,6 +38,11 @@ func main() {
 		cfg.ListenAddr = *addr
 	}
 
+	// Read API key from environment if not set in config.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("MEMBRANE_API_KEY")
+	}
+
 	// Initialize Membrane.
 	m, err := membrane.New(cfg)
 	if err != nil {
@@ -53,7 +58,7 @@ func main() {
 	}
 
 	// Create gRPC server.
-	srv, err := grpcapi.NewServer(m, cfg.ListenAddr)
+	srv, err := grpcapi.NewServer(m, cfg)
 	if err != nil {
 		log.Fatalf("failed to create grpc server: %v", err)
 	}

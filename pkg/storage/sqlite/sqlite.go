@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/mutecomm/go-sqlcipher/v4"
 
 	"github.com/GustyCube/membrane/pkg/schema"
 	"github.com/GustyCube/membrane/pkg/storage"
@@ -26,11 +26,27 @@ type SQLiteStore struct {
 }
 
 // Open creates a new SQLiteStore at the given DSN (file path or ":memory:").
+// If encryptionKey is non-empty, the database is encrypted using SQLCipher.
 // It initializes the database schema on first use.
-func Open(dsn string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite3", dsn+"?_foreign_keys=on&_journal_mode=WAL")
+func Open(dsn string, encryptionKey string) (*SQLiteStore, error) {
+	db, err := sql.Open("sqlite3", dsn+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	if encryptionKey != "" {
+		if _, err := db.Exec("PRAGMA key = ?", encryptionKey); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("set encryption key: %w", err)
+		}
+	}
+
+	if encryptionKey != "" {
+		// Verify encryption key works.
+		if _, err := db.Exec("SELECT count(*) FROM sqlite_master"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("encryption key verification failed: %w", err)
+		}
 	}
 
 	// Apply schema.
@@ -651,7 +667,7 @@ func (s *SQLiteStore) GetRelations(ctx context.Context, id string) ([]schema.Rel
 
 // Begin starts a new database transaction.
 func (s *SQLiteStore) Begin(ctx context.Context) (storage.Transaction, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,7 +17,7 @@ type Scheduler struct {
 	stopCh     chan struct{}
 	done       chan struct{}
 	started    sync.Once
-	wasStarted bool
+	wasStarted atomic.Bool
 }
 
 // NewScheduler creates a new consolidation scheduler that runs RunAll
@@ -35,7 +36,7 @@ func NewScheduler(service *Service, interval time.Duration) *Scheduler {
 // safe to call multiple times; only the first call starts the loop.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.started.Do(func() {
-		s.wasStarted = true
+		s.wasStarted.Store(true)
 		go func() {
 			defer close(s.done)
 			defer func() {
@@ -81,7 +82,7 @@ func (s *Scheduler) Stop() {
 	default:
 		close(s.stopCh)
 	}
-	if s.wasStarted {
+	if s.wasStarted.Load() {
 		<-s.done
 	}
 }

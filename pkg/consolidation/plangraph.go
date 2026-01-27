@@ -125,18 +125,19 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 			},
 		}
 
-		if err := c.store.Create(ctx, newRec); err != nil {
-			return created, err
-		}
-
-		// Add derived_from relation.
-		rel := schema.Relation{
-			Predicate: "derived_from",
-			TargetID:  rec.ID,
-			Weight:    1.0,
-			CreatedAt: now,
-		}
-		if err := c.store.AddRelation(ctx, newRec.ID, rel); err != nil {
+		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+			if err := tx.Create(ctx, newRec); err != nil {
+				return err
+			}
+			rel := schema.Relation{
+				Predicate: "derived_from",
+				TargetID:  rec.ID,
+				Weight:    1.0,
+				CreatedAt: now,
+			}
+			return tx.AddRelation(ctx, newRec.ID, rel)
+		})
+		if err != nil {
 			return created, err
 		}
 
