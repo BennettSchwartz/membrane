@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"sort"
+	"time"
 
 	"github.com/GustyCube/membrane/pkg/schema"
 )
@@ -31,7 +32,58 @@ func FilterBySensitivity(records []*schema.MemoryRecord, maxSensitivity schema.S
 	return result
 }
 
-// FilterByTrust returns only records that the given TrustContext allows.
+// Redact creates a redacted copy of a MemoryRecord, preserving metadata while
+// removing sensitive content. This implements graduated exposure per RFC Section 13.
+//
+// A redacted record retains:
+//   - ID, Type, Sensitivity, Confidence, Salience, CreatedAt, UpdatedAt, Scope, Tags
+//
+// And clears:
+//   - Payload (set to nil)
+//   - Provenance (empty)
+//   - AuditLog (empty)
+//
+// This gives metadata visibility without exposing sensitive content.
+func Redact(record *schema.MemoryRecord) *schema.MemoryRecord {
+	if record == nil {
+		return nil
+	}
+
+	return &schema.MemoryRecord{
+		ID:          record.ID,
+		Type:        record.Type,
+		Sensitivity: record.Sensitivity,
+		Confidence:  record.Confidence,
+		Salience:    record.Salience,
+		Scope:       record.Scope,
+		Tags:        record.Tags,
+		CreatedAt:   record.CreatedAt,
+		UpdatedAt:   record.UpdatedAt,
+		// Lifecycle is kept but zeroed out for redacted records
+		Lifecycle: schema.Lifecycle{
+			Decay: schema.DecayProfile{
+				Curve:           schema.DecayCurveExponential,
+				HalfLifeSeconds: 0,
+			},
+			LastReinforcedAt: time.Time{},
+			DeletionPolicy:   schema.DeletionPolicyAutoPrune,
+		},
+		// Provenance is cleared
+		Provenance: schema.Provenance{
+			Sources: []schema.ProvenanceSource{},
+		},
+		// Relations are cleared
+		Relations: []schema.Relation{},
+		// Payload is set to nil
+		Payload: nil,
+		// AuditLog is cleared
+		AuditLog: []schema.AuditEntry{},
+	}
+}
+
+// FilterByTrust returns records that the given TrustContext allows.
+// Records at exactly one sensitivity level above the threshold are returned
+// in redacted form (metadata only, no sensitive content).
 func FilterByTrust(records []*schema.MemoryRecord, trust *TrustContext) []*schema.MemoryRecord {
 	if trust == nil {
 		return records
@@ -40,6 +92,8 @@ func FilterByTrust(records []*schema.MemoryRecord, trust *TrustContext) []*schem
 	for _, r := range records {
 		if trust.Allows(r) {
 			result = append(result, r)
+		} else if trust.AllowsRedacted(r) {
+			result = append(result, Redact(r))
 		}
 	}
 	return result

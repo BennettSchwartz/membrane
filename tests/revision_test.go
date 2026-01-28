@@ -53,7 +53,7 @@ func TestSupersede(t *testing.T) {
 	// Create an original semantic record.
 	original := ingestSemanticRecord(t, m, "Go", "version", "1.21")
 
-	// Create a new record to supersede it.
+	// Create a new record to supersede it (with evidence as required by RFC §7).
 	newRec := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
 			Kind:      "semantic",
@@ -63,6 +63,10 @@ func TestSupersede(t *testing.T) {
 			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 		},
 	)
+	newRec.Provenance.Sources = append(newRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence-for-supersede",
+	})
 
 	superseded, err := m.Supersede(ctx, original.ID, newRec, "test-actor", "version update")
 	if err != nil {
@@ -115,7 +119,7 @@ func TestFork(t *testing.T) {
 	// Create a source semantic record.
 	source := ingestSemanticRecord(t, m, "database", "type", "PostgreSQL")
 
-	// Fork it.
+	// Fork it (with evidence as required by RFC §7).
 	forkedRec := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
 			Kind:      "semantic",
@@ -128,6 +132,10 @@ func TestFork(t *testing.T) {
 			},
 		},
 	)
+	forkedRec.Provenance.Sources = append(forkedRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence-for-fork",
+	})
 
 	forked, err := m.Fork(ctx, source.ID, forkedRec, "test-actor", "conditional variant for dev")
 	if err != nil {
@@ -205,7 +213,7 @@ func TestMerge(t *testing.T) {
 	rec2 := ingestSemanticRecord(t, m, "tool", "uses", "neovim")
 	rec3 := ingestSemanticRecord(t, m, "tool", "uses", "editor")
 
-	// Merge them.
+	// Merge them (with evidence as required by RFC §7).
 	mergedRec := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
 			Kind:      "semantic",
@@ -215,6 +223,10 @@ func TestMerge(t *testing.T) {
 			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 		},
 	)
+	mergedRec.Provenance.Sources = append(mergedRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence-for-merge",
+	})
 
 	merged, err := m.Merge(ctx, []string{rec1.ID, rec2.ID, rec3.ID}, mergedRec, "test-actor", "consolidating editor preferences")
 	if err != nil {
@@ -262,7 +274,7 @@ func TestEpisodicRevisionRejected(t *testing.T) {
 	// Create an episodic record.
 	episodic := ingestEpisodicRecord(t, m)
 
-	// Attempt to supersede should fail.
+	// Attempt to supersede should fail (episodic source is immutable).
 	newRec := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
 			Kind:      "semantic",
@@ -272,6 +284,10 @@ func TestEpisodicRevisionRejected(t *testing.T) {
 			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 		},
 	)
+	newRec.Provenance.Sources = append(newRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence",
+	})
 	_, err := m.Supersede(ctx, episodic.ID, newRec, "test", "should fail")
 	if err == nil {
 		t.Fatal("expected error when superseding episodic record")
@@ -290,6 +306,10 @@ func TestEpisodicRevisionRejected(t *testing.T) {
 			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 		},
 	)
+	forkRec.Provenance.Sources = append(forkRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence",
+	})
 	_, err = m.Fork(ctx, episodic.ID, forkRec, "test", "should fail")
 	if err == nil {
 		t.Fatal("expected error when forking episodic record")
@@ -317,6 +337,10 @@ func TestEpisodicRevisionRejected(t *testing.T) {
 			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 		},
 	)
+	mergeRec.Provenance.Sources = append(mergeRec.Provenance.Sources, schema.ProvenanceSource{
+		Kind: "observation",
+		Ref:  "evidence",
+	})
 	_, err = m.Merge(ctx, []string{episodic.ID}, mergeRec, "test", "should fail")
 	if err == nil {
 		t.Fatal("expected error when merging episodic record")

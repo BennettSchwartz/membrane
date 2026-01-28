@@ -32,6 +32,11 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 			return err
 		}
 
+		// 1a. Ensure the new record has evidence if it's semantic.
+		if err := ensureEvidence(newRecord); err != nil {
+			return err
+		}
+
 		// 2. Retract the old record (set salience to 0, mark semantic as retracted).
 		retractRecord(oldRec)
 

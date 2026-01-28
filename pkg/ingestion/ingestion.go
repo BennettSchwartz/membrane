@@ -111,6 +111,42 @@ type IngestOutcomeRequest struct {
 	Timestamp time.Time
 }
 
+// IngestWorkingStateRequest contains the parameters for ingesting working memory state.
+type IngestWorkingStateRequest struct {
+	// Source identifies the actor or system that produced the working state.
+	Source string
+
+	// ThreadID is the identifier for the current thread/session.
+	ThreadID string
+
+	// State indicates the current task state.
+	State schema.TaskState
+
+	// NextActions lists the next planned actions.
+	NextActions []string
+
+	// OpenQuestions lists unresolved questions for the task.
+	OpenQuestions []string
+
+	// ContextSummary provides a summary of the current context.
+	ContextSummary string
+
+	// ActiveConstraints lists constraints currently active for the task.
+	ActiveConstraints []schema.Constraint
+
+	// Timestamp is when the working state was captured. If zero, the current time is used.
+	Timestamp time.Time
+
+	// Tags are optional labels for categorization.
+	Tags []string
+
+	// Scope is the visibility scope.
+	Scope string
+
+	// Sensitivity overrides the default sensitivity if set.
+	Sensitivity schema.Sensitivity
+}
+
 // Service orchestrates ingestion of raw data into the memory substrate.
 // It coordinates classification, policy application, and storage.
 type Service struct {
@@ -333,6 +369,53 @@ func (s *Service) IngestOutcome(ctx context.Context, req IngestOutcomeRequest) (
 
 	if err := s.store.Update(ctx, record); err != nil {
 		return nil, fmt.Errorf("ingestion: update outcome: %w", err)
+	}
+
+	return record, nil
+}
+
+// IngestWorkingState creates a working memory record from a working state snapshot.
+func (s *Service) IngestWorkingState(ctx context.Context, req IngestWorkingStateRequest) (*schema.MemoryRecord, error) {
+	ts := req.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+
+	candidate := &MemoryCandidate{
+		Kind:              CandidateKindWorkingState,
+		Source:            req.Source,
+		Timestamp:         ts,
+		Tags:              req.Tags,
+		Scope:             req.Scope,
+		ThreadID:          req.ThreadID,
+		TaskState:         req.State,
+		ContextSummary:    req.ContextSummary,
+		NextActions:       req.NextActions,
+		OpenQuestions:     req.OpenQuestions,
+		Sensitivity:       req.Sensitivity,
+	}
+
+	memType := s.classifier.Classify(candidate)
+
+	policyResult, err := s.policy.Apply(candidate, memType)
+	if err != nil {
+		return nil, fmt.Errorf("ingestion: classify working state: %w", err)
+	}
+
+	payload := schema.WorkingPayload{
+		Kind:              "working",
+		ThreadID:          req.ThreadID,
+		State:             req.State,
+		ActiveConstraints: req.ActiveConstraints,
+		NextActions:       req.NextActions,
+		OpenQuestions:     req.OpenQuestions,
+		ContextSummary:    req.ContextSummary,
+	}
+
+	record := s.buildRecord(candidate, memType, policyResult, &payload)
+
+	if err := s.store.Create(ctx, record); err != nil {
+		return nil, fmt.Errorf("ingestion: store working state: %w", err)
 	}
 
 	return record, nil

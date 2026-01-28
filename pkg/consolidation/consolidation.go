@@ -71,17 +71,19 @@ func (s *Service) RunAll(ctx context.Context) (*ConsolidationResult, error) {
 	}
 	result.EpisodicCompressed = episodicCount
 
-	semanticCount, err := s.semantic.Consolidate(ctx)
+	semanticCount, semanticReinforced, err := s.semantic.Consolidate(ctx)
 	if err != nil {
 		return result, fmt.Errorf("semantic consolidation: %w", err)
 	}
 	result.SemanticExtracted = semanticCount
+	result.DuplicatesResolved += semanticReinforced
 
-	competenceCount, err := s.competence.Consolidate(ctx)
+	competenceCount, competenceReinforced, err := s.competence.Consolidate(ctx)
 	if err != nil {
 		return result, fmt.Errorf("competence consolidation: %w", err)
 	}
 	result.CompetenceExtracted = competenceCount
+	result.DuplicatesResolved += competenceReinforced
 
 	planGraphCount, err := s.plangraph.Consolidate(ctx)
 	if err != nil {

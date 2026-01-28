@@ -86,3 +86,20 @@ func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
 
 	return true
 }
+
+// AllowsRedacted returns true if the record's sensitivity is exactly one level
+// above the trust context's maximum, allowing a redacted view.
+// This implements graduated exposure per RFC Section 13: "sensitive records may
+// be summarized or withheld." Records at this level are visible as metadata but
+// with sensitive content removed.
+func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool {
+	if record == nil {
+		return false
+	}
+
+	recordLevel := SensitivityLevel(record.Sensitivity)
+	maxLevel := SensitivityLevel(tc.MaxSensitivity)
+
+	// Only allow redacted view if record is exactly one level above max.
+	return recordLevel == maxLevel+1
+}

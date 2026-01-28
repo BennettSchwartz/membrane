@@ -161,3 +161,61 @@ func (s *Service) ApplyDecayAll(ctx context.Context) (int, error) {
 
 	return count, nil
 }
+
+// Prune deletes records whose salience has dropped to their floor and whose
+// deletion policy is auto_prune. Pinned records are never pruned.
+func (s *Service) Prune(ctx context.Context) (int, error) {
+	records, err := s.store.List(ctx, storage.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("prune: list records: %w", err)
+	}
+
+	count := 0
+	for _, record := range records {
+		// Skip pinned records.
+		if record.Lifecycle.Pinned {
+			continue
+		}
+
+		// Skip if deletion policy is not auto_prune.
+		if record.Lifecycle.DeletionPolicy != schema.DeletionPolicyAutoPrune {
+			continue
+		}
+
+		// Check if salience has dropped to floor (effectively zero).
+		// Prune if salience <= MinSalience AND salience is very close to zero (< 0.001).
+		floor := record.Lifecycle.Decay.MinSalience
+		if record.Salience <= floor && record.Salience < 0.001 {
+			if err := s.deletePruned(ctx, record.ID); err != nil {
+				return count, fmt.Errorf("prune: delete record %s: %w", record.ID, err)
+			}
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+// deletePruned deletes a record and adds an audit entry documenting the auto-prune action.
+func (s *Service) deletePruned(ctx context.Context, id string) error {
+	return storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+		// Add audit entry before deletion.
+		now := time.Now().UTC()
+		entry := schema.AuditEntry{
+			Action:    schema.AuditActionDelete,
+			Actor:     "decay-service",
+			Timestamp: now,
+			Rationale: "auto-pruned: salience reached floor",
+		}
+		if err := tx.AddAuditEntry(ctx, id, entry); err != nil {
+			return fmt.Errorf("add audit entry %s: %w", id, err)
+		}
+
+		// Delete the record.
+		if err := tx.Delete(ctx, id); err != nil {
+			return fmt.Errorf("delete record %s: %w", id, err)
+		}
+
+		return nil
+	})
+}

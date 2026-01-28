@@ -32,6 +32,7 @@ var serviceDesc = grpclib.ServiceDesc{
 		{MethodName: "IngestToolOutput", Handler: handleIngestToolOutput},
 		{MethodName: "IngestObservation", Handler: handleIngestObservation},
 		{MethodName: "IngestOutcome", Handler: handleIngestOutcome},
+		{MethodName: "IngestWorkingState", Handler: handleIngestWorkingState},
 		{MethodName: "Retrieve", Handler: handleRetrieve},
 		{MethodName: "RetrieveByID", Handler: handleRetrieveByID},
 		{MethodName: "Supersede", Handler: handleSupersede},
@@ -59,6 +60,7 @@ type MembraneServiceServer interface {
 	IngestToolOutput(ctx context.Context, req *IngestToolOutputRequest) (*IngestResponse, error)
 	IngestObservation(ctx context.Context, req *IngestObservationRequest) (*IngestResponse, error)
 	IngestOutcome(ctx context.Context, req *IngestOutcomeRequest) (*IngestResponse, error)
+	IngestWorkingState(ctx context.Context, req *IngestWorkingStateRequest) (*IngestResponse, error)
 	Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error)
 	RetrieveByID(ctx context.Context, req *RetrieveByIDRequest) (*MemoryRecordResponse, error)
 	Supersede(ctx context.Context, req *SupersedeRequest) (*MemoryRecordResponse, error)
@@ -117,6 +119,21 @@ type IngestOutcomeRequest struct {
 	TargetRecordID string `json:"target_record_id"`
 	OutcomeStatus  string `json:"outcome_status"`
 	Timestamp      string `json:"timestamp"` // RFC 3339
+}
+
+// IngestWorkingStateRequest mirrors the proto IngestWorkingStateRequest.
+type IngestWorkingStateRequest struct {
+	Source            string              `json:"source"`
+	ThreadID          string              `json:"thread_id"`
+	State             string              `json:"state"`
+	NextActions       []string            `json:"next_actions"`
+	OpenQuestions     []string            `json:"open_questions"`
+	ContextSummary    string              `json:"context_summary"`
+	ActiveConstraints json.RawMessage     `json:"active_constraints"`
+	Timestamp         string              `json:"timestamp"` // RFC 3339
+	Tags              []string            `json:"tags"`
+	Scope             string              `json:"scope"`
+	Sensitivity       string              `json:"sensitivity"`
 }
 
 // IngestResponse wraps a JSON-encoded MemoryRecord.
@@ -403,6 +420,46 @@ func (h *Handler) IngestOutcome(ctx context.Context, req *IngestOutcomeRequest) 
 	return marshalRecordResponse(rec)
 }
 
+// IngestWorkingState converts the gRPC request and delegates to Membrane.IngestWorkingState.
+func (h *Handler) IngestWorkingState(ctx context.Context, req *IngestWorkingStateRequest) (*IngestResponse, error) {
+	if err := validateStringField("source", req.Source); err != nil { return nil, err }
+	if err := validateStringField("thread_id", req.ThreadID); err != nil { return nil, err }
+	if err := validateStringField("context_summary", req.ContextSummary); err != nil { return nil, err }
+	if err := validateTags(req.Tags); err != nil { return nil, err }
+
+	ts, err := parseOptionalTime(req.Timestamp)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
+	}
+
+	var constraints []schema.Constraint
+	if len(req.ActiveConstraints) > 0 {
+		if err := validateJSONPayload("active_constraints", req.ActiveConstraints); err != nil { return nil, err }
+		if err := json.Unmarshal(req.ActiveConstraints, &constraints); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid active_constraints JSON: %v", err)
+		}
+	}
+
+	rec, err := h.membrane.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+		Source:            req.Source,
+		ThreadID:          req.ThreadID,
+		State:             schema.TaskState(req.State),
+		NextActions:       req.NextActions,
+		OpenQuestions:     req.OpenQuestions,
+		ContextSummary:    req.ContextSummary,
+		ActiveConstraints: constraints,
+		Timestamp:         ts,
+		Tags:              req.Tags,
+		Scope:             req.Scope,
+		Sensitivity:       schema.Sensitivity(req.Sensitivity),
+	})
+	if err != nil {
+		return nil, internalErr(err)
+	}
+
+	return marshalRecordResponse(rec)
+}
+
 // Retrieve converts the gRPC request and delegates to Membrane.Retrieve.
 func (h *Handler) Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error) {
 	if req.Trust == nil {
@@ -609,6 +666,14 @@ func handleIngestOutcome(srv any, ctx context.Context, dec func(any) error, _ gr
 		return nil, err
 	}
 	return srv.(MembraneServiceServer).IngestOutcome(ctx, req)
+}
+
+func handleIngestWorkingState(srv any, ctx context.Context, dec func(any) error, _ grpclib.UnaryServerInterceptor) (any, error) {
+	req := new(IngestWorkingStateRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(MembraneServiceServer).IngestWorkingState(ctx, req)
 }
 
 func handleRetrieve(srv any, ctx context.Context, dec func(any) error, _ grpclib.UnaryServerInterceptor) (any, error) {

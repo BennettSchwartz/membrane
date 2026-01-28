@@ -32,6 +32,11 @@ func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schem
 			return err
 		}
 
+		// 1a. Ensure the forked record has evidence if it's semantic.
+		if err := ensureEvidence(forkedRecord); err != nil {
+			return err
+		}
+
 		// 2. Assign a new ID if not already set.
 		if forkedRecord.ID == "" {
 			forkedRecord.ID = uuid.New().String()

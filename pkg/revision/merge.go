@@ -40,6 +40,11 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 			sourceRecords = append(sourceRecords, rec)
 		}
 
+		// Validate evidence for semantic records.
+		if err := ensureEvidence(mergedRecord); err != nil {
+			return err
+		}
+
 		// 2. Retract all source records.
 		for _, rec := range sourceRecords {
 			retractRecord(rec)

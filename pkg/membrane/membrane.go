@@ -121,6 +121,11 @@ func (m *Membrane) IngestOutcome(ctx context.Context, req ingestion.IngestOutcom
 	return m.ingestion.IngestOutcome(ctx, req)
 }
 
+// IngestWorkingState creates a working memory record from a working state snapshot.
+func (m *Membrane) IngestWorkingState(ctx context.Context, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error) {
+	return m.ingestion.IngestWorkingState(ctx, req)
+}
+
 // ---------------------------------------------------------------------------
 // Retrieval delegates
 // ---------------------------------------------------------------------------
@@ -157,6 +162,11 @@ func (m *Membrane) Retract(ctx context.Context, id, actor, rationale string) err
 // Merge atomically combines multiple source records into a single merged record.
 func (m *Membrane) Merge(ctx context.Context, ids []string, mergedRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error) {
 	return m.revision.Merge(ctx, ids, mergedRec, actor, rationale)
+}
+
+// Contest marks a record as contested, indicating conflicting evidence exists.
+func (m *Membrane) Contest(ctx context.Context, id, contestingRef, actor, rationale string) error {
+	return m.revision.Contest(ctx, id, contestingRef, actor, rationale)
 }
 
 // ---------------------------------------------------------------------------

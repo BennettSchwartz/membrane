@@ -60,11 +60,12 @@ func (s *Scheduler) Start(ctx context.Context) {
 						log.Printf("consolidation scheduler: error: %v", err)
 						continue
 					}
-					log.Printf("consolidation scheduler: compressed=%d semantic=%d competence=%d plangraph=%d",
+					log.Printf("consolidation scheduler: compressed=%d semantic=%d competence=%d plangraph=%d duplicates=%d",
 						result.EpisodicCompressed,
 						result.SemanticExtracted,
 						result.CompetenceExtracted,
 						result.PlanGraphsExtracted,
+						result.DuplicatesResolved,
 					)
 				}
 			}

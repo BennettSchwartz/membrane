@@ -38,6 +38,22 @@ func ensureRevisable(rec *schema.MemoryRecord) error {
 	return nil
 }
 
+// ensureEvidence checks that semantic records being created via revision
+// include at least one evidence reference in their payload.
+func ensureEvidence(rec *schema.MemoryRecord) error {
+	if rec.Type != schema.MemoryTypeSemantic {
+		return nil
+	}
+	sp, ok := rec.Payload.(*schema.SemanticPayload)
+	if !ok {
+		return nil
+	}
+	if len(sp.Evidence) == 0 && len(rec.Provenance.Sources) == 0 {
+		return fmt.Errorf("semantic revision requires evidence: record %s has no evidence references or provenance sources", rec.ID)
+	}
+	return nil
+}
+
 // retractRecord marks a record as retracted by setting salience to 0 and,
 // for semantic records, setting the revision status to "retracted".
 func retractRecord(rec *schema.MemoryRecord) {

@@ -34,17 +34,18 @@ func NewCompetenceConsolidator(store storage.Store) *CompetenceConsolidator {
 // Consolidate finds episodic records with tool graphs and successful
 // outcomes, groups them by similar tool patterns, and creates
 // competence records for patterns that repeat. It returns the number
-// of new competence records created.
-func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
+// of new competence records created, the number of existing records
+// reinforced, and any error.
+func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, error) {
 	episodics, err := c.store.ListByType(ctx, schema.MemoryTypeEpisodic)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// Load existing competence records so we do not duplicate skills.
 	competences, err := c.store.ListByType(ctx, schema.MemoryTypeCompetence)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	existingSkills := make(map[string]*schema.MemoryRecord, len(competences))
@@ -89,6 +90,7 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
 
 	now := time.Now().UTC()
 	created := 0
+	reinforced := 0
 
 	for _, g := range groups {
 		if len(g.records) < minPatternOccurrences {
@@ -114,8 +116,9 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
 				return tx.AddAuditEntry(ctx, existingRec.ID, entry)
 			})
 			if err != nil {
-				return created, err
+				return created, reinforced, err
 			}
+			reinforced++
 			continue
 		}
 
@@ -185,14 +188,14 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, error) {
 			return nil
 		})
 		if err != nil {
-			return created, err
+			return created, reinforced, err
 		}
 
 		existingSkills[skillName] = newRec
 		created++
 	}
 
-	return created, nil
+	return created, reinforced, nil
 }
 
 // extractToolNames returns the ordered list of tool names from a tool graph.

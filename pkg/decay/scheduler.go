@@ -58,6 +58,13 @@ func (s *Scheduler) Start(ctx context.Context) {
 						continue
 					}
 					log.Printf("decay scheduler: decayed %d records", count)
+
+					pruned, err := s.service.Prune(ctx)
+					if err != nil {
+						log.Printf("decay scheduler: error pruning: %v", err)
+					} else if pruned > 0 {
+						log.Printf("decay scheduler: pruned %d records", pruned)
+					}
 				}
 			}
 		}()

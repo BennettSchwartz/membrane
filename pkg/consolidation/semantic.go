@@ -30,17 +30,17 @@ func NewSemanticConsolidator(store storage.Store) *SemanticConsolidator {
 
 // Consolidate scans episodic records with successful outcomes and
 // extracts semantic observations. It returns the number of new semantic
-// records created.
-func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
+// records created, the number of existing records reinforced, and any error.
+func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, int, error) {
 	episodics, err := c.store.ListByType(ctx, schema.MemoryTypeEpisodic)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// Load existing semantic records for duplicate checking.
 	semantics, err := c.store.ListByType(ctx, schema.MemoryTypeSemantic)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// Build an index of existing semantic observations keyed by
@@ -57,6 +57,7 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 
 	now := time.Now().UTC()
 	created := 0
+	reinforced := 0
 
 	for _, rec := range episodics {
 		ep, ok := rec.Payload.(*schema.EpisodicPayload)
@@ -100,8 +101,9 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 					return tx.AddAuditEntry(ctx, existingRec.ID, entry)
 				})
 				if err != nil {
-					return created, err
+					return created, reinforced, err
 				}
+				reinforced++
 				continue
 			}
 
@@ -166,7 +168,7 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 				return tx.AddRelation(ctx, newRec.ID, rel)
 			})
 			if err != nil {
-				return created, err
+				return created, reinforced, err
 			}
 
 			// Track in the local index to avoid duplicates within the
@@ -176,7 +178,7 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, error) {
 		}
 	}
 
-	return created, nil
+	return created, reinforced, nil
 }
 
 // deriveTags builds a tag set for a consolidated record from its
