@@ -1,6 +1,6 @@
 // Package grpc provides the gRPC transport layer for the Membrane service.
-// It registers a hand-written service descriptor (no protoc required) and
-// delegates every RPC to the pkg/membrane API surface.
+// It registers the protoc-generated service descriptor and delegates every
+// RPC to the pkg/membrane API surface.
 package grpc
 
 import (
@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
 	"github.com/GustyCube/membrane/pkg/membrane"
 )
 
@@ -56,7 +57,7 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	gs := grpc.NewServer(opts...)
 
 	handler := &Handler{membrane: m}
-	registerMembraneService(gs, handler)
+	pb.RegisterMembraneServiceServer(gs, handler)
 
 	return &Server{
 		membrane: m,
