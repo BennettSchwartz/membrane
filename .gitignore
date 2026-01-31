@@ -37,8 +37,8 @@ dist/
 .env.local
 *.local
 
-# Generated protobuf
-api/grpc/gen/
+# Generated protobuf files are committed (standard Go convention).
+# Regenerate with: make proto
 
 # Python
 __pycache__/
