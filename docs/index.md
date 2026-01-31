@@ -25,7 +25,7 @@ features:
   - title: Revisable Knowledge
     details: Semantic facts support supersede, fork, retract, and merge operations with full audit trails.
   - title: gRPC API
-    details: A 13-method gRPC service exposes ingestion, retrieval, revision, reinforcement, and metrics to any language.
+    details: A 15-method gRPC service exposes ingestion, retrieval, revision, reinforcement, and metrics to any language.
 ---
 
 ## Quick Start

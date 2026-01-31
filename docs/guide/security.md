@@ -97,6 +97,83 @@ The sensitivity level is set when a memory is ingested. If not specified, the de
 Set sensitivity at ingestion time based on the content. User credentials and secrets should be `hyper`. Personal preferences might be `medium`. Public documentation references can be `public`.
 :::
 
+## Encryption at Rest
+
+Membrane uses [SQLCipher](https://www.zetetic.net/sqlcipher/) to encrypt the database at rest. When an encryption key is configured, all data (records, payloads, audit logs) is encrypted transparently.
+
+### Enabling Encryption
+
+Set the key via environment variable (recommended) or config file:
+
+```bash
+# Environment variable (recommended -- keeps the key out of config files)
+export MEMBRANE_ENCRYPTION_KEY="your-secret-key"
+./bin/membraned
+```
+
+```yaml
+# Or in config file (less secure -- key is stored on disk)
+encryption_key: "your-secret-key"
+```
+
+::: warning
+If you enable encryption on an existing unencrypted database, you must migrate the data. Start a new encrypted database and re-ingest records.
+:::
+
+::: tip
+If no encryption key is set, the database is stored unencrypted. This is suitable for development but not recommended for production.
+:::
+
+## TLS Transport
+
+The gRPC server supports TLS for encrypted connections between clients and the daemon.
+
+### Enabling TLS
+
+Provide paths to a certificate and private key in PEM format:
+
+```yaml
+tls_cert_file: /etc/membrane/tls/server.crt
+tls_key_file: /etc/membrane/tls/server.key
+```
+
+Both fields must be set for TLS to activate. If either is empty, the server runs without TLS.
+
+## Authentication
+
+Membrane supports Bearer token authentication for gRPC clients. When an API key is configured, every request must include it in the `authorization` metadata header.
+
+### Enabling Authentication
+
+```bash
+# Environment variable (recommended)
+export MEMBRANE_API_KEY="your-api-key"
+./bin/membraned
+```
+
+```yaml
+# Or in config file
+api_key: "your-api-key"
+```
+
+Clients must send the key as a Bearer token:
+
+```
+authorization: Bearer your-api-key
+```
+
+Requests with a missing or invalid key receive an `Unauthenticated` gRPC error. If no API key is configured, authentication is disabled.
+
+## Rate Limiting
+
+Membrane includes a token bucket rate limiter for gRPC endpoints. This prevents any single client from overwhelming the server.
+
+```yaml
+rate_limit_per_second: 100
+```
+
+When the limit is exceeded, requests receive a `ResourceExhausted` gRPC error. Set to `0` to disable rate limiting.
+
 ## Audit Trail
 
 All access and modifications to memory records are tracked in the audit log. Each audit entry records:
@@ -107,3 +184,14 @@ All access and modifications to memory records are tracked in the audit log. Eac
 - **Rationale** -- why it was done
 
 This provides a full trace of who accessed or modified a memory, supporting compliance and debugging.
+
+## Security Checklist
+
+For production deployments:
+
+1. Set `MEMBRANE_ENCRYPTION_KEY` to encrypt the database
+2. Set `MEMBRANE_API_KEY` to require authentication
+3. Configure `tls_cert_file` and `tls_key_file` for encrypted transport
+4. Set `rate_limit_per_second` to a sensible value (default: 100)
+5. Use `sensitivity: "high"` or `"hyper"` for records containing secrets or credentials
+6. Restrict `scopes` in trust contexts to limit access by project or team

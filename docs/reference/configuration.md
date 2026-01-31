@@ -30,6 +30,13 @@ default_sensitivity: low
 
 # Minimum confidence for the retrieval selector
 selection_confidence_threshold: 0.7
+
+# Security (keys should come from environment variables)
+# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""              # or set MEMBRANE_API_KEY
+# tls_cert_file: ""
+# tls_key_file: ""
+rate_limit_per_second: 100
 ```
 
 ## Options Reference
@@ -71,6 +78,38 @@ selection_confidence_threshold: 0.7
 - **Default:** `0.7`
 - **Range:** [0, 1]
 - **Description:** Minimum confidence for the multi-solution selector. When the selector ranks competence or plan graph candidates, if confidence falls below this threshold the `needs_more` flag is set, signaling that additional information or user disambiguation may be needed. See [Retrieval](/guide/retrieval) for details.
+
+### `encryption_key`
+
+- **Type:** string
+- **Default:** `""` (no encryption)
+- **Env var:** `MEMBRANE_ENCRYPTION_KEY`
+- **Description:** SQLCipher encryption key for the database. When set, all data is encrypted at rest. If both the config field and the environment variable are set, the environment variable takes precedence. See [Security](/guide/security) for details.
+
+### `api_key`
+
+- **Type:** string
+- **Default:** `""` (authentication disabled)
+- **Env var:** `MEMBRANE_API_KEY`
+- **Description:** Shared secret for authenticating gRPC clients. Clients must send this as a `Bearer` token in the `authorization` metadata header. If both the config field and the environment variable are set, the environment variable takes precedence. See [Security](/guide/security) for details.
+
+### `tls_cert_file`
+
+- **Type:** string
+- **Default:** `""` (TLS disabled)
+- **Description:** Path to the TLS certificate PEM file. Both `tls_cert_file` and `tls_key_file` must be set for TLS to activate.
+
+### `tls_key_file`
+
+- **Type:** string
+- **Default:** `""` (TLS disabled)
+- **Description:** Path to the TLS private key PEM file. Both `tls_cert_file` and `tls_key_file` must be set for TLS to activate.
+
+### `rate_limit_per_second`
+
+- **Type:** integer
+- **Default:** `100`
+- **Description:** Maximum gRPC requests per second. Uses a token bucket algorithm. Set to `0` to disable rate limiting. Requests exceeding the limit receive a `ResourceExhausted` gRPC error.
 
 ## Command-Line Overrides
 
