@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'Membrane',
   description: 'A selective learning and memory substrate for agentic systems',
-  base: '/membrane/',
+  base: '/',
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/getting-started' },
