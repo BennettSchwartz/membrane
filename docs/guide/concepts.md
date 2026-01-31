@@ -48,16 +48,17 @@ Consolidation is the process of distilling raw episodic experience into durable 
 3. **Competence extraction** -- identifies successful tool-use patterns and creates competence records
 4. **Plan graph synthesis** -- extracts reusable action graphs from episodic tool graphs
 
-Consolidation requires no user approval. Promoted knowledge remains subject to normal decay and revision.
+Consolidation requires no user approval. Promoted knowledge remains subject to normal decay and revision. See [Consolidation](/guide/consolidation) for details on each stage.
 
 ## Revision
 
-Semantic knowledge is inherently uncertain and changeable. Membrane supports four revision operations:
+Semantic knowledge is inherently uncertain and changeable. Membrane supports five revision operations:
 
 - **Supersede** -- replace a fact with a corrected version, preserving a `supersedes` link
 - **Fork** -- create a conditional variant when a fact is context-dependent
 - **Retract** -- mark a fact as withdrawn without deleting it
 - **Merge** -- combine multiple related records into one
+- **Contest** -- mark a fact as disputed when conflicting evidence appears
 
 Every revision is recorded in the record's **audit log** with an actor, timestamp, and rationale.
 

@@ -1,6 +1,6 @@
 # Memory Types
 
-Membrane defines five memory types, each with a dedicated payload schema. Every `MemoryRecord` has a `type` field that determines which payload structure it carries.
+Membrane defines five memory types, each with a dedicated payload schema. Every `MemoryRecord` has a `type` field that determines which payload structure it carries. See [Schemas](/reference/schemas) for the full `MemoryRecord` base type and related structures.
 
 ## Episodic Memory
 
