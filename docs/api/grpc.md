@@ -1,6 +1,6 @@
 # gRPC API
 
-Membrane exposes a gRPC service at `membrane.v1.MembraneService` with 13 RPC methods covering ingestion, retrieval, revision, reinforcement, and metrics.
+Membrane exposes a gRPC service at `membrane.v1.MembraneService` with 15 RPC methods covering ingestion, retrieval, revision, reinforcement, and metrics.
 
 The server listens on the configured address (default: `:9090`). Request and response bodies use JSON encoding over gRPC.
 
@@ -131,6 +131,46 @@ Record the outcome of a task or action, linking it to an existing record.
 | `target_record_id` | string | Yes | UUID of the record to attach the outcome to |
 | `outcome_status` | string | Yes | `success`, `failure`, or `partial` |
 | `timestamp` | string | No | RFC 3339 timestamp |
+
+**Response:** `IngestResponse` containing the full `MemoryRecord` as JSON.
+
+---
+
+### IngestWorkingState
+
+Ingest the current state of an ongoing task into working memory. Working memory supports task resumption across sessions.
+
+**Request:**
+
+```json
+{
+  "source": "my-agent",
+  "thread_id": "session-001",
+  "state": "executing",
+  "next_actions": ["run tests", "deploy"],
+  "open_questions": ["which test suite?"],
+  "context_summary": "Backend initialized, frontend pending",
+  "active_constraints": [{"type": "deadline", "value": "2025-02-01"}],
+  "timestamp": "2025-01-15T10:33:00Z",
+  "tags": ["setup"],
+  "scope": "project-alpha",
+  "sensitivity": "low"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | Yes | Source identifier |
+| `thread_id` | string | Yes | Identifier for the task thread |
+| `state` | string | Yes | Task state: `planning`, `executing`, `blocked`, `waiting`, or `done` |
+| `next_actions` | string[] | No | Planned next steps |
+| `open_questions` | string[] | No | Unresolved questions |
+| `context_summary` | string | No | Human-readable summary of current context |
+| `active_constraints` | object[] | No | JSON-encoded active constraints |
+| `timestamp` | string | No | RFC 3339 timestamp; defaults to current time |
+| `tags` | string[] | No | Free-form labels |
+| `scope` | string | No | Visibility scope |
+| `sensitivity` | string | No | Sensitivity level |
 
 **Response:** `IngestResponse` containing the full `MemoryRecord` as JSON.
 
@@ -283,6 +323,32 @@ Combine multiple related records into a single consolidated record. The source r
 ```
 
 **Response:** `MemoryRecordResponse` containing the merged record.
+
+---
+
+### Contest
+
+Mark a record as contested when conflicting evidence appears. The contesting reference links to the record or evidence that contradicts this one.
+
+**Request:**
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "contesting_ref": "770e8400-e29b-41d4-a716-446655440002",
+  "actor": "agent-1",
+  "rationale": "New observation contradicts this semantic fact"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | UUID of the record to contest |
+| `contesting_ref` | string | Yes | Reference to the conflicting record or evidence |
+| `actor` | string | Yes | Identity of the contesting agent |
+| `rationale` | string | Yes | Explanation for the contestation |
+
+**Response:** Empty acknowledgement.
 
 ---
 

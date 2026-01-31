@@ -12,9 +12,11 @@ test:
 	$(GO) test ./...
 
 proto:
+	mkdir -p api/grpc/gen/membranev1
 	protoc \
-		--go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		--go_out=api/grpc/gen/membranev1 --go_opt=paths=source_relative \
+		--go-grpc_out=api/grpc/gen/membranev1 --go-grpc_opt=paths=source_relative \
+		-I $(PROTO_DIR) \
 		$(PROTO_DIR)/*.proto
 
 lint:
