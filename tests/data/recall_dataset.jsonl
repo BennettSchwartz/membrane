@@ -1,0 +1,53 @@
+{"type":"record","key":"r1","text":"user prefers Go for backend services","subject":"user","predicate":"prefers_language","object":"Go","scope":"project:alpha","sensitivity":"low","tags":["preference","backend"]}
+{"type":"record","key":"r2","text":"project alpha uses PostgreSQL as the primary database","subject":"project alpha","predicate":"uses_database","object":"PostgreSQL","scope":"project:alpha","sensitivity":"low","tags":["database"]}
+{"type":"record","key":"r3","text":"build pipeline uses Bazel","subject":"build pipeline","predicate":"uses","object":"Bazel","scope":"project:alpha","sensitivity":"medium","tags":["build"]}
+{"type":"record","key":"r4","text":"deployment uses Cloudflare Workers","subject":"deployment","predicate":"uses","object":"Cloudflare Workers","scope":"project:alpha","sensitivity":"high","tags":["deploy"]}
+{"type":"record","key":"r5","text":"user alice dislikes TypeScript","subject":"user alice","predicate":"dislikes_language","object":"TypeScript","scope":"user:alice","sensitivity":"low","tags":["preference"]}
+{"type":"record","key":"r6","text":"oncall rotation starts Monday at 09:00 PT","subject":"oncall rotation","predicate":"starts","object":"Monday 09:00 PT","scope":"project:beta","sensitivity":"low","tags":["oncall"]}
+{"type":"record","key":"r7","text":"incident runbook step: rollback to last green deploy","subject":"incident runbook","predicate":"step","object":"rollback to last green","scope":"project:beta","sensitivity":"medium","tags":["runbook"]}
+{"type":"record","key":"r8","text":"API rate limit is 100 requests per second","subject":"api","predicate":"rate_limit","object":"100 rps","scope":"","sensitivity":"low","tags":["rate-limit"]}
+{"type":"record","key":"r9","text":"database encryption key is stored in Vault","subject":"database","predicate":"encryption_key_location","object":"Vault","scope":"project:alpha","sensitivity":"high","tags":["security"]}
+{"type":"record","key":"r10","text":"frontend uses SvelteKit","subject":"frontend","predicate":"uses","object":"SvelteKit","scope":"project:alpha","sensitivity":"low","tags":["frontend"]}
+{"type":"record","key":"r11","text":"logging stack uses Loki","subject":"logging stack","predicate":"uses","object":"Loki","scope":"project:beta","sensitivity":"low","tags":["logging"]}
+{"type":"record","key":"r12","text":"authentication uses OIDC","subject":"authentication","predicate":"uses","object":"OIDC","scope":"project:alpha","sensitivity":"medium","tags":["auth"]}
+{"type":"record","key":"r13","text":"retrieval usefulness equals reinforce actions divided by total audit entries","subject":"retrieval usefulness","predicate":"formula","object":"reinforce actions / total audit entries","scope":"","sensitivity":"low","tags":["metrics"]}
+{"type":"record","key":"r14","text":"user bob prefers Python","subject":"user bob","predicate":"prefers_language","object":"Python","scope":"user:bob","sensitivity":"low","tags":["preference"]}
+{"type":"record","key":"r15","text":"backup window is 02:00 UTC","subject":"backup window","predicate":"time","object":"02:00 UTC","scope":"","sensitivity":"low","tags":["backup"]}
+{"type":"record","key":"r16","text":"event stream uses Kafka topic mem-events","subject":"event stream","predicate":"uses","object":"Kafka topic mem-events","scope":"project:alpha","sensitivity":"low","tags":["events"]}
+{"type":"record","key":"r17","text":"enterprise support SLA is 2 hours","subject":"support SLA","predicate":"duration","object":"2 hours","scope":"","sensitivity":"low","tags":["support"]}
+{"type":"record","key":"r18","text":"incident severity rubric: sev1 is full outage","subject":"incident severity","predicate":"sev1","object":"full outage","scope":"project:beta","sensitivity":"low","tags":["incident"]}
+{"type":"record","key":"r19","text":"API token is stored in MEMBRANE_API_KEY environment variable","subject":"api token","predicate":"stored_in","object":"MEMBRANE_API_KEY","scope":"","sensitivity":"medium","tags":["security"]}
+{"type":"record","key":"r20","text":"secret key rotation happens monthly","subject":"secret key rotation","predicate":"cadence","object":"monthly","scope":"project:alpha","sensitivity":"high","tags":["security"]}
+{"type":"record","key":"r21","text":"project alpha uses Redis for caching","subject":"project alpha","predicate":"uses_cache","object":"Redis","scope":"project:alpha","sensitivity":"low","tags":["cache"]}
+{"type":"record","key":"r22","text":"project beta uses PostgreSQL for analytics","subject":"project beta","predicate":"uses_database","object":"PostgreSQL","scope":"project:beta","sensitivity":"low","tags":["database"]}
+{"type":"record","key":"r23","text":"project alpha uses Terraform for infrastructure","subject":"project alpha","predicate":"uses","object":"Terraform","scope":"project:alpha","sensitivity":"medium","tags":["infra"]}
+{"type":"record","key":"r24","text":"deployment in beta uses Kubernetes","subject":"deployment","predicate":"uses","object":"Kubernetes","scope":"project:beta","sensitivity":"low","tags":["deploy"]}
+{"type":"record","key":"r25","text":"SLO target is p95 latency under 200ms","subject":"slo","predicate":"target","object":"p95 < 200ms","scope":"","sensitivity":"low","tags":["slo"]}
+{"type":"record","key":"r26","text":"user alice prefers Rust","subject":"user alice","predicate":"prefers_language","object":"Rust","scope":"user:alice","sensitivity":"low","tags":["preference"]}
+{"type":"record","key":"r27","text":"incident runbook step: page oncall manager","subject":"incident runbook","predicate":"step","object":"page oncall manager","scope":"project:beta","sensitivity":"medium","tags":["runbook"]}
+{"type":"record","key":"r28","text":"service-to-service auth uses JWT","subject":"authentication","predicate":"uses","object":"JWT","scope":"project:alpha","sensitivity":"medium","tags":["auth"]}
+{"type":"record","key":"r29","text":"data retention policy is 30 days","subject":"data retention","predicate":"policy","object":"30 days","scope":"","sensitivity":"low","tags":["policy"]}
+{"type":"record","key":"r30","text":"audit log is append-only","subject":"audit log","predicate":"property","object":"append-only","scope":"","sensitivity":"low","tags":["audit"]}
+{"type":"record","key":"r31","text":"deployment in beta uses Helm charts","subject":"deployment","predicate":"uses","object":"Helm charts","scope":"project:beta","sensitivity":"low","tags":["deploy"]}
+{"type":"record","key":"r32","text":"backups are stored in S3 bucket mem-backups","subject":"backup","predicate":"stored_in","object":"S3 mem-backups","scope":"","sensitivity":"low","tags":["backup"]}
+{"type":"record","key":"r33","text":"configuration files use YAML format","subject":"configuration","predicate":"format","object":"YAML","scope":"","sensitivity":"low","tags":["config"]}
+{"type":"record","key":"r34","text":"storage encryption uses SQLCipher","subject":"storage","predicate":"encryption","object":"SQLCipher","scope":"","sensitivity":"medium","tags":["security"]}
+{"type":"record","key":"r35","text":"admin rate limit override is 1000 requests per second","subject":"api","predicate":"rate_limit_override","object":"1000 rps","scope":"","sensitivity":"high","tags":["rate-limit"]}
+{"type":"query","key":"q1","text":"What backend language does project alpha prefer?","expected":["r1"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["project:alpha"]}}
+{"type":"query","key":"q2","text":"Which databases does project alpha use?","expected":["r2","r21"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["project:alpha"]}}
+{"type":"query","key":"q3","text":"What authentication mechanisms are used in alpha?","expected":["r12","r28"],"k":5,"trust":{"max_sensitivity":"medium","authenticated":true,"scopes":["project:alpha"]}}
+{"type":"query","key":"q4","text":"Where is the database encryption key stored?","expected":["r9"],"k":5,"trust":{"max_sensitivity":"high","authenticated":true,"scopes":["project:alpha"]}}
+{"type":"query","key":"q5","text":"What language preferences does Alice have?","expected":["r5","r26"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["user:alice"]}}
+{"type":"query","key":"q6","text":"When does the beta oncall rotation start?","expected":["r6"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["project:beta"]}}
+{"type":"query","key":"q7","text":"What are the incident runbook steps in beta?","expected":["r7","r27"],"k":5,"trust":{"max_sensitivity":"medium","authenticated":true,"scopes":["project:beta"]}}
+{"type":"query","key":"q8","text":"What is the API rate limit?","expected":["r8"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q9","text":"Which environment variable stores the API token?","expected":["r19"],"k":5,"trust":{"max_sensitivity":"medium","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q10","text":"What time is the backup window and where are backups stored?","expected":["r15","r32"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q11","text":"What is the retrieval usefulness formula?","expected":["r13"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q12","text":"What is the SLA for enterprise support?","expected":["r17"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q13","text":"What does sev1 mean in the incident rubric?","expected":["r18"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["project:beta"]}}
+{"type":"query","key":"q14","text":"What storage encryption is used?","expected":["r34"],"k":5,"trust":{"max_sensitivity":"medium","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q15","text":"What is the data retention policy?","expected":["r29"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q16","text":"Which deployment tools are used in beta?","expected":["r24","r31"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":["project:beta"]}}
+{"type":"query","key":"q17","text":"What config file format is used?","expected":["r33"],"k":5,"trust":{"max_sensitivity":"low","authenticated":true,"scopes":[]}}
+{"type":"query","key":"q18","text":"What are the rate limit overrides for admins?","expected":["r35"],"k":5,"trust":{"max_sensitivity":"high","authenticated":true,"scopes":[]}}
