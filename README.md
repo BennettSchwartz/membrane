@@ -5,22 +5,32 @@
 
 A general-purpose selective learning and memory substrate for agentic systems.
 
-## Overview
+## Why Membrane
 
-Membrane is an open-source memory system that enables AI agents to genuinely learn from experience. Unlike traditional retrieval-augmented generation (RAG) approaches that treat memory as an append-only text store, Membrane provides:
+Membrane is a memory substrate for long-lived agents. Most agent "memory" is either ephemeral (context windows) or an append-only text log (RAG). That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
 
-- **Typed Memory** - Five distinct memory classes with explicit schemas, lifecycles, and semantics
-- **Revisable Knowledge** - Facts, preferences, and procedures can be updated, forked, contested, or retracted based on evidence
-- **Competence Learning** - Agents learn *how* to solve problems, not just *what* happened
-- **Decay and Consolidation** - Salience-based memory management that reinforces useful knowledge and prunes the irrelevant
-- **Trust-Aware Retrieval** - Sensitivity-gated access with graduated redaction for sensitive records
-- **Encryption at Rest** - SQLCipher-backed storage with optional TLS, authentication, and rate limiting
+Membrane makes memory *selective* and *revisable*. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
 
-Membrane solves the fundamental problem of agent memory: enabling systems to improve over time in a Jarvis-like manner while remaining predictable, auditable, and safe.
+## 60-Second Mental Model
 
-## Features
+1. **Ingest** events, tool outputs, observations, and working state.
+2. **Consolidate** episodic traces into semantic facts, competence records, and plan graphs.
+3. **Retrieve** in layers with trust gating and salience ranking.
+4. **Revise** knowledge with explicit operations and audit trails.
+5. **Decay** salience over time unless reinforced by success.
 
-### Five Memory Types
+## What You Get
+
+- **Typed Memory** with explicit schemas and lifecycles (not a flat text store)
+- **Revisable Knowledge** with provenance and conflict handling
+- **Competence Learning** so agents learn *how* to solve problems, not just *what* happened
+- **Decay + Consolidation** that keeps memory useful and prunes noise
+- **Trust-Aware Retrieval** with sensitivity levels and graduated access
+- **Security & Ops**: SQLCipher encryption, optional TLS + API keys, rate limiting, audit logs
+- **Observability**: retrieval usefulness, competence success, plan reuse, revision rate
+- **gRPC API** with embedded Go library support
+
+## Memory Types
 
 | Type | Purpose | Example |
 |------|---------|---------|
@@ -30,21 +40,67 @@ Membrane solves the fundamental problem of agent memory: enabling systems to imp
 | **Competence** | Learned procedures | "To fix linker cache error: clear cache, rebuild with flags" |
 | **Plan Graph** | Reusable solution structures | Multi-step project setup workflow as a directed graph |
 
-### Core Capabilities
+## Evaluation & Metrics
 
-- **Automatic Learning** - Memory creation without explicit user approval
-- **Consolidation Pipeline** - Episodic traces are analyzed and promoted to semantic facts, competence records, and plan graphs
-- **Revision Semantics** - Supersede, fork, retract, merge, or contest conflicting knowledge
-- **Evidence-Based Revisions** - Semantic revisions require provenance or evidence references
-- **Salience Decay** - Exponential/linear decay with configurable half-lives and reinforcement on successful use
-- **Auto-Pruning** - Records whose salience drops to the floor are automatically deleted based on deletion policy
-- **Trust-Aware Retrieval** - Five sensitivity levels (public, low, medium, high, hyper) with graduated redaction
-- **Encryption at Rest** - SQLCipher-encrypted database with key via config or `MEMBRANE_ENCRYPTION_KEY` env var
-- **TLS and Authentication** - Optional TLS transport and Bearer token API key authentication
-- **Rate Limiting** - Token bucket rate limiter for gRPC endpoints
-- **Audit Logging** - Complete mutation history for all memory records
-- **Observability** - Metrics for memory growth rate, salience distribution, retrieval usefulness, competence success rates, plan reuse frequency, and revision rates
-- **gRPC API** - High-performance interface with protoc-generated service stubs and JSON-encoded payloads
+Membrane exposes behavioral metrics (e.g., retrieval usefulness, competence success rate, plan reuse frequency) via `GetMetrics`, and the test suite covers ingestion, revision, selection, and retrieval ordering.
+
+If you want **recall-style regression checks**, run the recall-focused retrieval test:
+
+```bash
+go test ./tests -run TestRetrievalRecallAtK
+```
+
+For **vector-aware end-to-end metrics** (optional; requires Python dependencies):
+
+```bash
+python3 -m pip install -r tools/eval/requirements.txt
+make eval
+```
+
+Thresholds are enforced by default (override via env vars):
+
+```bash
+MEMBRANE_EVAL_MIN_RECALL=0.90
+MEMBRANE_EVAL_MIN_PRECISION=0.20
+MEMBRANE_EVAL_MIN_MRR=0.90
+MEMBRANE_EVAL_MIN_NDCG=0.90
+```
+
+Latest eval results (local run on Feb 5, 2026):
+
+- `go test ./tests -run TestEval -v`
+  - 22 top-level eval tests + 7 subtests = 29 test cases
+  - Failures: 0
+  - Runtime: ~0.40s
+- `make eval` (vector E2E)
+  - Records: 35, Queries: 18
+  - Mean recall@k: 1.000
+  - Mean precision@k: 0.267
+  - Mean MRR@k: 0.956
+  - Mean NDCG@k: 0.955
+
+For **targeted capability evals** (fast, isolated):
+
+```bash
+make eval-typed
+make eval-revision
+make eval-decay
+make eval-trust
+make eval-competence
+make eval-plan
+make eval-consolidation
+make eval-metrics
+make eval-invariants
+make eval-grpc
+```
+
+To run everything at once:
+
+```bash
+make eval-all
+```
+
+Note: Membrane itself does not implement vector similarity search. End-to-end recall depends on the retrieval backend and the agent policy driving ingestion and reinforcement. Treat recall tests as scenario-level regression guards rather than universal benchmarks.
 
 ## Installation
 
