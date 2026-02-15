@@ -133,12 +133,14 @@ class MembraneClient:
             "IngestToolOutput",
             "IngestObservation",
             "IngestOutcome",
+            "IngestWorkingState",
             "Retrieve",
             "RetrieveByID",
             "Supersede",
             "Fork",
             "Retract",
             "Merge",
+            "Contest",
             "Reinforce",
             "Penalize",
             "GetMetrics",
@@ -340,6 +342,60 @@ class MembraneClient:
         resp = self._stubs["IngestOutcome"](req)
         return _parse_record_from_response(resp)
 
+    def ingest_working_state(
+        self,
+        thread_id: str,
+        state: str,
+        *,
+        next_actions: Sequence[str] | None = None,
+        open_questions: Sequence[str] | None = None,
+        context_summary: str = "",
+        active_constraints: Sequence[dict[str, Any]] | None = None,
+        sensitivity: Sensitivity | str = Sensitivity.LOW,
+        source: str = "python-client",
+        tags: Sequence[str] | None = None,
+        scope: str = "",
+        timestamp: str | None = None,
+    ) -> MemoryRecord:
+        """Ingest a working memory state snapshot.
+
+        Args:
+            thread_id: Identifier for the task thread.
+            state: Current task state (e.g. ``"planning"``, ``"executing"``).
+            next_actions: Planned next steps.
+            open_questions: Unresolved questions.
+            context_summary: Human-readable summary of current context.
+            active_constraints: Active constraints as JSON-serializable dicts.
+            sensitivity: Sensitivity classification.
+            source: Source identifier for provenance.
+            tags: Optional tags for categorization.
+            scope: Visibility scope.
+            timestamp: RFC 3339 timestamp; defaults to now.
+
+        Returns:
+            The created ``MemoryRecord``.
+        """
+        req: dict[str, Any] = {
+            "source": source,
+            "thread_id": thread_id,
+            "state": state,
+            "next_actions": list(next_actions) if next_actions else [],
+            "open_questions": list(open_questions) if open_questions else [],
+            "context_summary": context_summary,
+            "timestamp": timestamp or _now_rfc3339(),
+            "tags": list(tags) if tags else [],
+            "scope": scope,
+            "sensitivity": (
+                sensitivity.value
+                if isinstance(sensitivity, Sensitivity)
+                else sensitivity
+            ),
+        }
+        if active_constraints is not None:
+            req["active_constraints"] = list(active_constraints)
+        resp = self._stubs["IngestWorkingState"](req)
+        return _parse_record_from_response(resp)
+
     # -- Retrieval -----------------------------------------------------------
 
     def retrieve(
@@ -521,6 +577,29 @@ class MembraneClient:
         }
         resp = self._stubs["Merge"](req)
         return _parse_record_from_response(resp)
+
+    def contest(
+        self,
+        record_id: str,
+        contesting_ref: str,
+        actor: str,
+        rationale: str,
+    ) -> None:
+        """Mark a record as contested due to conflicting evidence.
+
+        Args:
+            record_id: ID of the record to contest.
+            contesting_ref: Reference to the conflicting evidence.
+            actor: Identifier of the actor contesting the record.
+            rationale: Human-readable reason for contesting.
+        """
+        req = {
+            "id": record_id,
+            "contesting_ref": contesting_ref,
+            "actor": actor,
+            "rationale": rationale,
+        }
+        self._stubs["Contest"](req)
 
     # -- Reinforcement / Penalization ----------------------------------------
 
