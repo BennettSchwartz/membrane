@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.22']
+        go-version: ['1.22', '1.23']
 
     steps:
       - name: Checkout code
@@ -29,11 +29,25 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
       - name: Build
         run: go build ./...
 
-      - name: Run tests
-        run: go test -v -race -count=1 ./...
+      - name: Run tests with coverage
+        run: go test -v -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Vet
         run: go vet ./...
+
+      - name: Install and run staticcheck
+        if: matrix.go-version == '1.23'
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
