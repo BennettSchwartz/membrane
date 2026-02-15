@@ -3,6 +3,7 @@ package decay
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/GustyCube/membrane/pkg/schema"
@@ -49,6 +50,14 @@ func (s *Service) ApplyDecay(ctx context.Context, id string) error {
 			newSalience = decayFn(record.Salience, elapsed, profile)
 		}
 
+		// Guard against NaN or negative values from misconfigured curves.
+		if math.IsNaN(newSalience) || math.IsInf(newSalience, 0) {
+			newSalience = profile.MinSalience
+		}
+		if newSalience < 0 {
+			newSalience = 0
+		}
+
 		if err := tx.UpdateSalience(ctx, id, newSalience); err != nil {
 			return fmt.Errorf("decay: update salience %s: %w", id, err)
 		}
@@ -78,12 +87,12 @@ func (s *Service) Reinforce(ctx context.Context, id string, actor string, ration
 
 		gain := record.Lifecycle.Decay.ReinforcementGain
 		newSalience := record.Salience + gain
-
-		if err := tx.UpdateSalience(ctx, id, newSalience); err != nil {
-			return fmt.Errorf("reinforce: update salience %s: %w", id, err)
+		if newSalience > 1.0 {
+			newSalience = 1.0
 		}
 
 		now := time.Now().UTC()
+		record.Salience = newSalience
 		record.Lifecycle.LastReinforcedAt = now
 		record.UpdatedAt = now
 		if err := tx.Update(ctx, record); err != nil {
