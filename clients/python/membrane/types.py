@@ -69,6 +69,53 @@ class RevisionStatus(str, Enum):
     RETRACTED = "retracted"
 
 
+class ValidityMode(str, Enum):
+    """How a semantic fact's validity is scoped (RFC 15A.8)."""
+
+    GLOBAL = "global"
+    CONDITIONAL = "conditional"
+    TIMEBOXED = "timeboxed"
+
+
+class TaskState(str, Enum):
+    """Current state of a working memory task (RFC 15A.7)."""
+
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    BLOCKED = "blocked"
+    WAITING = "waiting"
+    DONE = "done"
+
+
+class AuditAction(str, Enum):
+    """Type of action recorded in an audit entry (RFC 15A.8)."""
+
+    CREATE = "create"
+    REVISE = "revise"
+    FORK = "fork"
+    MERGE = "merge"
+    DELETE = "delete"
+    REINFORCE = "reinforce"
+    DECAY = "decay"
+
+
+class ProvenanceKind(str, Enum):
+    """Type of source in provenance tracking (RFC 15A.4)."""
+
+    EVENT = "event"
+    ARTIFACT = "artifact"
+    TOOL_CALL = "tool_call"
+    OBSERVATION = "observation"
+    OUTCOME = "outcome"
+
+
+class EdgeKind(str, Enum):
+    """Type of edge in a plan graph (RFC 15A.10)."""
+
+    DATA = "data"
+    CONTROL = "control"
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------

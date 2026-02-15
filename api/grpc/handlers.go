@@ -182,6 +182,10 @@ func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservati
 
 // IngestOutcome converts the gRPC request and delegates to Membrane.IngestOutcome.
 func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeRequest) (*pb.IngestResponse, error) {
+	if err := validateStringField("source", req.Source); err != nil { return nil, err }
+	if err := validateStringField("target_record_id", req.TargetRecordId); err != nil { return nil, err }
+	if err := validateStringField("outcome_status", req.OutcomeStatus); err != nil { return nil, err }
+
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
@@ -354,6 +358,12 @@ func (h *Handler) Retract(ctx context.Context, req *pb.RetractRequest) (*pb.Retr
 
 // Merge converts the gRPC request and delegates to Membrane.Merge.
 func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRecordResponse, error) {
+	if len(req.Ids) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "ids must not be empty")
+	}
+	if len(req.Ids) > maxLimit {
+		return nil, status.Errorf(codes.InvalidArgument, "too many ids: %d (max %d)", len(req.Ids), maxLimit)
+	}
 	if err := validateJSONPayload("merged_record", req.MergedRecord); err != nil { return nil, err }
 
 	mergedRec, err := unmarshalRecord(req.MergedRecord)

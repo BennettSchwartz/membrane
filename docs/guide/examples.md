@@ -797,53 +797,44 @@ func main() {
 ### Python Client
 
 ```python
-import grpc
-import json
-from membrane.v1 import membrane_pb2, membrane_pb2_grpc
+from membrane import MembraneClient, Sensitivity, TrustContext
 
-# Connect to membraned
-channel = grpc.insecure_channel("localhost:9090")
-stub = membrane_pb2_grpc.MembraneServiceStub(channel)
-
-# Attach API key metadata
-metadata = [("authorization", "Bearer your-api-key-here")]
+# Connect to membraned (with optional auth)
+client = MembraneClient(
+    "localhost:9090",
+    api_key="your-api-key-here",  # omit if auth is disabled
+)
 
 # Ingest an observation
-resp = stub.IngestObservation(
-    membrane_pb2.IngestObservationRequest(
-        source="python-agent",
-        subject="user",
-        predicate="timezone",
-        object=json.dumps("America/New_York").encode(),
-        tags=["preference"],
-        scope="user-preferences",
-        sensitivity="low",
-    ),
-    metadata=metadata,
+record = client.ingest_observation(
+    subject="user",
+    predicate="timezone",
+    obj="America/New_York",
+    source="python-agent",
+    tags=["preference"],
+    scope="user-preferences",
+    sensitivity=Sensitivity.LOW,
 )
-record = json.loads(resp.record)
-print(f"Stored fact: {record['id']}")
+print(f"Stored fact: {record.id}")
 
 # Retrieve with trust context
-retrieve_resp = stub.Retrieve(
-    membrane_pb2.RetrieveRequest(
-        task_descriptor="personalize response",
-        trust=membrane_pb2.TrustContext(
-            max_sensitivity="medium",
-            authenticated=True,
-            actor_id="python-agent",
-            scopes=["user-preferences"],
-        ),
-        memory_types=["semantic"],
-        limit=20,
-    ),
-    metadata=metadata,
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
+    actor_id="python-agent",
+    scopes=["user-preferences"],
+)
+records = client.retrieve(
+    "personalize response",
+    trust=trust,
+    memory_types=["semantic"],
+    limit=20,
 )
 
-for raw in retrieve_resp.records:
-    rec = json.loads(raw)
-    payload = rec["payload"]
-    print(f"  {payload['subject']} {payload['predicate']} = {payload['object']}")
+for rec in records:
+    print(f"  [{rec.type.value}] {rec.id} (salience={rec.salience:.2f})")
+
+client.close()
 ```
 
 ### Node.js Client

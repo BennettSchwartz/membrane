@@ -102,24 +102,25 @@ The response returns matching records sorted by salience, with an optional `sele
 A Python client library is available in the `clients/python/` directory:
 
 ```python
-from membrane_client import MembraneClient
+from membrane import MembraneClient, Sensitivity, TrustContext
 
 client = MembraneClient("localhost:9090")
 
 # Ingest an event
 record = client.ingest_event(
-    source="my-agent",
     event_kind="user_input",
     ref="session-001/msg-1",
     summary="User asked about deployment options",
+    source="my-agent",
 )
 
 # Retrieve memories
-results = client.retrieve(
-    task_descriptor="answer deployment question",
-    max_sensitivity="medium",
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
     actor_id="agent-1",
 )
+results = client.retrieve("answer deployment question", trust=trust)
 ```
 
 ## What Next?
