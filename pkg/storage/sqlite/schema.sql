@@ -77,6 +77,9 @@ CREATE INDEX IF NOT EXISTS idx_records_salience ON memory_records(salience DESC)
 CREATE INDEX IF NOT EXISTS idx_records_sensitivity ON memory_records(sensitivity);
 CREATE INDEX IF NOT EXISTS idx_records_scope ON memory_records(scope);
 CREATE INDEX IF NOT EXISTS idx_records_created ON memory_records(created_at);
+-- Compound indexes for common query patterns.
+CREATE INDEX IF NOT EXISTS idx_records_type_salience ON memory_records(type, salience DESC);
+CREATE INDEX IF NOT EXISTS idx_records_scope_sensitivity ON memory_records(scope, sensitivity);
 CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate);
