@@ -118,11 +118,52 @@ class MembraneClient:
 
         with MembraneClient("localhost:9090") as client:
             record = client.ingest_event(...)
+
+    For secured deployments, pass ``tls=True`` and/or ``api_key``::
+
+        client = MembraneClient(
+            "membrane.example.com:443",
+            tls=True,
+            api_key="your-api-key",
+            timeout=10.0,
+        )
     """
 
-    def __init__(self, addr: str = "localhost:9090") -> None:
+    def __init__(
+        self,
+        addr: str = "localhost:9090",
+        *,
+        tls: bool = False,
+        tls_ca_cert: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Create a new client.
+
+        Args:
+            addr: gRPC server address (``host:port``).
+            tls: Enable TLS transport. When *True* and *tls_ca_cert* is
+                not provided, the system root certificates are used.
+            tls_ca_cert: Path to a PEM-encoded CA certificate file for
+                server verification.  Implies ``tls=True``.
+            api_key: Optional Bearer token for server authentication.
+            timeout: Default timeout in seconds for all RPC calls.
+                ``None`` means no timeout.
+        """
         self._addr = addr
-        self._channel: grpc.Channel = grpc.insecure_channel(addr)
+        self._api_key = api_key
+        self._timeout = timeout
+
+        if tls or tls_ca_cert:
+            if tls_ca_cert:
+                with open(tls_ca_cert, "rb") as f:
+                    root_certs = f.read()
+                creds = grpc.ssl_channel_credentials(root_certificates=root_certs)
+            else:
+                creds = grpc.ssl_channel_credentials()
+            self._channel: grpc.Channel = grpc.secure_channel(addr, creds)
+        else:
+            self._channel = grpc.insecure_channel(addr)
 
         # Pre-build callable stubs for each RPC method.  We use
         # ``channel.unary_unary`` with the full method path and custom
@@ -133,12 +174,14 @@ class MembraneClient:
             "IngestToolOutput",
             "IngestObservation",
             "IngestOutcome",
+            "IngestWorkingState",
             "Retrieve",
             "RetrieveByID",
             "Supersede",
             "Fork",
             "Retract",
             "Merge",
+            "Contest",
             "Reinforce",
             "Penalize",
             "GetMetrics",
@@ -148,6 +191,15 @@ class MembraneClient:
                 request_serializer=self._serialize,
                 response_deserializer=self._deserialize,
             )
+
+    def _call_kwargs(self) -> dict[str, Any]:
+        """Return common keyword arguments for gRPC calls."""
+        kwargs: dict[str, Any] = {}
+        if self._timeout is not None:
+            kwargs["timeout"] = self._timeout
+        if self._api_key is not None:
+            kwargs["metadata"] = [("authorization", f"Bearer {self._api_key}")]
+        return kwargs
 
     # -- Serialization helpers -----------------------------------------------
 
@@ -212,7 +264,7 @@ class MembraneClient:
                 else sensitivity
             ),
         }
-        resp = self._stubs["IngestEvent"](req)
+        resp = self._stubs["IngestEvent"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     def ingest_tool_output(
@@ -261,7 +313,7 @@ class MembraneClient:
             req["args"] = args
         if result is not None:
             req["result"] = result
-        resp = self._stubs["IngestToolOutput"](req)
+        resp = self._stubs["IngestToolOutput"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     def ingest_observation(
@@ -305,7 +357,7 @@ class MembraneClient:
                 else sensitivity
             ),
         }
-        resp = self._stubs["IngestObservation"](req)
+        resp = self._stubs["IngestObservation"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     def ingest_outcome(
@@ -337,7 +389,61 @@ class MembraneClient:
             ),
             "timestamp": timestamp or _now_rfc3339(),
         }
-        resp = self._stubs["IngestOutcome"](req)
+        resp = self._stubs["IngestOutcome"](req, **self._call_kwargs())
+        return _parse_record_from_response(resp)
+
+    def ingest_working_state(
+        self,
+        thread_id: str,
+        state: str,
+        *,
+        next_actions: Sequence[str] | None = None,
+        open_questions: Sequence[str] | None = None,
+        context_summary: str = "",
+        active_constraints: Sequence[dict[str, Any]] | None = None,
+        sensitivity: Sensitivity | str = Sensitivity.LOW,
+        source: str = "python-client",
+        tags: Sequence[str] | None = None,
+        scope: str = "",
+        timestamp: str | None = None,
+    ) -> MemoryRecord:
+        """Ingest a working memory state snapshot.
+
+        Args:
+            thread_id: Identifier for the task thread.
+            state: Current task state (e.g. ``"planning"``, ``"executing"``).
+            next_actions: Planned next steps.
+            open_questions: Unresolved questions.
+            context_summary: Human-readable summary of current context.
+            active_constraints: Active constraints as JSON-serializable dicts.
+            sensitivity: Sensitivity classification.
+            source: Source identifier for provenance.
+            tags: Optional tags for categorization.
+            scope: Visibility scope.
+            timestamp: RFC 3339 timestamp; defaults to now.
+
+        Returns:
+            The created ``MemoryRecord``.
+        """
+        req: dict[str, Any] = {
+            "source": source,
+            "thread_id": thread_id,
+            "state": state,
+            "next_actions": list(next_actions) if next_actions else [],
+            "open_questions": list(open_questions) if open_questions else [],
+            "context_summary": context_summary,
+            "timestamp": timestamp or _now_rfc3339(),
+            "tags": list(tags) if tags else [],
+            "scope": scope,
+            "sensitivity": (
+                sensitivity.value
+                if isinstance(sensitivity, Sensitivity)
+                else sensitivity
+            ),
+        }
+        if active_constraints is not None:
+            req["active_constraints"] = list(active_constraints)
+        resp = self._stubs["IngestWorkingState"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     # -- Retrieval -----------------------------------------------------------
@@ -381,7 +487,7 @@ class MembraneClient:
             "min_salience": min_salience,
             "limit": limit,
         }
-        resp = self._stubs["Retrieve"](req)
+        resp = self._stubs["Retrieve"](req, **self._call_kwargs())
         return _parse_records_from_response(resp)
 
     def retrieve_by_id(
@@ -407,7 +513,7 @@ class MembraneClient:
             "id": record_id,
             "trust": trust.to_dict(),
         }
-        resp = self._stubs["RetrieveByID"](req)
+        resp = self._stubs["RetrieveByID"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     # -- Revision ------------------------------------------------------------
@@ -439,7 +545,7 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        resp = self._stubs["Supersede"](req)
+        resp = self._stubs["Supersede"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     def fork(
@@ -469,7 +575,7 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        resp = self._stubs["Fork"](req)
+        resp = self._stubs["Fork"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
 
     def retract(
@@ -490,7 +596,7 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        self._stubs["Retract"](req)
+        self._stubs["Retract"](req, **self._call_kwargs())
 
     def merge(
         self,
@@ -519,8 +625,31 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        resp = self._stubs["Merge"](req)
+        resp = self._stubs["Merge"](req, **self._call_kwargs())
         return _parse_record_from_response(resp)
+
+    def contest(
+        self,
+        record_id: str,
+        contesting_ref: str,
+        actor: str,
+        rationale: str,
+    ) -> None:
+        """Mark a record as contested due to conflicting evidence.
+
+        Args:
+            record_id: ID of the record to contest.
+            contesting_ref: Reference to the conflicting evidence.
+            actor: Identifier of the actor contesting the record.
+            rationale: Human-readable reason for contesting.
+        """
+        req = {
+            "id": record_id,
+            "contesting_ref": contesting_ref,
+            "actor": actor,
+            "rationale": rationale,
+        }
+        self._stubs["Contest"](req, **self._call_kwargs())
 
     # -- Reinforcement / Penalization ----------------------------------------
 
@@ -542,7 +671,7 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        self._stubs["Reinforce"](req)
+        self._stubs["Reinforce"](req, **self._call_kwargs())
 
     def penalize(
         self,
@@ -565,7 +694,7 @@ class MembraneClient:
             "actor": actor,
             "rationale": rationale,
         }
-        self._stubs["Penalize"](req)
+        self._stubs["Penalize"](req, **self._call_kwargs())
 
     # -- Metrics -------------------------------------------------------------
 
@@ -575,7 +704,7 @@ class MembraneClient:
         Returns:
             A dictionary containing the metrics snapshot.
         """
-        resp = self._stubs["GetMetrics"]({})
+        resp = self._stubs["GetMetrics"]({}, **self._call_kwargs())
         snapshot = resp.get("snapshot", resp)
         if isinstance(snapshot, str):
             snapshot = json.loads(snapshot)

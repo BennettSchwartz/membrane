@@ -423,6 +423,29 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		}
 	}
 
+	// Replace relations (prevents orphaned relations on update).
+	if _, err := q.ExecContext(ctx, `DELETE FROM relations WHERE source_id = ?`, rec.ID); err != nil {
+		return fmt.Errorf("delete relations: %w", err)
+	}
+	for _, rel := range rec.Relations {
+		w := rel.Weight
+		if w == 0 {
+			w = 1.0
+		}
+		ca := rel.CreatedAt
+		if ca.IsZero() {
+			ca = time.Now().UTC()
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			rec.ID, rel.Predicate, rel.TargetID, w,
+			ca.UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("insert relations: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -512,15 +535,222 @@ func listRecords(ctx context.Context, q queryable, opts storage.ListOptions) ([]
 		ids = append(ids, id)
 	}
 
-	records := make([]*schema.MemoryRecord, 0, len(ids))
-	for _, id := range ids {
-		rec, err := getRecord(ctx, q, id)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, rec)
+	return getRecordsBatch(ctx, q, ids)
+}
+
+// getRecordsBatch fetches multiple records by ID in a single pass per table,
+// avoiding the N+1 query problem that occurs when calling getRecord per ID.
+func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.MemoryRecord, error) {
+	if len(ids) == 0 {
+		return []*schema.MemoryRecord{}, nil
 	}
 
+	// For small batches, fall back to individual fetches to keep things simple.
+	if len(ids) <= 3 {
+		records := make([]*schema.MemoryRecord, 0, len(ids))
+		for _, id := range ids {
+			rec, err := getRecord(ctx, q, id)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, rec)
+		}
+		return records, nil
+	}
+
+	// Build placeholder string and args for IN clause.
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+	idArgs := make([]any, len(ids))
+	for i, id := range ids {
+		idArgs[i] = id
+	}
+
+	// Index records by ID for ordered output.
+	recMap := make(map[string]*schema.MemoryRecord, len(ids))
+
+	// 1. Fetch base records.
+	baseQuery := fmt.Sprintf(
+		`SELECT id, type, sensitivity, confidence, salience, scope, created_at, updated_at
+		 FROM memory_records WHERE id IN (%s)`, placeholders)
+	baseRows, err := q.QueryContext(ctx, baseQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query memory_records: %w", err)
+	}
+	defer baseRows.Close()
+	for baseRows.Next() {
+		rec := &schema.MemoryRecord{}
+		var scope sql.NullString
+		var createdAt, updatedAt string
+		if err := baseRows.Scan(&rec.ID, &rec.Type, &rec.Sensitivity, &rec.Confidence, &rec.Salience,
+			&scope, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("batch scan memory_records: %w", err)
+		}
+		rec.Scope = scope.String
+		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		rec.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+		rec.Provenance.Sources = []schema.ProvenanceSource{}
+		rec.Relations = []schema.Relation{}
+		rec.AuditLog = []schema.AuditEntry{}
+		recMap[rec.ID] = rec
+	}
+
+	// 2. Fetch decay profiles.
+	dpQuery := fmt.Sprintf(
+		`SELECT record_id, curve, half_life_seconds, min_salience, max_age_seconds, reinforcement_gain,
+		        last_reinforced_at, pinned, deletion_policy
+		 FROM decay_profiles WHERE record_id IN (%s)`, placeholders)
+	dpRows, err := q.QueryContext(ctx, dpQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query decay_profiles: %w", err)
+	}
+	defer dpRows.Close()
+	for dpRows.Next() {
+		var recordID, lastReinforced string
+		var pinnedInt int
+		var maxAge sql.NullInt64
+		var curve schema.DecayCurve
+		var halfLife int64
+		var minSalience, gain float64
+		var delPolicy schema.DeletionPolicy
+		if err := dpRows.Scan(&recordID, &curve, &halfLife, &minSalience, &maxAge, &gain,
+			&lastReinforced, &pinnedInt, &delPolicy); err != nil {
+			return nil, fmt.Errorf("batch scan decay_profiles: %w", err)
+		}
+		if rec, ok := recMap[recordID]; ok {
+			rec.Lifecycle.Decay.Curve = curve
+			rec.Lifecycle.Decay.HalfLifeSeconds = halfLife
+			rec.Lifecycle.Decay.MinSalience = minSalience
+			rec.Lifecycle.Decay.ReinforcementGain = gain
+			rec.Lifecycle.LastReinforcedAt, _ = time.Parse(time.RFC3339Nano, lastReinforced)
+			rec.Lifecycle.Pinned = pinnedInt != 0
+			rec.Lifecycle.DeletionPolicy = delPolicy
+			if maxAge.Valid {
+				rec.Lifecycle.Decay.MaxAgeSeconds = maxAge.Int64
+			}
+		}
+	}
+
+	// 3. Fetch payloads.
+	plQuery := fmt.Sprintf(
+		`SELECT record_id, payload_json FROM payloads WHERE record_id IN (%s)`, placeholders)
+	plRows, err := q.QueryContext(ctx, plQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query payloads: %w", err)
+	}
+	defer plRows.Close()
+	for plRows.Next() {
+		var recordID, payloadJSON string
+		if err := plRows.Scan(&recordID, &payloadJSON); err != nil {
+			return nil, fmt.Errorf("batch scan payloads: %w", err)
+		}
+		if rec, ok := recMap[recordID]; ok && payloadJSON != "" {
+			var wrapper schema.PayloadWrapper
+			if err := wrapper.UnmarshalJSON([]byte(payloadJSON)); err != nil {
+				return nil, fmt.Errorf("unmarshal payload for %s: %w", recordID, err)
+			}
+			rec.Payload = wrapper.Payload
+		}
+	}
+
+	// 4. Fetch tags.
+	tagQuery := fmt.Sprintf(
+		`SELECT record_id, tag FROM tags WHERE record_id IN (%s)`, placeholders)
+	tagRows, err := q.QueryContext(ctx, tagQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query tags: %w", err)
+	}
+	defer tagRows.Close()
+	for tagRows.Next() {
+		var recordID, tag string
+		if err := tagRows.Scan(&recordID, &tag); err != nil {
+			return nil, fmt.Errorf("batch scan tags: %w", err)
+		}
+		if rec, ok := recMap[recordID]; ok {
+			rec.Tags = append(rec.Tags, tag)
+		}
+	}
+
+	// 5. Fetch provenance sources.
+	provQuery := fmt.Sprintf(
+		`SELECT record_id, kind, ref, hash, created_by, timestamp
+		 FROM provenance_sources WHERE record_id IN (%s) ORDER BY id`, placeholders)
+	provRows, err := q.QueryContext(ctx, provQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query provenance_sources: %w", err)
+	}
+	defer provRows.Close()
+	for provRows.Next() {
+		var recordID string
+		var src schema.ProvenanceSource
+		var hash, createdBy sql.NullString
+		var ts string
+		if err := provRows.Scan(&recordID, &src.Kind, &src.Ref, &hash, &createdBy, &ts); err != nil {
+			return nil, fmt.Errorf("batch scan provenance_sources: %w", err)
+		}
+		src.Hash = hash.String
+		src.CreatedBy = createdBy.String
+		src.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+		if rec, ok := recMap[recordID]; ok {
+			rec.Provenance.Sources = append(rec.Provenance.Sources, src)
+		}
+	}
+
+	// 6. Fetch relations.
+	relQuery := fmt.Sprintf(
+		`SELECT source_id, predicate, target_id, weight, created_at
+		 FROM relations WHERE source_id IN (%s) ORDER BY id`, placeholders)
+	relRows, err := q.QueryContext(ctx, relQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query relations: %w", err)
+	}
+	defer relRows.Close()
+	for relRows.Next() {
+		var recordID string
+		var rel schema.Relation
+		var w sql.NullFloat64
+		var ca string
+		if err := relRows.Scan(&recordID, &rel.Predicate, &rel.TargetID, &w, &ca); err != nil {
+			return nil, fmt.Errorf("batch scan relations: %w", err)
+		}
+		if w.Valid {
+			rel.Weight = w.Float64
+		}
+		rel.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
+		if rec, ok := recMap[recordID]; ok {
+			rec.Relations = append(rec.Relations, rel)
+		}
+	}
+
+	// 7. Fetch audit log.
+	auditQuery := fmt.Sprintf(
+		`SELECT record_id, action, actor, timestamp, rationale
+		 FROM audit_log WHERE record_id IN (%s) ORDER BY id`, placeholders)
+	auditRows, err := q.QueryContext(ctx, auditQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query audit_log: %w", err)
+	}
+	defer auditRows.Close()
+	for auditRows.Next() {
+		var recordID string
+		var entry schema.AuditEntry
+		var ts string
+		if err := auditRows.Scan(&recordID, &entry.Action, &entry.Actor, &ts, &entry.Rationale); err != nil {
+			return nil, fmt.Errorf("batch scan audit_log: %w", err)
+		}
+		entry.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+		if rec, ok := recMap[recordID]; ok {
+			rec.AuditLog = append(rec.AuditLog, entry)
+		}
+	}
+
+	// Return records in the original ID order.
+	records := make([]*schema.MemoryRecord, 0, len(ids))
+	for _, id := range ids {
+		if rec, ok := recMap[id]; ok {
+			records = append(records, rec)
+		}
+	}
 	return records, nil
 }
 

@@ -82,9 +82,12 @@ func main() {
 		log.Printf("membraned: grpc server error: %v", err)
 	}
 
-	// Graceful shutdown.
-	srv.Stop()
+	// Graceful shutdown: cancel context first to stop background
+	// schedulers, then drain in-flight gRPC requests, then close
+	// the database. This ordering prevents panics from gRPC handlers
+	// hitting a closed database.
 	cancel()
+	srv.Stop()
 	if err := m.Stop(); err != nil {
 		log.Printf("membraned: error during shutdown: %v", err)
 	}

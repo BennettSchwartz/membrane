@@ -72,6 +72,7 @@ with MembraneClient("localhost:9090") as client:
 | `ingest_tool_output(tool_name, ...)` | Ingest tool invocation output |
 | `ingest_observation(subject, predicate, obj, ...)` | Ingest a semantic triple |
 | `ingest_outcome(target_record_id, outcome_status, ...)` | Attach an outcome to an existing record |
+| `ingest_working_state(thread_id, state, ...)` | Ingest a working memory snapshot |
 
 ### Retrieval
 
@@ -88,6 +89,7 @@ with MembraneClient("localhost:9090") as client:
 | `fork(source_id, forked_record, actor, rationale)` | Create a conditional variant |
 | `retract(record_id, actor, rationale)` | Soft-delete a record |
 | `merge(record_ids, merged_record, actor, rationale)` | Merge multiple records |
+| `contest(record_id, contesting_ref, actor, rationale)` | Mark a record as contested |
 
 ### Reinforcement
 
@@ -101,6 +103,18 @@ with MembraneClient("localhost:9090") as client:
 | Method | Description |
 |--------|-------------|
 | `get_metrics()` | Get a snapshot of daemon metrics |
+
+## TLS & Authentication
+
+```python
+client = MembraneClient(
+    "membrane.example.com:443",
+    tls=True,                        # use TLS transport
+    tls_ca_cert="/path/to/ca.pem",   # optional custom CA
+    api_key="your-api-key",          # Bearer token auth
+    timeout=10.0,                    # default timeout in seconds
+)
+```
 
 ## Requirements
 

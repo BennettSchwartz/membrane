@@ -17,6 +17,7 @@ type Collector struct {
 
 // Snapshot is a point-in-time view of memory substrate metrics.
 type Snapshot struct {
+	CollectedAt          time.Time      `json:"collected_at"`
 	TotalRecords         int            `json:"total_records"`
 	RecordsByType        map[string]int `json:"records_by_type"`
 	AvgSalience          float64        `json:"avg_salience"`
@@ -47,6 +48,7 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 	}
 
 	snap := &Snapshot{
+		CollectedAt:   time.Now().UTC(),
 		RecordsByType: make(map[string]int),
 		SalienceDistribution: map[string]int{
 			"0.0-0.2": 0,
