@@ -34,9 +34,9 @@ type PolicyDefaults struct {
 func DefaultPolicyDefaults() PolicyDefaults {
 	return PolicyDefaults{
 		Sensitivity:             schema.SensitivityLow,
-		EpisodicHalfLifeSeconds: 3600,     // 1 hour
-		SemanticHalfLifeSeconds: 2592000,  // 30 days
-		WorkingHalfLifeSeconds:  86400,    // 1 day
+		EpisodicHalfLifeSeconds: 3600,    // 1 hour
+		SemanticHalfLifeSeconds: 2592000, // 30 days
+		WorkingHalfLifeSeconds:  86400,   // 1 day
 		DefaultInitialSalience:  1.0,
 		DefaultDeletionPolicy:   schema.DeletionPolicyAutoPrune,
 	}

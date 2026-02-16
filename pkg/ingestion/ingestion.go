@@ -382,17 +382,17 @@ func (s *Service) IngestWorkingState(ctx context.Context, req IngestWorkingState
 	}
 
 	candidate := &MemoryCandidate{
-		Kind:              CandidateKindWorkingState,
-		Source:            req.Source,
-		Timestamp:         ts,
-		Tags:              req.Tags,
-		Scope:             req.Scope,
-		ThreadID:          req.ThreadID,
-		TaskState:         req.State,
-		ContextSummary:    req.ContextSummary,
-		NextActions:       req.NextActions,
-		OpenQuestions:     req.OpenQuestions,
-		Sensitivity:       req.Sensitivity,
+		Kind:           CandidateKindWorkingState,
+		Source:         req.Source,
+		Timestamp:      ts,
+		Tags:           req.Tags,
+		Scope:          req.Scope,
+		ThreadID:       req.ThreadID,
+		TaskState:      req.State,
+		ContextSummary: req.ContextSummary,
+		NextActions:    req.NextActions,
+		OpenQuestions:  req.OpenQuestions,
+		Sensitivity:    req.Sensitivity,
 	}
 
 	memType := s.classifier.Classify(candidate)

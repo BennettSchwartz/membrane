@@ -77,7 +77,7 @@ func TestAtomicMerge(t *testing.T) {
 
 	// Verify both source records are unchanged (not retracted).
 	for _, tc := range []struct {
-		id              string
+		id               string
 		expectedSalience float64
 	}{
 		{rec1.ID, rec1Salience},

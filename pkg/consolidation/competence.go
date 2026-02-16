@@ -158,7 +158,7 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		newRec.Scope = rep.Scope
 		newRec.Tags = []string{"consolidated", "auto-competence"}
 		newRec.Provenance = schema.Provenance{
-			Sources: buildProvenanceSources(g.records, now),
+			Sources:   buildProvenanceSources(g.records, now),
 			CreatedBy: "consolidation/competence",
 		}
 		newRec.AuditLog = []schema.AuditEntry{

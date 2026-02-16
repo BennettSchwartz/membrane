@@ -18,8 +18,8 @@ import (
 
 // Membrane wires all subsystems together and exposes the unified API surface.
 type Membrane struct {
-	config  *Config
-	store   storage.Store
+	config *Config
+	store  storage.Store
 
 	ingestion     *ingestion.Service
 	retrieval     *retrieval.Service
