@@ -1,9 +1,11 @@
 """Membrane gRPC client.
 
-Communicates with the Membrane daemon over gRPC using JSON-encoded
-messages. The Go server uses a hand-written gRPC service descriptor
-(no protobuf), so this client sends and receives raw JSON bytes with
-a custom JSON codec registered on the gRPC channel.
+Communicates with the Membrane daemon over gRPC.
+
+The service contract is protobuf-defined (`membrane.v1.MembraneService`),
+while several request/response fields carry JSON-encoded bytes payloads.
+This client uses explicit method paths plus custom serializers to map
+Python dictionaries and values to the wire format used by the daemon.
 """
 
 from __future__ import annotations
@@ -25,12 +27,10 @@ from membrane.types import (
 # JSON codec for gRPC
 # ---------------------------------------------------------------------------
 #
-# The Go server uses a hand-written gRPC service descriptor with plain
-# Go structs that carry ``json:"..."`` tags.  The Python client bypasses
-# protobuf entirely by supplying custom ``request_serializer`` and
-# ``response_deserializer`` callbacks to ``channel.unary_unary``.  These
-# callbacks convert dicts to/from JSON bytes, which is the wire format
-# understood by the Go server's codec.
+# The Python client uses ``channel.unary_unary`` with explicit method paths
+# and custom ``request_serializer`` / ``response_deserializer`` callbacks.
+# These callbacks convert dictionaries to/from JSON bytes so callers can work
+# with Python-native structures while matching Membrane's JSON payload shapes.
 
 _SERVICE = "membrane.v1.MembraneService"
 

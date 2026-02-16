@@ -295,11 +295,6 @@ services:
     environment:
       MEMBRANE_API_KEY: "${MEMBRANE_API_KEY}"
       MEMBRANE_ENCRYPTION_KEY: "${MEMBRANE_ENCRYPTION_KEY}"
-    healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=:9090"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
 
 volumes:
   membrane-data:
@@ -475,25 +470,37 @@ Create a cron job or systemd timer for regular backups:
 
 ### Health Checks
 
-Use [`grpc_health_probe`](https://github.com/grpc-ecosystem/grpc-health-probe) to check whether the daemon is serving:
+Use the `GetMetrics` RPC as a readiness/liveness signal:
 
 ```bash
-grpc_health_probe -addr=localhost:9090
+grpcurl -plaintext -max-time 3 localhost:9090 membrane.v1.MembraneService/GetMetrics >/dev/null
 ```
 
-In Docker or Kubernetes, configure this as a liveness and readiness probe.
+If API key auth is enabled, include the auth header:
+
+```bash
+grpcurl -plaintext -max-time 3 \
+  -H "authorization: Bearer $MEMBRANE_API_KEY" \
+  localhost:9090 membrane.v1.MembraneService/GetMetrics >/dev/null
+```
+
+In Docker or Kubernetes, run this probe from an external monitor, sidecar, or an image that includes `grpcurl`.
 
 ### Prometheus Metrics
 
-Membrane exposes behavioral metrics through its observability collector. To integrate with Prometheus, configure a scrape target in your `prometheus.yml`:
+Membrane returns observability data via the `GetMetrics` gRPC method (JSON snapshot). It does not expose an HTTP `/metrics` endpoint by default.
+
+To integrate with Prometheus, run a small adapter/exporter that polls `GetMetrics` and exposes Prometheus-format metrics over HTTP, then scrape that adapter.
 
 ```yaml
 scrape_configs:
-  - job_name: membrane
+  - job_name: membrane-adapter
     scrape_interval: 15s
     static_configs:
-      - targets: ["localhost:9090"]
+      - targets: ["localhost:9108"]
 ```
+
+See [Metrics Internals](/internals/metrics) for an adapter pattern.
 
 Key metrics to watch:
 
@@ -550,7 +557,7 @@ Before going live, verify every item on this checklist.
 - [ ] **Automated backups** -- a cron job or systemd timer creates daily database backups
 - [ ] **Backup retention** -- old backups are rotated and cleaned up
 - [ ] **Graceful shutdown** -- the daemon is managed by systemd with `Restart=on-failure`
-- [ ] **Health checks** -- a monitoring system polls the gRPC health endpoint
+- [ ] **Health checks** -- a monitoring system probes `GetMetrics` successfully
 - [ ] **Log aggregation** -- logs are shipped to a centralized logging system (Loki, Elasticsearch, etc.)
 - [ ] **Alerting** -- alerts are configured for daemon restarts, high error rates, and disk space
 

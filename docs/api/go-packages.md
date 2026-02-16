@@ -46,7 +46,7 @@ type Config struct {
 | `TLSCertFile` | `string` | `""` | Path to TLS certificate PEM. Empty disables TLS. |
 | `TLSKeyFile` | `string` | `""` | Path to TLS private key PEM. |
 | `APIKey` | `string` | `""` | Shared secret for gRPC auth. Falls back to `MEMBRANE_API_KEY` env var. |
-| `RateLimitPerSecond` | `int` | `100` | Max requests per second per client. `0` disables limiting. |
+| `RateLimitPerSecond` | `int` | `100` | Max requests per second for this daemon instance. `0` disables limiting. |
 
 ### DefaultConfig
 

@@ -84,14 +84,14 @@ rate_limit_per_second: 100
 - **Type:** string
 - **Default:** `""` (no encryption)
 - **Env var:** `MEMBRANE_ENCRYPTION_KEY`
-- **Description:** SQLCipher encryption key for the database. When set, all data is encrypted at rest. If both the config field and the environment variable are set, the environment variable takes precedence. See [Security](/guide/security) for details.
+- **Description:** SQLCipher encryption key for the database. When set, all data is encrypted at rest. If this field is empty, Membrane falls back to `MEMBRANE_ENCRYPTION_KEY`. See [Security](/guide/security) for details.
 
 ### `api_key`
 
 - **Type:** string
 - **Default:** `""` (authentication disabled)
 - **Env var:** `MEMBRANE_API_KEY`
-- **Description:** Shared secret for authenticating gRPC clients. Clients must send this as a `Bearer` token in the `authorization` metadata header. If both the config field and the environment variable are set, the environment variable takes precedence. See [Security](/guide/security) for details.
+- **Description:** Shared secret for authenticating gRPC clients. Clients must send this as a `Bearer` token in the `authorization` metadata header. If this field is empty, Membrane falls back to `MEMBRANE_API_KEY`. See [Security](/guide/security) for details.
 
 ### `tls_cert_file`
 
@@ -109,7 +109,7 @@ rate_limit_per_second: 100
 
 - **Type:** integer
 - **Default:** `100`
-- **Description:** Maximum gRPC requests per second. Uses a token bucket algorithm. Set to `0` to disable rate limiting. Requests exceeding the limit receive a `ResourceExhausted` gRPC error.
+- **Description:** Maximum gRPC requests per second for the current daemon instance. Uses a token bucket algorithm. Set to `0` to disable rate limiting. Requests exceeding the limit receive a `ResourceExhausted` gRPC error.
 
 ## Command-Line Overrides
 

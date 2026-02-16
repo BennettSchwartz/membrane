@@ -519,19 +519,15 @@ func healthCheck(ctx context.Context, m *membrane.Membrane) error {
 | `membrane_records_active` / `membrane_records_total` < 0.1 | **Warning** | Most records decayed |
 | `membrane_revision_rate` > 0.5 sustained 1h | **Info** | High knowledge churn |
 
-### Kubernetes Liveness Probe
+### Kubernetes Probes
 
-If running in Kubernetes, configure a gRPC liveness probe against the `GetMetrics` RPC:
+Membrane does not currently register the standard `grpc.health.v1.Health` service, so Kubernetes `grpc` probes are not directly applicable.
 
-```yaml
-livenessProbe:
-  grpc:
-    port: 50051
-  initialDelaySeconds: 10
-  periodSeconds: 30
-```
+Use one of these approaches:
+- An `exec` probe that runs `grpcurl ... MembraneService/GetMetrics` (when `grpcurl` is available in the container image).
+- An HTTP readiness endpoint in a sidecar or wrapper process that calls `GetMetrics` and exposes `/healthz`.
 
-For a more targeted readiness probe, wrap the health check in an HTTP handler:
+For a targeted readiness probe, wrap the health check in an HTTP handler:
 
 ```go
 http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
