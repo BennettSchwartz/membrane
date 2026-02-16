@@ -30,7 +30,7 @@ type Handler struct {
 
 const (
 	maxPayloadSize  = 10 * 1024 * 1024 // 10 MB
-	maxStringLength = 100_000           // 100 KB
+	maxStringLength = 100_000          // 100 KB
 	maxTags         = 100
 	maxTagLength    = 256
 	maxLimit        = 10_000
@@ -70,11 +70,21 @@ var _ pb.MembraneServiceServer = (*Handler)(nil)
 
 // IngestEvent converts the gRPC request and delegates to Membrane.IngestEvent.
 func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil { return nil, err }
-	if err := validateStringField("event_kind", req.EventKind); err != nil { return nil, err }
-	if err := validateStringField("ref", req.Ref); err != nil { return nil, err }
-	if err := validateStringField("summary", req.Summary); err != nil { return nil, err }
-	if err := validateTags(req.Tags); err != nil { return nil, err }
+	if err := validateStringField("source", req.Source); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("event_kind", req.EventKind); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("ref", req.Ref); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("summary", req.Summary); err != nil {
+		return nil, err
+	}
+	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -83,12 +93,12 @@ func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (
 
 	rec, err := h.membrane.IngestEvent(ctx, ingestion.IngestEventRequest{
 		Source:      req.Source,
-		EventKind:  req.EventKind,
-		Ref:        req.Ref,
-		Summary:    req.Summary,
-		Timestamp:  ts,
-		Tags:       req.Tags,
-		Scope:      req.Scope,
+		EventKind:   req.EventKind,
+		Ref:         req.Ref,
+		Summary:     req.Summary,
+		Timestamp:   ts,
+		Tags:        req.Tags,
+		Scope:       req.Scope,
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
@@ -100,11 +110,21 @@ func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (
 
 // IngestToolOutput converts the gRPC request and delegates to Membrane.IngestToolOutput.
 func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutputRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil { return nil, err }
-	if err := validateStringField("tool_name", req.ToolName); err != nil { return nil, err }
-	if err := validateJSONPayload("args", req.Args); err != nil { return nil, err }
-	if err := validateJSONPayload("result", req.Result); err != nil { return nil, err }
-	if err := validateTags(req.Tags); err != nil { return nil, err }
+	if err := validateStringField("source", req.Source); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("tool_name", req.ToolName); err != nil {
+		return nil, err
+	}
+	if err := validateJSONPayload("args", req.Args); err != nil {
+		return nil, err
+	}
+	if err := validateJSONPayload("result", req.Result); err != nil {
+		return nil, err
+	}
+	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -127,13 +147,13 @@ func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutput
 
 	rec, err := h.membrane.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
 		Source:      req.Source,
-		ToolName:   req.ToolName,
-		Args:       args,
-		Result:     result,
-		DependsOn:  req.DependsOn,
-		Timestamp:  ts,
-		Tags:       req.Tags,
-		Scope:      req.Scope,
+		ToolName:    req.ToolName,
+		Args:        args,
+		Result:      result,
+		DependsOn:   req.DependsOn,
+		Timestamp:   ts,
+		Tags:        req.Tags,
+		Scope:       req.Scope,
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
@@ -145,11 +165,21 @@ func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutput
 
 // IngestObservation converts the gRPC request and delegates to Membrane.IngestObservation.
 func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservationRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil { return nil, err }
-	if err := validateStringField("subject", req.Subject); err != nil { return nil, err }
-	if err := validateStringField("predicate", req.Predicate); err != nil { return nil, err }
-	if err := validateJSONPayload("object", req.Object); err != nil { return nil, err }
-	if err := validateTags(req.Tags); err != nil { return nil, err }
+	if err := validateStringField("source", req.Source); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("subject", req.Subject); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("predicate", req.Predicate); err != nil {
+		return nil, err
+	}
+	if err := validateJSONPayload("object", req.Object); err != nil {
+		return nil, err
+	}
+	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -165,12 +195,12 @@ func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservati
 
 	rec, err := h.membrane.IngestObservation(ctx, ingestion.IngestObservationRequest{
 		Source:      req.Source,
-		Subject:    req.Subject,
-		Predicate:  req.Predicate,
-		Object:     obj,
-		Timestamp:  ts,
-		Tags:       req.Tags,
-		Scope:      req.Scope,
+		Subject:     req.Subject,
+		Predicate:   req.Predicate,
+		Object:      obj,
+		Timestamp:   ts,
+		Tags:        req.Tags,
+		Scope:       req.Scope,
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
@@ -182,9 +212,15 @@ func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservati
 
 // IngestOutcome converts the gRPC request and delegates to Membrane.IngestOutcome.
 func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil { return nil, err }
-	if err := validateStringField("target_record_id", req.TargetRecordId); err != nil { return nil, err }
-	if err := validateStringField("outcome_status", req.OutcomeStatus); err != nil { return nil, err }
+	if err := validateStringField("source", req.Source); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("target_record_id", req.TargetRecordId); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("outcome_status", req.OutcomeStatus); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -206,10 +242,18 @@ func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeReques
 
 // IngestWorkingState converts the gRPC request and delegates to Membrane.IngestWorkingState.
 func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingStateRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil { return nil, err }
-	if err := validateStringField("thread_id", req.ThreadId); err != nil { return nil, err }
-	if err := validateStringField("context_summary", req.ContextSummary); err != nil { return nil, err }
-	if err := validateTags(req.Tags); err != nil { return nil, err }
+	if err := validateStringField("source", req.Source); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("thread_id", req.ThreadId); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("context_summary", req.ContextSummary); err != nil {
+		return nil, err
+	}
+	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -218,7 +262,9 @@ func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingS
 
 	var constraints []schema.Constraint
 	if len(req.ActiveConstraints) > 0 {
-		if err := validateJSONPayload("active_constraints", req.ActiveConstraints); err != nil { return nil, err }
+		if err := validateJSONPayload("active_constraints", req.ActiveConstraints); err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal(req.ActiveConstraints, &constraints); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid active_constraints JSON: %v", err)
 		}
@@ -316,7 +362,9 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest)
 
 // Supersede converts the gRPC request and delegates to Membrane.Supersede.
 func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.MemoryRecordResponse, error) {
-	if err := validateJSONPayload("new_record", req.NewRecord); err != nil { return nil, err }
+	if err := validateJSONPayload("new_record", req.NewRecord); err != nil {
+		return nil, err
+	}
 
 	newRec, err := unmarshalRecord(req.NewRecord)
 	if err != nil {
@@ -333,7 +381,9 @@ func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.
 
 // Fork converts the gRPC request and delegates to Membrane.Fork.
 func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryRecordResponse, error) {
-	if err := validateJSONPayload("forked_record", req.ForkedRecord); err != nil { return nil, err }
+	if err := validateJSONPayload("forked_record", req.ForkedRecord); err != nil {
+		return nil, err
+	}
 
 	forkedRec, err := unmarshalRecord(req.ForkedRecord)
 	if err != nil {
@@ -364,7 +414,9 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 	if len(req.Ids) > maxLimit {
 		return nil, status.Errorf(codes.InvalidArgument, "too many ids: %d (max %d)", len(req.Ids), maxLimit)
 	}
-	if err := validateJSONPayload("merged_record", req.MergedRecord); err != nil { return nil, err }
+	if err := validateJSONPayload("merged_record", req.MergedRecord); err != nil {
+		return nil, err
+	}
 
 	mergedRec, err := unmarshalRecord(req.MergedRecord)
 	if err != nil {
@@ -381,8 +433,12 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 
 // Reinforce converts the gRPC request and delegates to Membrane.Reinforce.
 func (h *Handler) Reinforce(ctx context.Context, req *pb.ReinforceRequest) (*pb.ReinforceResponse, error) {
-	if err := validateStringField("actor", req.Actor); err != nil { return nil, err }
-	if err := validateStringField("rationale", req.Rationale); err != nil { return nil, err }
+	if err := validateStringField("actor", req.Actor); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("rationale", req.Rationale); err != nil {
+		return nil, err
+	}
 
 	if err := h.membrane.Reinforce(ctx, req.Id, req.Actor, req.Rationale); err != nil {
 		return nil, internalErr(err)
@@ -395,8 +451,12 @@ func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.Pe
 	if req.Amount < 0 || math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
 		return nil, status.Error(codes.InvalidArgument, "amount must be non-negative and finite")
 	}
-	if err := validateStringField("actor", req.Actor); err != nil { return nil, err }
-	if err := validateStringField("rationale", req.Rationale); err != nil { return nil, err }
+	if err := validateStringField("actor", req.Actor); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("rationale", req.Rationale); err != nil {
+		return nil, err
+	}
 
 	if err := h.membrane.Penalize(ctx, req.Id, req.Amount, req.Actor, req.Rationale); err != nil {
 		return nil, internalErr(err)
@@ -421,8 +481,12 @@ func (h *Handler) GetMetrics(ctx context.Context, _ *pb.GetMetricsRequest) (*pb.
 
 // Contest converts the gRPC request and delegates to Membrane.Contest.
 func (h *Handler) Contest(ctx context.Context, req *pb.ContestRequest) (*pb.ContestResponse, error) {
-	if err := validateStringField("actor", req.Actor); err != nil { return nil, err }
-	if err := validateStringField("rationale", req.Rationale); err != nil { return nil, err }
+	if err := validateStringField("actor", req.Actor); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("rationale", req.Rationale); err != nil {
+		return nil, err
+	}
 
 	if err := h.membrane.Contest(ctx, req.Id, req.ContestingRef, req.Actor, req.Rationale); err != nil {
 		return nil, internalErr(err)
