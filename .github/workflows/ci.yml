@@ -13,6 +13,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
+      go_core: ${{ steps.filter.outputs.go_core }}
       typescript_client: ${{ steps.filter.outputs.typescript_client }}
 
     steps:
@@ -24,6 +25,15 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
+            go_core:
+              - 'api/**'
+              - 'cmd/**'
+              - 'pkg/**'
+              - 'tests/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
             typescript_client:
               - 'clients/typescript/**'
               - 'api/proto/membrane/v1/membrane.proto'
@@ -31,6 +41,8 @@ jobs:
               - '.github/workflows/npm-publish.yml'
 
   build-and-test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go_core == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
