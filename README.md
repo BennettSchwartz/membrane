@@ -1,15 +1,51 @@
 # Membrane
 
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/GustyCube/membrane/actions/workflows/ci.yml/badge.svg)](https://github.com/GustyCube/membrane/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/GustyCube/membrane)](https://goreportcard.com/report/github.com/GustyCube/membrane)
+[![Go Reference](https://pkg.go.dev/badge/github.com/GustyCube/membrane.svg)](https://pkg.go.dev/github.com/GustyCube/membrane)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/GustyCube/membrane)](https://go.dev/)
+[![License: MIT](https://img.shields.io/github/license/GustyCube/membrane)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/GustyCube/membrane?include_prereleases&sort=semver)](https://github.com/GustyCube/membrane/releases)
 
-A general-purpose selective learning and memory substrate for agentic systems.
+[![GitHub Stars](https://img.shields.io/github/stars/GustyCube/membrane?style=flat)](https://github.com/GustyCube/membrane/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/GustyCube/membrane?style=flat)](https://github.com/GustyCube/membrane/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/GustyCube/membrane)](https://github.com/GustyCube/membrane/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/GustyCube/membrane)](https://github.com/GustyCube/membrane/pulls)
+[![Last Commit](https://img.shields.io/github/last-commit/GustyCube/membrane)](https://github.com/GustyCube/membrane/commits)
+[![Contributors](https://img.shields.io/github/contributors/GustyCube/membrane)](https://github.com/GustyCube/membrane/graphs/contributors)
+
+**A general-purpose selective learning and memory substrate for agentic systems.**
+
+Membrane gives long-lived agents structured, revisable memory with built-in decay, trust-gated retrieval, and audit trails. Instead of an append-only context window or flat text log, agents get typed memory records that can be consolidated, revised, contested, and pruned over time.
+
+---
+
+## Table of Contents
+
+- [Why Membrane](#why-membrane)
+- [60-Second Mental Model](#60-second-mental-model)
+- [Key Features](#key-features)
+- [Memory Types](#memory-types)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [gRPC API](#grpc-api)
+- [Revision Operations](#revision-operations)
+- [Evaluation and Metrics](#evaluation-and-metrics)
+- [Observability](#observability)
+- [Python Client](#python-client)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Star History](#star-history)
+- [License](#license)
+
+---
 
 ## Why Membrane
 
-Membrane is a memory substrate for long-lived agents. Most agent "memory" is either ephemeral (context windows) or an append-only text log (RAG). That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
+Most agent "memory" is either ephemeral (context windows that reset each turn) or an append-only text log stuffed into a RAG pipeline. That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
 
-Membrane makes memory *selective* and *revisable*. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
+Membrane makes memory **selective** and **revisable**. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
 
 ## 60-Second Mental Model
 
@@ -19,16 +55,16 @@ Membrane makes memory *selective* and *revisable*. It captures raw experience, p
 4. **Revise** knowledge with explicit operations and audit trails.
 5. **Decay** salience over time unless reinforced by success.
 
-## What You Get
+## Key Features
 
-- **Typed Memory** with explicit schemas and lifecycles (not a flat text store)
-- **Revisable Knowledge** with provenance and conflict handling
-- **Competence Learning** so agents learn *how* to solve problems, not just *what* happened
-- **Decay + Consolidation** that keeps memory useful and prunes noise
-- **Trust-Aware Retrieval** with sensitivity levels and graduated access
-- **Security & Ops**: SQLCipher encryption, optional TLS + API keys, rate limiting, audit logs
-- **Observability**: retrieval usefulness, competence success, plan reuse, revision rate
-- **gRPC API** with embedded Go library support
+- **Typed Memory** -- Explicit schemas and lifecycles for each memory type, not a flat text store.
+- **Revisable Knowledge** -- Supersede, fork, retract, merge, and contest records with full provenance tracking.
+- **Competence Learning** -- Agents learn *how* to solve problems (procedures, success rates), not just *what* happened.
+- **Decay and Consolidation** -- Time-based salience decay keeps memory useful; background consolidation extracts durable knowledge from episodic traces.
+- **Trust-Aware Retrieval** -- Sensitivity levels (public, low, medium, high, hyper) with graduated access control and redacted responses for records above the caller's trust level.
+- **Security and Operations** -- SQLCipher encryption at rest, optional TLS and API key authentication, configurable rate limiting, full audit logs.
+- **Observability** -- Built-in metrics for retrieval usefulness, competence success rate, plan reuse frequency, memory growth, and revision rate.
+- **gRPC API** -- 15-method gRPC service with a Python client SDK, or use Membrane as an embedded Go library.
 
 ## Memory Types
 
@@ -37,74 +73,21 @@ Membrane makes memory *selective* and *revisable*. It captures raw experience, p
 | **Episodic** | Raw experience capture (immutable) | Tool calls, errors, observations from a debugging session |
 | **Working** | Current task state | "Backend initialized, frontend pending, docs TODO" |
 | **Semantic** | Stable facts and preferences | "User prefers Go for backend services" |
-| **Competence** | Learned procedures | "To fix linker cache error: clear cache, rebuild with flags" |
-| **Plan Graph** | Reusable solution structures | Multi-step project setup workflow as a directed graph |
+| **Competence** | Learned procedures with success tracking | "To fix linker cache error: clear cache, rebuild with flags" |
+| **Plan Graph** | Reusable solution structures as directed graphs | Multi-step project setup workflow with dependencies and checkpoints |
 
-## Evaluation & Metrics
+Each memory type has its own schema, lifecycle rules, and consolidation behavior. Episodic records are immutable once ingested. Working memory tracks in-flight task state. Semantic, competence, and plan graph records are the durable output of consolidation and can be revised through explicit operations.
 
-Membrane exposes behavioral metrics (e.g., retrieval usefulness, competence success rate, plan reuse frequency) via `GetMetrics`, and the test suite covers ingestion, revision, selection, and retrieval ordering.
+## Quick Start
 
-If you want **recall-style regression checks**, run the recall-focused retrieval test:
+### Prerequisites
 
-```bash
-go test ./tests -run TestRetrievalRecallAtK
-```
+- Go 1.22 or later
+- Make
+- Protocol Buffers compiler (`protoc` >= 3.20) for gRPC development
+- Python 3.10+ for the Python client SDK
 
-For **vector-aware end-to-end metrics** (optional; requires Python dependencies):
-
-```bash
-python3 -m pip install -r tools/eval/requirements.txt
-make eval
-```
-
-Thresholds are enforced by default (override via env vars):
-
-```bash
-MEMBRANE_EVAL_MIN_RECALL=0.90
-MEMBRANE_EVAL_MIN_PRECISION=0.20
-MEMBRANE_EVAL_MIN_MRR=0.90
-MEMBRANE_EVAL_MIN_NDCG=0.90
-```
-
-Latest eval results (local run on Feb 5, 2026):
-
-- `go test ./tests -run TestEval -v`
-  - 22 top-level eval tests + 7 subtests = 29 test cases
-  - Failures: 0
-  - Runtime: ~0.40s
-- `make eval` (vector E2E)
-  - Records: 35, Queries: 18
-  - Mean recall@k: 1.000
-  - Mean precision@k: 0.267
-  - Mean MRR@k: 0.956
-  - Mean NDCG@k: 0.955
-
-For **targeted capability evals** (fast, isolated):
-
-```bash
-make eval-typed
-make eval-revision
-make eval-decay
-make eval-trust
-make eval-competence
-make eval-plan
-make eval-consolidation
-make eval-metrics
-make eval-invariants
-make eval-grpc
-```
-
-To run everything at once:
-
-```bash
-make eval-all
-```
-
-Note: Membrane itself does not implement vector similarity search. End-to-end recall depends on the retrieval backend and the agent policy driving ingestion and reinforcement. Treat recall tests as scenario-level regression guards rather than universal benchmarks.
-
-## Installation
-
-### Building from Source
+### Build and Run
 
 ```bash
 git clone https://github.com/GustyCube/membrane.git
@@ -115,12 +98,8 @@ make build
 
 # Run tests
 make test
-```
 
-### Running the Daemon
-
-```bash
-# Start with default SQLite storage (unencrypted)
+# Start with default SQLite storage
 ./bin/membraned
 
 # With custom configuration
@@ -130,34 +109,7 @@ make test
 ./bin/membraned --db /path/to/membrane.db --addr :8080
 ```
 
-## Configuration
-
-Membrane is configured via a YAML file or command-line flags. Environment variables provide secrets:
-
-```yaml
-db_path: "membrane.db"
-listen_addr: ":9090"
-decay_interval: "1h"
-consolidation_interval: "6h"
-default_sensitivity: "low"
-selection_confidence_threshold: 0.7
-
-# Security (keys should come from environment variables)
-# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
-# api_key: ""              # or set MEMBRANE_API_KEY
-# tls_cert_file: ""
-# tls_key_file: ""
-rate_limit_per_second: 100
-```
-
-| Variable | Purpose |
-|----------|---------|
-| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the database |
-| `MEMBRANE_API_KEY` | Bearer token for gRPC authentication |
-
-## Quick Start
-
-### Using the Go Library Directly
+### Using the Go Library
 
 Membrane can be used as an embedded library without running the daemon:
 
@@ -234,38 +186,6 @@ func main() {
 }
 ```
 
-### Revision Operations
-
-```go
-// Supersede a semantic record (requires evidence in the new record)
-newRec := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
-    &schema.SemanticPayload{
-        Kind:      "semantic",
-        Subject:   "Go",
-        Predicate: "version",
-        Object:    "1.24",
-        Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
-    },
-)
-newRec.Provenance.Sources = append(newRec.Provenance.Sources, schema.ProvenanceSource{
-    Kind: "observation",
-    Ref:  "go-release-notes",
-})
-superseded, _ := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
-
-// Fork a record for conditional validity
-forked, _ := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev environment")
-
-// Contest a record when conflicting evidence appears
-m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts this")
-
-// Retract a record
-m.Retract(ctx, recordID, "agent", "no longer accurate")
-
-// Merge multiple records into one
-merged, _ := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolidating duplicates")
-```
-
 ## Architecture
 
 Membrane runs as a long-lived daemon or embedded library. The architecture is organized into three logical planes:
@@ -282,30 +202,55 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 
 ### Storage Model
 
-- **Authoritative Store** - SQLCipher-encrypted SQLite database for metadata, lifecycle state, revision chains, relations, and audit history
-- **Structured Payloads** - Type-specific schemas stored as JSON within the authoritative store
-- **Relationship Graph** - Relations between records (supersedes, derived_from, contested_by, supports, contradicts) stored in the authoritative store
+- **Authoritative Store** -- SQLCipher-encrypted SQLite database for metadata, lifecycle state, revision chains, relations, and audit history.
+- **Structured Payloads** -- Type-specific schemas stored as JSON within the authoritative store.
+- **Relationship Graph** -- Relations between records (supersedes, derived_from, contested_by, supports, contradicts) stored alongside the records they describe.
 
 ### Background Jobs
 
 | Job | Default Interval | Purpose |
 |-----|-----------------|---------|
-| **Decay** | 1 hour | Applies time-based salience decay (exponential/linear curves) |
+| **Decay** | 1 hour | Applies time-based salience decay using exponential or linear curves |
 | **Pruning** | With decay | Deletes records with `auto_prune` policy whose salience has reached 0 |
 | **Consolidation** | 6 hours | Extracts semantic facts, competence records, and plan graphs from episodic memory |
 
 ### Security Model
 
-- **Encryption at Rest** - SQLCipher with `PRAGMA key` applied at database open
-- **TLS Transport** - Optional TLS for gRPC connections
-- **Authentication** - Bearer token API key via `authorization` metadata
-- **Rate Limiting** - Token bucket limiter (configurable requests/second)
-- **Trust-Aware Retrieval** - Records filtered by sensitivity level; records one level above threshold are returned in redacted form (metadata only, no payload)
-- **Input Validation** - Payload size limits, string length checks, tag count limits, NaN/Inf rejection
+- **Encryption at Rest** -- SQLCipher with `PRAGMA key` applied at database open.
+- **TLS Transport** -- Optional TLS for gRPC connections.
+- **Authentication** -- Bearer token API key via `authorization` metadata.
+- **Rate Limiting** -- Token bucket limiter with configurable requests per second.
+- **Trust-Aware Retrieval** -- Records filtered by sensitivity level. Records one level above the caller's threshold are returned in redacted form (metadata only, no payload).
+- **Input Validation** -- Payload size limits, string length checks, tag count limits, NaN/Inf rejection.
 
-### gRPC API
+## Configuration
 
-The gRPC API uses protoc-generated service stubs with JSON-encoded payloads over protobuf `bytes` fields. Endpoints:
+Membrane is configured via a YAML file or command-line flags. Secrets should come from environment variables.
+
+```yaml
+db_path: "membrane.db"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+
+# Security (prefer environment variables for keys)
+# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""              # or set MEMBRANE_API_KEY
+# tls_cert_file: ""
+# tls_key_file: ""
+rate_limit_per_second: 100
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the database |
+| `MEMBRANE_API_KEY` | Bearer token for gRPC authentication |
+
+## gRPC API
+
+The gRPC API uses protoc-generated service stubs with JSON-encoded payloads over protobuf `bytes` fields.
 
 | Method | Description |
 |--------|-------------|
@@ -320,10 +265,85 @@ The gRPC API uses protoc-generated service stubs with JSON-encoded payloads over
 | `Fork` | Create conditional variant of a record |
 | `Retract` | Mark a record as retracted |
 | `Merge` | Combine multiple records into one |
+| `Contest` | Mark a record as contested by conflicting evidence |
 | `Reinforce` | Boost a record's salience |
 | `Penalize` | Reduce a record's salience |
 | `GetMetrics` | Retrieve observability metrics snapshot |
-| `Contest` | Mark a record as contested by conflicting evidence |
+
+## Revision Operations
+
+Membrane provides five revision operations, each producing an audit trail and updating the record's revision status:
+
+```go
+// Supersede a semantic record with a new version
+superseded, _ := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
+
+// Fork a record for conditional validity
+forked, _ := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev environment")
+
+// Contest a record when conflicting evidence appears
+m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts this")
+
+// Retract a record that is no longer valid
+m.Retract(ctx, recordID, "agent", "no longer accurate")
+
+// Merge multiple records into one consolidated record
+merged, _ := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolidating duplicates")
+```
+
+## Evaluation and Metrics
+
+Membrane exposes behavioral metrics (retrieval usefulness, competence success rate, plan reuse frequency) via `GetMetrics`, and the test suite covers ingestion, revision, selection, and retrieval ordering.
+
+### Recall Regression Checks
+
+```bash
+go test ./tests -run TestRetrievalRecallAtK
+```
+
+### Vector-Aware End-to-End Metrics
+
+Optional; requires Python dependencies:
+
+```bash
+python3 -m pip install -r tools/eval/requirements.txt
+make eval
+```
+
+Thresholds are enforced by default (override via environment variables):
+
+```bash
+MEMBRANE_EVAL_MIN_RECALL=0.90
+MEMBRANE_EVAL_MIN_PRECISION=0.20
+MEMBRANE_EVAL_MIN_MRR=0.90
+MEMBRANE_EVAL_MIN_NDCG=0.90
+```
+
+### Targeted Capability Evals
+
+```bash
+make eval-typed          # Memory type handling
+make eval-revision       # Revision semantics
+make eval-decay          # Decay curves and pruning
+make eval-trust          # Trust-gated retrieval
+make eval-competence     # Competence learning
+make eval-plan           # Plan graph operations
+make eval-consolidation  # Episodic consolidation
+make eval-metrics        # Observability metrics
+make eval-invariants     # System invariants
+make eval-grpc           # gRPC endpoint coverage
+
+make eval-all            # Run everything
+```
+
+### Latest Results
+
+Local run (Feb 5, 2026):
+
+- **Unit/Integration**: 22 top-level eval tests + 7 subtests = 29 test cases, 0 failures (~0.40s)
+- **Vector E2E**: 35 records, 18 queries -- recall@k 1.000, precision@k 0.267, MRR@k 0.956, NDCG@k 0.955
+
+Note: Membrane itself does not implement vector similarity search. End-to-end recall depends on the retrieval backend and the agent policy driving ingestion and reinforcement. Treat recall tests as scenario-level regression guards rather than universal benchmarks.
 
 ## Observability
 
@@ -332,10 +352,22 @@ The `GetMetrics` endpoint returns a point-in-time snapshot:
 ```json
 {
   "total_records": 142,
-  "records_by_type": {"episodic": 80, "semantic": 35, "competence": 15, "plan_graph": 7, "working": 5},
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
   "avg_salience": 0.62,
   "avg_confidence": 0.78,
-  "salience_distribution": {"0.0-0.2": 12, "0.2-0.4": 18, "0.4-0.6": 30, "0.6-0.8": 45, "0.8-1.0": 37},
+  "salience_distribution": {
+    "0.0-0.2": 12,
+    "0.2-0.4": 18,
+    "0.4-0.6": 30,
+    "0.6-0.8": 45,
+    "0.8-1.0": 37
+  },
   "active_records": 130,
   "pinned_records": 3,
   "total_audit_entries": 890,
@@ -346,6 +378,46 @@ The `GetMetrics` endpoint returns a point-in-time snapshot:
   "revision_rate": 0.08
 }
 ```
+
+| Metric | Description |
+|--------|-------------|
+| `memory_growth_rate` | Fraction of records created in the last 24 hours |
+| `retrieval_usefulness` | Ratio of reinforce actions to total audit entries |
+| `competence_success_rate` | Average success rate across competence records |
+| `plan_reuse_frequency` | Average execution count across plan graph records |
+| `revision_rate` | Fraction of audit entries that are revisions (supersede, fork, merge) |
+
+## Python Client
+
+Install the Python client SDK:
+
+```bash
+pip install -e clients/python
+```
+
+```python
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+
+# Ingest an event
+record = client.ingest_event(
+    source="my-agent",
+    event_kind="tool_call",
+    ref="task#1",
+    summary="Ran database migration successfully",
+    tags=["db", "migration"],
+)
+
+# Retrieve with trust context
+results = client.retrieve(
+    task_descriptor="database operations",
+    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+    memory_types=["semantic", "competence"],
+)
+```
+
+See [clients/python/README.md](clients/python/README.md) for the full API reference.
 
 ## Documentation
 
@@ -358,6 +430,7 @@ npm run dev
 ```
 
 Topics covered:
+
 - Memory type schemas and lifecycle rules
 - Revision semantics and conflict resolution
 - Trust and sensitivity model
@@ -366,12 +439,11 @@ Topics covered:
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on code style, testing requirements, the pull request process, and SDK sync procedures.
 
-- Code style and formatting
-- Testing requirements
-- Pull request process
-- Issue reporting
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=GustyCube/membrane&type=Date)](https://star-history.com/#GustyCube/membrane&Date)
 
 ## License
 
@@ -379,6 +451,4 @@ Membrane is released under the [MIT License](LICENSE).
 
 ---
 
-**Author:** Bennett Schwartz
-
-**Repository:** [github.com/GustyCube/membrane](https://github.com/GustyCube/membrane)
+**Author:** Bennett Schwartz | **Repository:** [github.com/GustyCube/membrane](https://github.com/GustyCube/membrane)
