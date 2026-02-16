@@ -15,6 +15,7 @@ Thank you for your interest in contributing to Membrane!
 - Go 1.22 or later
 - Make
 - Protocol Buffers compiler (`protoc` >= 3.20) for gRPC work
+- Node.js 20+ (for TypeScript client development)
 - Python 3.10+ (for Python client development)
 
 ### Building
@@ -31,6 +32,16 @@ make fmt      # Format code
 ```bash
 pip install -e clients/python[dev]
 pytest clients/python/tests/
+```
+
+### TypeScript Client
+
+```bash
+cd clients/typescript
+npm install
+npm run check:proto-sync
+npm run typecheck
+npm test
 ```
 
 ## Code Style
@@ -59,10 +70,15 @@ When modifying the protobuf definition (`api/proto/membrane/v1/membrane.proto`):
 
 1. Regenerate Go stubs: `make proto`
 2. Update gRPC handlers in `api/grpc/handlers.go`
-3. Update the Python client in `clients/python/membrane/client.py`
-4. Update Python types in `clients/python/membrane/types.py` if new enums/types are added
-5. Update `clients/python/membrane/__init__.py` exports
-6. Update the Python client README
+3. Sync the TypeScript proto copy: `cd clients/typescript && npm run sync:proto`
+4. Update the TypeScript client in `clients/typescript/src/client.ts`
+5. Update TypeScript types in `clients/typescript/src/types.ts` if new enums/types are added
+6. Update TypeScript exports in `clients/typescript/src/index.ts`
+7. Update the TypeScript client README
+8. Update the Python client in `clients/python/membrane/client.py`
+9. Update Python types in `clients/python/membrane/types.py` if new enums/types are added
+10. Update `clients/python/membrane/__init__.py` exports
+11. Update the Python client README
 
 ## Commit Messages
 

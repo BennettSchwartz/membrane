@@ -1,0 +1,192 @@
+syntax = "proto3";
+
+package membrane.v1;
+
+option go_package = "github.com/GustyCube/membrane/api/grpc/gen/membranev1";
+
+service MembraneService {
+    rpc IngestEvent(IngestEventRequest) returns (IngestResponse);
+    rpc IngestToolOutput(IngestToolOutputRequest) returns (IngestResponse);
+    rpc IngestObservation(IngestObservationRequest) returns (IngestResponse);
+    rpc IngestOutcome(IngestOutcomeRequest) returns (IngestResponse);
+    rpc IngestWorkingState(IngestWorkingStateRequest) returns (IngestResponse);
+    rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+    rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
+    rpc Supersede(SupersedeRequest) returns (MemoryRecordResponse);
+    rpc Fork(ForkRequest) returns (MemoryRecordResponse);
+    rpc Retract(RetractRequest) returns (RetractResponse);
+    rpc Merge(MergeRequest) returns (MemoryRecordResponse);
+    rpc Reinforce(ReinforceRequest) returns (ReinforceResponse);
+    rpc Penalize(PenalizeRequest) returns (PenalizeResponse);
+    rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+    rpc Contest(ContestRequest) returns (ContestResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion messages
+// ---------------------------------------------------------------------------
+
+message IngestEventRequest {
+    string source = 1;
+    string event_kind = 2;
+    string ref = 3;
+    string summary = 4;
+    string timestamp = 5;        // RFC 3339
+    repeated string tags = 6;
+    string scope = 7;
+    string sensitivity = 8;
+}
+
+message IngestToolOutputRequest {
+    string source = 1;
+    string tool_name = 2;
+    bytes args = 3;              // JSON-encoded map
+    bytes result = 4;            // JSON-encoded value
+    repeated string depends_on = 5;
+    string timestamp = 6;        // RFC 3339
+    repeated string tags = 7;
+    string scope = 8;
+    string sensitivity = 9;
+}
+
+message IngestObservationRequest {
+    string source = 1;
+    string subject = 2;
+    string predicate = 3;
+    bytes object = 4;            // JSON-encoded value
+    string timestamp = 5;        // RFC 3339
+    repeated string tags = 6;
+    string scope = 7;
+    string sensitivity = 8;
+}
+
+message IngestOutcomeRequest {
+    string source = 1;
+    string target_record_id = 2;
+    string outcome_status = 3;   // success | failure | partial
+    string timestamp = 4;        // RFC 3339
+}
+
+message IngestWorkingStateRequest {
+    string source = 1;
+    string thread_id = 2;
+    string state = 3;
+    repeated string next_actions = 4;
+    repeated string open_questions = 5;
+    string context_summary = 6;
+    bytes active_constraints = 7; // JSON-encoded []Constraint
+    string timestamp = 8;        // RFC 3339
+    repeated string tags = 9;
+    string scope = 10;
+    string sensitivity = 11;
+}
+
+message IngestResponse {
+    bytes record = 1;            // JSON-encoded MemoryRecord
+}
+
+// ---------------------------------------------------------------------------
+// Retrieval messages
+// ---------------------------------------------------------------------------
+
+message TrustContext {
+    string max_sensitivity = 1;
+    bool authenticated = 2;
+    string actor_id = 3;
+    repeated string scopes = 4;
+}
+
+message RetrieveRequest {
+    string task_descriptor = 1;
+    TrustContext trust = 2;
+    repeated string memory_types = 3;
+    double min_salience = 4;
+    int32 limit = 5;
+}
+
+message RetrieveResponse {
+    repeated bytes records = 1;  // JSON-encoded MemoryRecord array
+    bytes selection = 2;         // JSON-encoded SelectionResult, optional
+}
+
+message RetrieveByIDRequest {
+    string id = 1;
+    TrustContext trust = 2;
+}
+
+message MemoryRecordResponse {
+    bytes record = 1;            // JSON-encoded MemoryRecord
+}
+
+// ---------------------------------------------------------------------------
+// Revision messages
+// ---------------------------------------------------------------------------
+
+message SupersedeRequest {
+    string old_id = 1;
+    bytes new_record = 2;        // JSON-encoded MemoryRecord
+    string actor = 3;
+    string rationale = 4;
+}
+
+message ForkRequest {
+    string source_id = 1;
+    bytes forked_record = 2;     // JSON-encoded MemoryRecord
+    string actor = 3;
+    string rationale = 4;
+}
+
+message RetractRequest {
+    string id = 1;
+    string actor = 2;
+    string rationale = 3;
+}
+
+message RetractResponse {}
+
+message MergeRequest {
+    repeated string ids = 1;
+    bytes merged_record = 2;     // JSON-encoded MemoryRecord
+    string actor = 3;
+    string rationale = 4;
+}
+
+message ContestRequest {
+    string id = 1;
+    string contesting_ref = 2;
+    string actor = 3;
+    string rationale = 4;
+}
+
+message ContestResponse {}
+
+// ---------------------------------------------------------------------------
+// Decay messages
+// ---------------------------------------------------------------------------
+
+message ReinforceRequest {
+    string id = 1;
+    string actor = 2;
+    string rationale = 3;
+}
+
+message ReinforceResponse {}
+
+message PenalizeRequest {
+    string id = 1;
+    double amount = 2;
+    string actor = 3;
+    string rationale = 4;
+}
+
+message PenalizeResponse {}
+
+// ---------------------------------------------------------------------------
+// Metrics messages
+// ---------------------------------------------------------------------------
+
+message GetMetricsRequest {}
+
+message MetricsResponse {
+    bytes snapshot = 1;          // JSON-encoded metrics.Snapshot
+}

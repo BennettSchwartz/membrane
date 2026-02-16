@@ -97,9 +97,39 @@ Query the memory substrate with a trust context:
 
 The response returns matching records sorted by salience, with an optional `selection` field when competence or plan graph candidates are ranked.
 
+## TypeScript Client
+
+A TypeScript client library is available as `@gustycube/membrane`:
+
+```ts
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", {
+  apiKey: "your-api-key-here"
+});
+
+// Ingest an event
+const record = await client.ingestEvent("user_input", "session-001/msg-1", {
+  summary: "User asked about deployment options",
+  source: "my-agent"
+});
+
+// Retrieve memories
+const results = await client.retrieve("answer deployment question", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent-1",
+    scopes: []
+  }
+});
+
+client.close();
+```
+
 ## Python Client
 
-A Python client library is available in the `clients/python/` directory:
+A Python client library is available in `clients/python/`:
 
 ```python
 from membrane import MembraneClient, Sensitivity, TrustContext

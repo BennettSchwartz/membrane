@@ -837,74 +837,43 @@ for rec in records:
 client.close()
 ```
 
-### Node.js Client
+### TypeScript Client
 
-```javascript
-const grpc = require("@grpc/grpc-js");
-const protoLoader = require("@grpc/proto-loader");
-const path = require("path");
+```ts
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
 
-const PROTO_PATH = path.join(__dirname, "membrane/v1/membrane.proto");
-
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-  keepCase: true,
-  longs: String,
-  enums: String,
-  defaults: true,
+const client = new MembraneClient("localhost:9090", {
+  apiKey: "your-api-key-here"
 });
-const proto = grpc.loadPackageDefinition(packageDefinition).membrane.v1;
-
-const client = new proto.MembraneService(
-  "localhost:9090",
-  grpc.credentials.createInsecure()
-);
-
-// Create metadata with API key
-const metadata = new grpc.Metadata();
-metadata.add("authorization", "Bearer your-api-key-here");
 
 // Ingest an event
-client.IngestEvent(
-  {
-    source: "node-agent",
-    event_kind: "user_input",
-    ref: "msg-001",
-    summary: "User requested code review",
-    tags: ["conversation", "code-review"],
-    scope: "project-acme",
-    sensitivity: "low",
-  },
-  metadata,
-  (err, response) => {
-    if (err) throw err;
-    const record = JSON.parse(response.record);
-    console.log(`Ingested: ${record.id}`);
-  }
-);
+const created = await client.ingestEvent("user_input", "msg-001", {
+  source: "ts-agent",
+  summary: "User requested code review",
+  tags: ["conversation", "code-review"],
+  scope: "project-acme",
+  sensitivity: Sensitivity.LOW
+});
+console.log(`Ingested: ${created.id}`);
 
 // Retrieve memories
-client.Retrieve(
-  {
-    task_descriptor: "code review context",
-    trust: {
-      max_sensitivity: "medium",
-      authenticated: true,
-      actor_id: "node-agent",
-      scopes: ["project-acme"],
-    },
-    memory_types: ["semantic", "competence"],
-    min_salience: 0.3,
-    limit: 15,
+const records = await client.retrieve("code review context", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: ["project-acme"]
   },
-  metadata,
-  (err, response) => {
-    if (err) throw err;
-    response.records.forEach((raw) => {
-      const rec = JSON.parse(raw);
-      console.log(`  ${rec.type}: ${rec.id} (salience=${rec.salience})`);
-    });
-  }
-);
+  memoryTypes: ["semantic", "competence"],
+  minSalience: 0.3,
+  limit: 15
+});
+
+for (const record of records) {
+  console.log(`  ${record.type}: ${record.id} (salience=${record.salience})`);
+}
+
+client.close();
 ```
 
 ---

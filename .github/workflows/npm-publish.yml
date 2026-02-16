@@ -1,0 +1,68 @@
+name: Publish TypeScript Client
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-typescript-client:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: clients/typescript
+
+      - name: Verify package version matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch: package.json=$PKG_VERSION tag=$TAG_VERSION"
+            exit 1
+          fi
+        working-directory: clients/typescript
+
+      - name: Verify proto sync
+        run: npm run check:proto-sync
+        working-directory: clients/typescript
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: clients/typescript
+
+      - name: Test
+        run: npm test
+        working-directory: clients/typescript
+
+      - name: Build
+        run: npm run build
+        working-directory: clients/typescript
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        working-directory: clients/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

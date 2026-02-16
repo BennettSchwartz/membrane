@@ -1,0 +1,55 @@
+{
+  "name": "@gustycube/membrane",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Membrane memory substrate",
+  "license": "MIT",
+  "author": "Bennett Schwartz",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GustyCube/membrane.git",
+    "directory": "clients/typescript"
+  },
+  "homepage": "https://github.com/GustyCube/membrane",
+  "bugs": {
+    "url": "https://github.com/GustyCube/membrane/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup && node ./scripts/copy-dist-proto.mjs",
+    "check:proto-sync": "node ./scripts/check-proto-sync.mjs",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run check:proto-sync && npm run typecheck && npm test && npm run build",
+    "sync:proto": "node ./scripts/sync-proto.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.1",
+    "@grpc/proto-loader": "^0.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.19",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

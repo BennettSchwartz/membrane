@@ -33,6 +33,7 @@ Membrane gives long-lived agents structured, revisable memory with built-in deca
 - [Revision Operations](#revision-operations)
 - [Evaluation and Metrics](#evaluation-and-metrics)
 - [Observability](#observability)
+- [TypeScript Client](#typescript-client)
 - [Python Client](#python-client)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
@@ -64,7 +65,7 @@ Membrane makes memory **selective** and **revisable**. It captures raw experienc
 - **Trust-Aware Retrieval** -- Sensitivity levels (public, low, medium, high, hyper) with graduated access control and redacted responses for records above the caller's trust level.
 - **Security and Operations** -- SQLCipher encryption at rest, optional TLS and API key authentication, configurable rate limiting, full audit logs.
 - **Observability** -- Built-in metrics for retrieval usefulness, competence success rate, plan reuse frequency, memory growth, and revision rate.
-- **gRPC API** -- 15-method gRPC service with a Python client SDK, or use Membrane as an embedded Go library.
+- **gRPC API** -- 15-method gRPC service with TypeScript and Python client SDKs, or use Membrane as an embedded Go library.
 
 ## Memory Types
 
@@ -85,6 +86,7 @@ Each memory type has its own schema, lifecycle rules, and consolidation behavior
 - Go 1.22 or later
 - Make
 - Protocol Buffers compiler (`protoc` >= 3.20) for gRPC development
+- Node.js 20+ for the TypeScript client SDK
 - Python 3.10+ for the Python client SDK
 
 ### Build and Run
@@ -386,6 +388,41 @@ The `GetMetrics` endpoint returns a point-in-time snapshot:
 | `competence_success_rate` | Average success rate across competence records |
 | `plan_reuse_frequency` | Average execution count across plan graph records |
 | `revision_rate` | Fraction of audit entries that are revisions (supersede, fork, merge) |
+
+## TypeScript Client
+
+Install the TypeScript client SDK:
+
+```bash
+npm install @gustycube/membrane
+```
+
+```ts
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
+
+// Ingest an event
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"]
+});
+
+// Retrieve with trust context
+const results = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: []
+  },
+  memoryTypes: ["semantic", "competence"]
+});
+
+client.close();
+```
+
+See [clients/typescript/README.md](clients/typescript/README.md) for the full API reference.
 
 ## Python Client
 
