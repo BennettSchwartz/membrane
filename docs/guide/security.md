@@ -166,13 +166,13 @@ Requests with a missing or invalid key receive an `Unauthenticated` gRPC error. 
 
 ## Rate Limiting
 
-Membrane includes a token bucket rate limiter for gRPC endpoints. This prevents any single client from overwhelming the server.
+Membrane includes a token bucket rate limiter for gRPC endpoints.
 
 ```yaml
 rate_limit_per_second: 100
 ```
 
-When the limit is exceeded, requests receive a `ResourceExhausted` gRPC error. Set to `0` to disable rate limiting.
+The current limiter is applied at the server instance level (shared across incoming traffic). When the limit is exceeded, requests receive a `ResourceExhausted` gRPC error. Set `rate_limit_per_second` to `0` to disable rate limiting.
 
 ## Audit Trail
 
