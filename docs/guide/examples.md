@@ -876,6 +876,70 @@ for (const record of records) {
 client.close();
 ```
 
+### TypeScript + LLM Loop (OpenAI-Compatible, including OpenRouter)
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenRouter example:
+  // baseURL: "https://openrouter.ai/api/v1",
+  // defaultHeaders: { "HTTP-Referer": "https://your-app.example", "X-Title": "Your App" },
+});
+
+// 1) Retrieve memories for the current task
+const memories = await memory.retrieve("debug flaky migration pipeline", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: ["project-acme"]
+  },
+  memoryTypes: ["semantic", "competence", "working", "episodic"],
+  limit: 20
+});
+
+const memoryContext = memories
+  .map((m, i) => `[${i + 1}] id=${m.id} type=${m.type} payload=${JSON.stringify(m.payload)}`)
+  .join("\\n");
+
+// 2) Ask the model with retrieved memory context
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    {
+      role: "system",
+      content: "You are a pragmatic coding agent. Use memory context as evidence and cite memory ids."
+    },
+    {
+      role: "user",
+      content: `Task: fix flaky migration pipeline\\n\\nMemory:\\n${memoryContext}`
+    }
+  ]
+});
+
+const answer = completion.choices[0]?.message?.content ?? "";
+console.log(answer);
+
+// 3) Ingest model output / outcome back into memory
+const rec = await memory.ingestEvent("llm_plan", "task-123", {
+  source: "ts-agent",
+  summary: answer.slice(0, 400),
+  tags: ["llm", "plan", "migration"],
+  scope: "project-acme",
+  sensitivity: Sensitivity.LOW
+});
+
+await memory.reinforce(rec.id, "ts-agent", "plan used successfully");
+memory.close();
+```
+
 ---
 
 ## Quick Reference: Revision Operations
@@ -886,7 +950,7 @@ client.close();
 | `Fork` | semantic, competence, plan_graph | Unchanged (both remain active) | Forked record has `derived_from` relation to source |
 | `Retract` | semantic, competence, plan_graph | Salience set to 0, status = `retracted` | None |
 | `Merge` | semantic, competence, plan_graph | All sources retracted (salience = 0) | Merged record has `derived_from` relation to each source |
-| `Contest` | semantic, competence, plan_graph | Status set to `contested` | None |
+| `Contest` | semantic, competence, plan_graph | Semantic records are marked `contested` and audit is appended | Source record gets `contested_by` relation |
 
 ::: danger All revision operations are rejected on episodic records
 Episodic memory is immutable. Any attempt to supersede, fork, retract, or merge an episodic record returns `ErrEpisodicImmutable`.

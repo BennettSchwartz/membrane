@@ -20,8 +20,11 @@ func (s *Service) Contest(ctx context.Context, id string, contestingRef string, 
 		if err := ensureRevisable(record); err != nil {
 			return err
 		}
-		// Mark as contested
-		if sp, ok := record.Payload.(*schema.SemanticPayload); ok && sp.Revision != nil {
+		// Mark semantic records as contested, initializing revision state when needed.
+		if sp, ok := record.Payload.(*schema.SemanticPayload); ok {
+			if sp.Revision == nil {
+				sp.Revision = &schema.RevisionState{}
+			}
 			sp.Revision.Status = schema.RevisionStatusContested
 		}
 		record.UpdatedAt = time.Now().UTC()

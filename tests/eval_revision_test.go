@@ -167,6 +167,13 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 	if !hasRelation(contested.Relations, "contested_by", forkedRec.ID) {
 		t.Fatalf("expected contested_by relation to forked record")
 	}
+	sp, ok := contested.Payload.(*schema.SemanticPayload)
+	if !ok {
+		t.Fatalf("expected semantic payload after contest, got %T", contested.Payload)
+	}
+	if sp.Revision == nil || sp.Revision.Status != schema.RevisionStatusContested {
+		t.Fatalf("expected semantic revision status=contested after contest, got revision=%v", sp.Revision)
+	}
 }
 
 func containsRecord(records []*schema.MemoryRecord, id string) bool {

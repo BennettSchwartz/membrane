@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Membrane
-  text: Selective Learning and Memory for Agentic Systems
-  tagline: A structured memory substrate that lets AI agents remember, learn, and forget -- just like biological cognition.
+  text: Selective Learning and Memory for LLM and Agentic Systems
+  tagline: A structured memory substrate that gives LLM-powered agents revisable memory for learning, retrieval, and long-lived execution.
   actions:
     - theme: brand
       text: Get Started

@@ -84,6 +84,49 @@ const client = new MembraneClient("membrane.example.com:443", {
 });
 ```
 
+## LLM Integration Pattern
+
+The common runtime pattern is: ingest execution traces, retrieve relevant memory, then pass that context into your model call.
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // For OpenRouter or other OpenAI-compatible providers:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("how should I handle this incident?", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "incident-agent",
+    scopes: ["prod"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 10,
+});
+
+const memoryContext = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use the memory context as evidence. Cite record ids." },
+    { role: "user", content: `Incident task:\n...\n\nMemory:\n${memoryContext}` },
+  ],
+});
+
+console.log(completion.choices[0]?.message?.content);
+memory.close();
+```
+
 ## Development
 
 ```bash

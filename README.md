@@ -14,9 +14,9 @@
 [![Last Commit](https://img.shields.io/github/last-commit/GustyCube/membrane)](https://github.com/GustyCube/membrane/commits)
 [![Contributors](https://img.shields.io/github/contributors/GustyCube/membrane)](https://github.com/GustyCube/membrane/graphs/contributors)
 
-**A general-purpose selective learning and memory substrate for agentic systems.**
+**A general-purpose selective learning and memory substrate for LLM and agentic systems.**
 
-Membrane gives long-lived agents structured, revisable memory with built-in decay, trust-gated retrieval, and audit trails. Instead of an append-only context window or flat text log, agents get typed memory records that can be consolidated, revised, contested, and pruned over time.
+Membrane gives long-lived LLM agents structured, revisable memory with built-in decay, trust-gated retrieval, and audit trails. Instead of an append-only context window or flat text log, agents get typed memory records that can be consolidated, revised, contested, and pruned over time.
 
 ---
 
@@ -34,6 +34,7 @@ Membrane gives long-lived agents structured, revisable memory with built-in deca
 - [Evaluation and Metrics](#evaluation-and-metrics)
 - [Observability](#observability)
 - [TypeScript Client](#typescript-client)
+- [LLM Integration Pattern](#llm-integration-pattern)
 - [Python Client](#python-client)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
@@ -44,7 +45,7 @@ Membrane gives long-lived agents structured, revisable memory with built-in deca
 
 ## Why Membrane
 
-Most agent "memory" is either ephemeral (context windows that reset each turn) or an append-only text log stuffed into a RAG pipeline. That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
+Most LLM/agent "memory" is either ephemeral (context windows that reset each turn) or an append-only text log stuffed into a RAG pipeline. That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
 
 Membrane makes memory **selective** and **revisable**. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
 
@@ -66,6 +67,7 @@ Membrane makes memory **selective** and **revisable**. It captures raw experienc
 - **Security and Operations** -- SQLCipher encryption at rest, optional TLS and API key authentication, configurable rate limiting, full audit logs.
 - **Observability** -- Built-in metrics for retrieval usefulness, competence success rate, plan reuse frequency, memory growth, and revision rate.
 - **gRPC API** -- 15-method gRPC service with TypeScript and Python client SDKs, or use Membrane as an embedded Go library.
+- **LLM-Ready Context Retrieval** -- Retrieve trust-filtered, typed memory and inject it directly into LLM prompts for planning, execution, and self-correction loops.
 
 ## Memory Types
 
@@ -423,6 +425,59 @@ client.close();
 ```
 
 See [clients/typescript/README.md](clients/typescript/README.md) for the full API reference.
+
+## LLM Integration Pattern
+
+Membrane is designed to sit between your orchestration layer and the model call. A common flow is:
+
+1. Ingest tool/output observations during execution.
+2. Retrieve relevant memory for the next task.
+3. Build an LLM prompt using those retrieved records.
+4. Use the model output to act, then ingest outcomes and reinforce useful records.
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenAI-compatible providers are supported here, e.g. OpenRouter:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("plan a safe migration", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "planner-agent",
+    scopes: ["project-acme"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 12,
+});
+
+const context = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use memory context as evidence. Cite record ids." },
+    { role: "user", content: `Task: plan migration\n\nMemory:\n${context}` },
+  ],
+});
+
+const answer = completion.choices[0]?.message?.content ?? "";
+const planRecord = await memory.ingestEvent("llm_plan", "migration-task-42", {
+  source: "planner-agent",
+  summary: answer.slice(0, 500),
+  tags: ["llm", "plan", "migration"],
+  scope: "project-acme",
+});
+await memory.reinforce(planRecord.id, "planner-agent", "plan used successfully");
+
+memory.close();
+```
 
 ## Python Client
 
