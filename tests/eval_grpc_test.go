@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -60,12 +61,22 @@ func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
 	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelDial()
 
-	conn, err := grpc.DialContext(dialCtx, srv.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.NewClient(srv.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		srv.Stop()
 		cancel()
 		_ = m.Stop()
-		t.Fatalf("grpc.Dial: %v", err)
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	conn.Connect()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(dialCtx, state) {
+			_ = conn.Close()
+			srv.Stop()
+			cancel()
+			_ = m.Stop()
+			t.Fatalf("grpc connection not ready (state=%v): %v", state, dialCtx.Err())
+		}
 	}
 
 	t.Cleanup(func() {
