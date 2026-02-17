@@ -1,0 +1,47 @@
+package retrieval
+
+import (
+	"testing"
+
+	"github.com/GustyCube/membrane/pkg/schema"
+)
+
+func TestTrustAllowsRejectsInvalidRecordSensitivity(t *testing.T) {
+	trust := NewTrustContext(schema.SensitivityLow, true, "actor", nil)
+	record := &schema.MemoryRecord{Sensitivity: schema.Sensitivity("invalid")}
+
+	if trust.Allows(record) {
+		t.Fatalf("expected invalid record sensitivity to be denied")
+	}
+	if trust.AllowsRedacted(record) {
+		t.Fatalf("expected invalid record sensitivity to not allow redacted access")
+	}
+}
+
+func TestTrustAllowsRejectsInvalidMaxSensitivity(t *testing.T) {
+	trust := NewTrustContext(schema.Sensitivity("invalid"), true, "actor", nil)
+	record := &schema.MemoryRecord{Sensitivity: schema.SensitivityLow}
+
+	if trust.Allows(record) {
+		t.Fatalf("expected invalid trust max sensitivity to deny access")
+	}
+	if trust.AllowsRedacted(record) {
+		t.Fatalf("expected invalid trust max sensitivity to deny redacted access")
+	}
+}
+
+func TestFilterBySensitivitySkipsInvalidValues(t *testing.T) {
+	records := []*schema.MemoryRecord{
+		{ID: "ok-low", Sensitivity: schema.SensitivityLow},
+		{ID: "bad", Sensitivity: schema.Sensitivity("invalid")},
+		{ID: "ok-high", Sensitivity: schema.SensitivityHigh},
+	}
+
+	filtered := FilterBySensitivity(records, schema.SensitivityMedium)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(filtered))
+	}
+	if filtered[0].ID != "ok-low" {
+		t.Fatalf("expected ok-low, got %s", filtered[0].ID)
+	}
+}

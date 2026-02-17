@@ -65,6 +65,21 @@ func validateJSONPayload(name string, data []byte) error {
 	return nil
 }
 
+// validateSensitivity checks that a sensitivity value is either empty (when optional)
+// or one of the supported enum values.
+func validateSensitivity(name, value string, required bool) error {
+	if value == "" {
+		if required {
+			return status.Errorf(codes.InvalidArgument, "%s is required", name)
+		}
+		return nil
+	}
+	if !schema.IsValidSensitivity(schema.Sensitivity(value)) {
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: public, low, medium, high, hyper", name)
+	}
+	return nil
+}
+
 // compile-time assertion
 var _ pb.MembraneServiceServer = (*Handler)(nil)
 
@@ -83,6 +98,9 @@ func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (
 		return nil, err
 	}
 	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
+	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
 		return nil, err
 	}
 
@@ -123,6 +141,9 @@ func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutput
 		return nil, err
 	}
 	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
+	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
 		return nil, err
 	}
 
@@ -178,6 +199,9 @@ func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservati
 		return nil, err
 	}
 	if err := validateTags(req.Tags); err != nil {
+		return nil, err
+	}
+	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
 		return nil, err
 	}
 
@@ -254,6 +278,9 @@ func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingS
 	if err := validateTags(req.Tags); err != nil {
 		return nil, err
 	}
+	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -294,6 +321,9 @@ func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingS
 func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.RetrieveResponse, error) {
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
+	}
+	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
+		return nil, err
 	}
 
 	if req.MinSalience < 0 || math.IsNaN(req.MinSalience) || math.IsInf(req.MinSalience, 0) {
@@ -348,6 +378,9 @@ func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.Re
 func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest) (*pb.MemoryRecordResponse, error) {
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
+	}
+	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
+		return nil, err
 	}
 
 	trust := toTrustContext(req.Trust)

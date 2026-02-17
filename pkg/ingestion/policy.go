@@ -109,6 +109,12 @@ func (pe *PolicyEngine) validate(candidate *MemoryCandidate) error {
 	if candidate.Timestamp.IsZero() {
 		return fmt.Errorf("ingestion policy: candidate timestamp is required")
 	}
+	if candidate.Sensitivity != "" && !schema.IsValidSensitivity(candidate.Sensitivity) {
+		return fmt.Errorf("ingestion policy: invalid sensitivity %q", candidate.Sensitivity)
+	}
+	if candidate.Sensitivity == "" && !schema.IsValidSensitivity(pe.defaults.Sensitivity) {
+		return fmt.Errorf("ingestion policy: invalid default sensitivity %q", pe.defaults.Sensitivity)
+	}
 
 	switch candidate.Kind {
 	case CandidateKindEvent:

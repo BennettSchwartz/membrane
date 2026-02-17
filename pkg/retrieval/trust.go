@@ -64,6 +64,9 @@ func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
 	// Check sensitivity: record sensitivity must be <= max allowed.
 	recordLevel := SensitivityLevel(record.Sensitivity)
 	maxLevel := SensitivityLevel(tc.MaxSensitivity)
+	if recordLevel < 0 || maxLevel < 0 {
+		return false
+	}
 	if recordLevel > maxLevel {
 		return false
 	}
@@ -99,6 +102,9 @@ func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool {
 
 	recordLevel := SensitivityLevel(record.Sensitivity)
 	maxLevel := SensitivityLevel(tc.MaxSensitivity)
+	if recordLevel < 0 || maxLevel < 0 {
+		return false
+	}
 
 	// Only allow redacted view if record is exactly one level above max.
 	return recordLevel == maxLevel+1

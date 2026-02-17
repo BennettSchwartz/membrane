@@ -402,4 +402,36 @@ func TestEvalGRPCValidation(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for long tag, got %v", err)
 	}
+
+	_, err = env.client.IngestEvent(ctx, &pb.IngestEventRequest{
+		Source:      "eval",
+		EventKind:   "evt",
+		Ref:         "r2",
+		Sensitivity: "anything",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid sensitivity, got %v", err)
+	}
+
+	_, err = env.client.Retrieve(ctx, &pb.RetrieveRequest{
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "anything",
+			Authenticated:  true,
+		},
+		Limit: 1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid trust sensitivity, got %v", err)
+	}
+
+	_, err = env.client.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: "does-not-matter",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "anything",
+			Authenticated:  true,
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid RetrieveByID trust sensitivity, got %v", err)
+	}
 }
