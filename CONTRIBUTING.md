@@ -80,6 +80,33 @@ When modifying the protobuf definition (`api/proto/membrane/v1/membrane.proto`):
 10. Update `clients/python/membrane/__init__.py` exports
 11. Update the Python client README
 
+## TypeScript SDK Release
+
+To release a new version of the TypeScript SDK to npm:
+
+### Prerequisites
+
+- You must have `NPM_TOKEN` set as a repository secret in GitHub
+- The token must have publish permissions for the `@membrane` npm scope
+
+### Version and Tag Requirements
+
+- The git tag `vX.Y.Z` **must match** the version in `clients/typescript/package.json`
+- For example, to release version `1.2.3`:
+  1. Update `clients/typescript/package.json` version to `1.2.3`
+  2. Commit and push
+  3. Create tag `v1.2.3` (note the `v` prefix)
+
+### Release Checklist
+
+1. ✅ Ensure all tests pass (`npm test`)
+2. ✅ Update `CHANGELOG.md` if it exists
+3. ✅ Bump version in `clients/typescript/package.json`
+4. ✅ Commit version changes
+5. ✅ Create git tag: `git tag v1.2.3`
+6. ✅ Push tag: `git push origin v1.2.3`
+7. ✅ GitHub Actions will automatically publish to npm
+
 ## Commit Messages
 
 Use conventional commit messages with optional scope:
