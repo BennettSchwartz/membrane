@@ -23,9 +23,13 @@ func FilterBySalience(records []*schema.MemoryRecord, minSalience float64) []*sc
 // below the given maximum sensitivity.
 func FilterBySensitivity(records []*schema.MemoryRecord, maxSensitivity schema.Sensitivity) []*schema.MemoryRecord {
 	maxLevel := SensitivityLevel(maxSensitivity)
+	if maxLevel < 0 {
+		return []*schema.MemoryRecord{}
+	}
 	result := make([]*schema.MemoryRecord, 0, len(records))
 	for _, r := range records {
-		if SensitivityLevel(r.Sensitivity) <= maxLevel {
+		level := SensitivityLevel(r.Sensitivity)
+		if level >= 0 && level <= maxLevel {
 			result = append(result, r)
 		}
 	}

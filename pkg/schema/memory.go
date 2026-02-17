@@ -191,6 +191,9 @@ func (mr *MemoryRecord) Validate() error {
 	if mr.Sensitivity == "" {
 		return &ValidationError{Field: "sensitivity", Message: "sensitivity is required"}
 	}
+	if !IsValidSensitivity(mr.Sensitivity) {
+		return &ValidationError{Field: "sensitivity", Message: "sensitivity must be one of: public, low, medium, high, hyper"}
+	}
 	if mr.Confidence < 0 || mr.Confidence > 1 {
 		return &ValidationError{Field: "confidence", Message: "confidence must be in range [0, 1]"}
 	}

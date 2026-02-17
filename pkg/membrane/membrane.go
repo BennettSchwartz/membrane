@@ -35,6 +35,10 @@ type Membrane struct {
 // New initialises all subsystems from the provided Config and returns a
 // ready-to-start Membrane instance.
 func New(cfg *Config) (*Membrane, error) {
+	if !schema.IsValidSensitivity(schema.Sensitivity(cfg.DefaultSensitivity)) {
+		return nil, fmt.Errorf("membrane: invalid default sensitivity %q", cfg.DefaultSensitivity)
+	}
+
 	encKey := cfg.EncryptionKey
 	if encKey == "" {
 		encKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")

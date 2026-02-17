@@ -51,6 +51,16 @@ const (
 	SensitivityHyper Sensitivity = "hyper"
 )
 
+// IsValidSensitivity reports whether s is one of the allowed sensitivity values.
+func IsValidSensitivity(s Sensitivity) bool {
+	switch s {
+	case SensitivityPublic, SensitivityLow, SensitivityMedium, SensitivityHigh, SensitivityHyper:
+		return true
+	default:
+		return false
+	}
+}
+
 // DecayCurve defines the mathematical function used for salience decay.
 // RFC 15A.3, 15A.7: Decay curves control how salience decreases over time.
 type DecayCurve string
