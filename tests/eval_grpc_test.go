@@ -434,4 +434,31 @@ func TestEvalGRPCValidation(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for invalid RetrieveByID trust sensitivity, got %v", err)
 	}
+
+	_, err = env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
+		Source:         "eval",
+		TargetRecordId: "rec-1",
+		OutcomeStatus:  "anything",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid outcome_status, got %v", err)
+	}
+
+	_, err = env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
+		Source:   "eval",
+		ThreadId: "thread-1",
+		State:    "anything",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid state, got %v", err)
+	}
+
+	_, err = env.client.Retrieve(ctx, &pb.RetrieveRequest{
+		Trust:       trust,
+		MemoryTypes: []string{"anything"},
+		Limit:       1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for invalid memory_types, got %v", err)
+	}
 }

@@ -29,6 +29,16 @@ const (
 	MemoryTypePlanGraph MemoryType = "plan_graph"
 )
 
+// IsValidMemoryType reports whether mt is one of the allowed memory types.
+func IsValidMemoryType(mt MemoryType) bool {
+	switch mt {
+	case MemoryTypeEpisodic, MemoryTypeWorking, MemoryTypeSemantic, MemoryTypeCompetence, MemoryTypePlanGraph:
+		return true
+	default:
+		return false
+	}
+}
+
 // Sensitivity defines the sensitivity classification for memory records.
 // RFC 15A.1: Sensitivity MUST be one of the defined values.
 // Higher sensitivity levels require stricter trust context for retrieval.
@@ -143,6 +153,16 @@ const (
 	TaskStateDone TaskState = "done"
 )
 
+// IsValidTaskState reports whether s is one of the allowed task states.
+func IsValidTaskState(s TaskState) bool {
+	switch s {
+	case TaskStatePlanning, TaskStateExecuting, TaskStateBlocked, TaskStateWaiting, TaskStateDone:
+		return true
+	default:
+		return false
+	}
+}
+
 // OutcomeStatus defines the result of an episodic experience.
 // RFC 15A.6: Episodic records track outcome status.
 type OutcomeStatus string
@@ -157,6 +177,16 @@ const (
 	// OutcomeStatusPartial indicates partial success or incomplete outcome.
 	OutcomeStatusPartial OutcomeStatus = "partial"
 )
+
+// IsValidOutcomeStatus reports whether s is one of the allowed outcome statuses.
+func IsValidOutcomeStatus(s OutcomeStatus) bool {
+	switch s {
+	case OutcomeStatusSuccess, OutcomeStatusFailure, OutcomeStatusPartial:
+		return true
+	default:
+		return false
+	}
+}
 
 // AuditAction defines the type of action recorded in an audit entry.
 // RFC 15A.8: Every revision MUST be auditable and traceable to evidence.

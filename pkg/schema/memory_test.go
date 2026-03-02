@@ -38,3 +38,55 @@ func TestIsValidSensitivity(t *testing.T) {
 		t.Fatalf("expected invalid sensitivity to be rejected")
 	}
 }
+
+func TestIsValidMemoryType(t *testing.T) {
+	valid := []MemoryType{
+		MemoryTypeEpisodic,
+		MemoryTypeWorking,
+		MemoryTypeSemantic,
+		MemoryTypeCompetence,
+		MemoryTypePlanGraph,
+	}
+	for _, mt := range valid {
+		if !IsValidMemoryType(mt) {
+			t.Fatalf("expected %q to be valid", mt)
+		}
+	}
+	if IsValidMemoryType(MemoryType("invalid")) {
+		t.Fatalf("expected invalid memory type to be rejected")
+	}
+}
+
+func TestIsValidTaskState(t *testing.T) {
+	valid := []TaskState{
+		TaskStatePlanning,
+		TaskStateExecuting,
+		TaskStateBlocked,
+		TaskStateWaiting,
+		TaskStateDone,
+	}
+	for _, state := range valid {
+		if !IsValidTaskState(state) {
+			t.Fatalf("expected %q to be valid", state)
+		}
+	}
+	if IsValidTaskState(TaskState("invalid")) {
+		t.Fatalf("expected invalid task state to be rejected")
+	}
+}
+
+func TestIsValidOutcomeStatus(t *testing.T) {
+	valid := []OutcomeStatus{
+		OutcomeStatusSuccess,
+		OutcomeStatusFailure,
+		OutcomeStatusPartial,
+	}
+	for _, state := range valid {
+		if !IsValidOutcomeStatus(state) {
+			t.Fatalf("expected %q to be valid", state)
+		}
+	}
+	if IsValidOutcomeStatus(OutcomeStatus("invalid")) {
+		t.Fatalf("expected invalid outcome status to be rejected")
+	}
+}

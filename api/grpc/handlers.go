@@ -80,6 +80,39 @@ func validateSensitivity(name, value string, required bool) error {
 	return nil
 }
 
+func validateOutcomeStatus(name, value string, required bool) error {
+	if value == "" {
+		if required {
+			return status.Errorf(codes.InvalidArgument, "%s is required", name)
+		}
+		return nil
+	}
+	if !schema.IsValidOutcomeStatus(schema.OutcomeStatus(value)) {
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: success, failure, partial", name)
+	}
+	return nil
+}
+
+func validateTaskState(name, value string, required bool) error {
+	if value == "" {
+		if required {
+			return status.Errorf(codes.InvalidArgument, "%s is required", name)
+		}
+		return nil
+	}
+	if !schema.IsValidTaskState(schema.TaskState(value)) {
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: planning, executing, blocked, waiting, done", name)
+	}
+	return nil
+}
+
+func validateMemoryType(name, value string) error {
+	if !schema.IsValidMemoryType(schema.MemoryType(value)) {
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: episodic, working, semantic, competence, plan_graph", name)
+	}
+	return nil
+}
+
 // compile-time assertion
 var _ pb.MembraneServiceServer = (*Handler)(nil)
 
@@ -245,6 +278,9 @@ func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeReques
 	if err := validateStringField("outcome_status", req.OutcomeStatus); err != nil {
 		return nil, err
 	}
+	if err := validateOutcomeStatus("outcome_status", req.OutcomeStatus, true); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
@@ -279,6 +315,9 @@ func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingS
 		return nil, err
 	}
 	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
+		return nil, err
+	}
+	if err := validateTaskState("state", req.State, true); err != nil {
 		return nil, err
 	}
 
@@ -335,6 +374,9 @@ func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.Re
 
 	memTypes := make([]schema.MemoryType, len(req.MemoryTypes))
 	for i, mt := range req.MemoryTypes {
+		if err := validateMemoryType(fmt.Sprintf("memory_types[%d]", i), mt); err != nil {
+			return nil, err
+		}
 		memTypes[i] = schema.MemoryType(mt)
 	}
 
