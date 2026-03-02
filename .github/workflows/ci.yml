@@ -27,7 +27,8 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@latest
 
       - name: Lint GitHub workflows
-        run: $(go env GOPATH)/bin/actionlint -color
+        run: |
+          "$(go env GOPATH)/bin/actionlint" -color
 
   detect-changes:
     runs-on: ubuntu-latest

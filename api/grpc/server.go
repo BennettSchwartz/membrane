@@ -138,10 +138,6 @@ type rateLimiter struct {
 	lastRefill time.Time
 }
 
-func newRateLimiter(perSecond int) *rateLimiter {
-	return newRateLimiterAt(perSecond, time.Now())
-}
-
 func newRateLimiterAt(perSecond int, now time.Time) *rateLimiter {
 	return &rateLimiter{
 		tokens:     float64(perSecond),

@@ -87,7 +87,7 @@ beforeAll(async () => {
   });
 
   await waitForDaemonReady(daemonAddr);
-});
+}, 30_000);
 
 afterAll(async () => {
   if (!daemon) {
@@ -102,7 +102,7 @@ afterAll(async () => {
     daemon?.once("exit", () => resolve());
     setTimeout(() => resolve(), 5_000);
   });
-});
+}, 10_000);
 
 describe("MembraneClient integration", () => {
   it("returns unauthenticated without API key", async () => {
