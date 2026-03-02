@@ -18,6 +18,8 @@ import (
 // created from it.
 const minPatternOccurrences = 2
 
+const mixedScopeFallback = "consolidated:mixed-scope"
+
 // CompetenceConsolidator extracts competence records from repeated
 // successful episodic patterns. It groups episodic records by their
 // tool usage signature and promotes patterns that appear at least
@@ -145,17 +147,17 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 			Version: "1",
 		}
 
-		// Use the first record as the representative for sensitivity/scope.
-		rep := g.records[0]
+		derivedSensitivity := deriveMaxSensitivity(g.records)
+		derivedScope, scopePolicy := deriveConservativeScope(g.records)
 
 		newRec := schema.NewMemoryRecord(
 			uuid.New().String(),
 			schema.MemoryTypeCompetence,
-			rep.Sensitivity,
+			derivedSensitivity,
 			payload,
 		)
 		newRec.Confidence = 0.8
-		newRec.Scope = rep.Scope
+		newRec.Scope = derivedScope
 		newRec.Tags = []string{"consolidated", "auto-competence"}
 		newRec.Provenance = schema.Provenance{
 			Sources:   buildProvenanceSources(g.records, now),
@@ -166,7 +168,13 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 				Action:    schema.AuditActionCreate,
 				Actor:     "consolidation/competence",
 				Timestamp: now,
-				Rationale: fmt.Sprintf("Extracted from %d episodic records with pattern %s", len(g.records), g.signature),
+				Rationale: fmt.Sprintf(
+					"Extracted from %d episodic records with pattern %s; policy: sensitivity=max(%s), scope=%s",
+					len(g.records),
+					g.signature,
+					derivedSensitivity,
+					scopePolicy,
+				),
 			},
 		}
 
@@ -230,4 +238,64 @@ func buildProvenanceSources(records []*schema.MemoryRecord, now time.Time) []sch
 		})
 	}
 	return sources
+}
+
+func deriveMaxSensitivity(records []*schema.MemoryRecord) schema.Sensitivity {
+	maxSensitivity := schema.SensitivityLow
+	maxLevel := sensitivityRank(maxSensitivity)
+	for _, rec := range records {
+		level := sensitivityRank(rec.Sensitivity)
+		if level > maxLevel {
+			maxLevel = level
+			maxSensitivity = rec.Sensitivity
+		}
+	}
+	return maxSensitivity
+}
+
+func deriveConservativeScope(records []*schema.MemoryRecord) (string, string) {
+	if len(records) == 0 {
+		return "", "preserved(unscoped)"
+	}
+
+	scopes := make(map[string]struct{}, len(records))
+	for _, rec := range records {
+		scopes[rec.Scope] = struct{}{}
+	}
+	if len(scopes) == 1 {
+		for scope := range scopes {
+			if scope == "" {
+				return "", "preserved(unscoped)"
+			}
+			return scope, fmt.Sprintf("preserved(%s)", scope)
+		}
+	}
+
+	parts := make([]string, 0, len(scopes))
+	for scope := range scopes {
+		if scope == "" {
+			parts = append(parts, "unscoped")
+			continue
+		}
+		parts = append(parts, scope)
+	}
+	sort.Strings(parts)
+	return mixedScopeFallback, fmt.Sprintf("%s from %s", mixedScopeFallback, strings.Join(parts, ", "))
+}
+
+func sensitivityRank(s schema.Sensitivity) int {
+	switch s {
+	case schema.SensitivityPublic:
+		return 0
+	case schema.SensitivityLow:
+		return 1
+	case schema.SensitivityMedium:
+		return 2
+	case schema.SensitivityHigh:
+		return 3
+	case schema.SensitivityHyper:
+		return 4
+	default:
+		return -1
+	}
 }
