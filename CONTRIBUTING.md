@@ -37,11 +37,11 @@ pytest clients/python/tests/
 ### TypeScript Client
 
 ```bash
-cd clients/typescript
-npm install
-npm run check:proto-sync
-npm run typecheck
-npm test
+make ts-install
+cd clients/typescript && npm run check:proto-sync
+make ts-typecheck
+make ts-test
+make ts-build
 ```
 
 ## Code Style

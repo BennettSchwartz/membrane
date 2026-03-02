@@ -1,9 +1,11 @@
-.PHONY: build test proto lint clean fmt eval eval-all eval-typed eval-revision eval-decay eval-trust eval-competence eval-plan eval-vector eval-consolidation eval-metrics eval-invariants eval-grpc
+.PHONY: build test proto lint clean fmt eval eval-all eval-typed eval-revision eval-decay eval-trust eval-competence eval-plan eval-vector eval-consolidation eval-metrics eval-invariants eval-grpc ts-install ts-typecheck ts-test ts-build
 
 GO := go
+NPM := npm
 BINARY := bin/membraned
 MODULE := github.com/GustyCube/membrane
 PROTO_DIR := api/proto/membrane/v1
+TS_DIR := clients/typescript
 
 build:
 	$(GO) build -o $(BINARY) ./cmd/membraned
@@ -50,6 +52,18 @@ eval-grpc:
 eval-all:
 	$(GO) test ./tests -run TestEval
 	./tools/eval/run.sh
+
+ts-install:
+	cd $(TS_DIR) && $(NPM) ci
+
+ts-typecheck:
+	cd $(TS_DIR) && $(NPM) run typecheck
+
+ts-test:
+	cd $(TS_DIR) && $(NPM) test -- --hookTimeout=120000
+
+ts-build:
+	cd $(TS_DIR) && $(NPM) run build
 
 proto:
 	mkdir -p api/grpc/gen/membranev1
