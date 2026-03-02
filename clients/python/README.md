@@ -2,7 +2,11 @@
 
 Python client library for the [Membrane](https://github.com/GustyCube/membrane) memory substrate.
 
-Communicates with the Membrane daemon over gRPC using JSON-encoded messages.
+Communicates with the Membrane daemon over gRPC using the protobuf-defined
+`membrane.v1.MembraneService` contract.
+
+Several RPC fields still carry JSON-encoded payloads inside protobuf `bytes`
+fields, but the client handles that encoding internally.
 
 ## Installation
 
@@ -119,5 +123,6 @@ client = MembraneClient(
 ## Requirements
 
 - Python >= 3.10
-- `grpcio >= 1.60.0`
+- `grpcio >= 1.78.0`
+- `protobuf >= 6.31.1`
 - A running Membrane daemon (default: `localhost:9090`)
