@@ -29,7 +29,11 @@ type Server struct {
 	grpc     *grpc.Server
 	health   *grpcHealth.Server
 	listener net.Listener
+
+	gracefulStopTimeout time.Duration
 }
+
+const defaultGracefulStopTimeout = 5 * time.Second
 
 // NewServer creates a Server that will listen on the configured address and
 // serve RPCs backed by the given Membrane instance. It configures TLS,
@@ -71,6 +75,8 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 		grpc:     gs,
 		health:   healthServer,
 		listener: lis,
+
+		gracefulStopTimeout: defaultGracefulStopTimeout,
 	}, nil
 }
 
@@ -258,7 +264,35 @@ func (s *Server) Stop() {
 	if s.health != nil {
 		s.health.Shutdown()
 	}
-	s.grpc.GracefulStop()
+	gracefulStopWithTimeout(s.grpc, s.gracefulStopTimeout)
+}
+
+type grpcStopper interface {
+	GracefulStop()
+	Stop()
+}
+
+func gracefulStopWithTimeout(server grpcStopper, timeout time.Duration) {
+	if timeout <= 0 {
+		server.Stop()
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+		server.Stop()
+	}
 }
 
 // Addr returns the network address the server is listening on. This is
