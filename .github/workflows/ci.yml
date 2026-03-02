@@ -52,6 +52,7 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - 'Makefile'
+              - '.github/workflows/ci.yml'
             typescript_client:
               - 'clients/typescript/**'
               - 'api/proto/membrane/v1/membrane.proto'
