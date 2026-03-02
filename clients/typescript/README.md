@@ -78,6 +78,15 @@ records. Use `retrieveWithSelection()` when you also need
 
 - `getMetrics()` / `get_metrics()`
 
+## Error Handling
+
+Failed RPCs reject with `MembraneError`. The error exposes a stable shape:
+
+- `code`: numeric gRPC status code when available
+- `codeName`: symbolic status name such as `UNAUTHENTICATED`
+- `details`: gRPC details string when present
+- `metadata`: response metadata normalized to string arrays
+
 ## TLS and Authentication
 
 ```ts

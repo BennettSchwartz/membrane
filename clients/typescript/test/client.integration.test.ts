@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { MembraneClient, Sensitivity } from "../src/index";
+import { MembraneClient, MembraneError, Sensitivity } from "../src/index";
 
 const API_KEY = "ts-integration-secret";
 
@@ -111,7 +111,8 @@ describe("MembraneClient integration", () => {
       await client.getMetrics();
       throw new Error("expected unauthenticated error");
     } catch (err) {
-      expect(String(err)).toContain("UNAUTHENTICATED");
+      expect(err).toBeInstanceOf(MembraneError);
+      expect((err as MembraneError).codeName).toBe("UNAUTHENTICATED");
     } finally {
       client.close();
     }

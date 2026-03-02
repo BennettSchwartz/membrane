@@ -8,6 +8,7 @@ export {
   type MembraneClientOptions,
   type RetrieveOptions
 } from "./client";
+export { MembraneError, type MembraneErrorOptions } from "./internal/grpc";
 
 export {
   AuditAction,
