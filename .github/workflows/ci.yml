@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       go_core: ${{ steps.filter.outputs.go_core }}
+      python_client: ${{ steps.filter.outputs.python_client }}
       typescript_client: ${{ steps.filter.outputs.typescript_client }}
 
     steps:
@@ -56,6 +57,11 @@ jobs:
             typescript_client:
               - 'clients/typescript/**'
               - 'api/proto/membrane/v1/membrane.proto'
+              - '.github/workflows/ci.yml'
+            python_client:
+              - 'clients/python/**'
+              - 'api/proto/membrane/v1/membrane.proto'
+              - '.github/workflows/ci.yml'
 
   build-and-test:
     needs: detect-changes
@@ -138,3 +144,23 @@ jobs:
       - name: Test TypeScript client
         run: npm test
         working-directory: clients/typescript
+
+  python-client:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python_client == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python client dependencies
+        run: python -m pip install -e "clients/python[dev]"
+
+      - name: Test Python client
+        run: python -m pytest clients/python/tests/

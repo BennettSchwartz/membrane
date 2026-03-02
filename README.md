@@ -487,6 +487,13 @@ Install the Python client SDK:
 pip install -e clients/python
 ```
 
+For local client development and the same commands used in CI:
+
+```bash
+python -m pip install -e "clients/python[dev]"
+python -m pytest clients/python/tests/
+```
+
 ```python
 from membrane import MembraneClient, Sensitivity, TrustContext
 
