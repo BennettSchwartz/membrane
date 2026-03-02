@@ -94,12 +94,72 @@ describe("MembraneClient unit", () => {
   });
 
   it("supports snake_case method aliases", async () => {
-    const transport = new FakeTransport({ record: Buffer.from(JSON.stringify(asRecord("alias-1")), "utf8") });
-    const client = new MembraneClient("localhost:9090", { transport });
+    const aliasCases = [
+      {
+        name: "ingest_event",
+        expectedMethod: "IngestEvent",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-event")), "utf8") },
+        invoke: (client: MembraneClient) => client.ingest_event("user_input", "session-1"),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-event")
+      },
+      {
+        name: "ingest_tool_output",
+        expectedMethod: "IngestToolOutput",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-tool")), "utf8") },
+        invoke: (client: MembraneClient) => client.ingest_tool_output("bash", { result: { ok: true } }),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-tool")
+      },
+      {
+        name: "ingest_observation",
+        expectedMethod: "IngestObservation",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-observation")), "utf8") },
+        invoke: (client: MembraneClient) => client.ingest_observation("service", "uses", "grpc"),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-observation")
+      },
+      {
+        name: "ingest_outcome",
+        expectedMethod: "IngestOutcome",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-outcome")), "utf8") },
+        invoke: (client: MembraneClient) => client.ingest_outcome("rec-1", "success"),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-outcome")
+      },
+      {
+        name: "ingest_working_state",
+        expectedMethod: "IngestWorkingState",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-working")), "utf8") },
+        invoke: (client: MembraneClient) => client.ingest_working_state("thread-1", "executing"),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-working")
+      },
+      {
+        name: "retrieve_by_id",
+        expectedMethod: "RetrieveByID",
+        response: { record: Buffer.from(JSON.stringify(asRecord("alias-retrieve")), "utf8") },
+        invoke: (client: MembraneClient) => client.retrieve_by_id("rec-1"),
+        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-retrieve")
+      },
+      {
+        name: "get_metrics",
+        expectedMethod: "GetMetrics",
+        response: { snapshot: Buffer.from(JSON.stringify({ total_records: 7 }), "utf8") },
+        invoke: (client: MembraneClient) => client.get_metrics(),
+        assertResult: (result: unknown) => expect((result as { total_records: number }).total_records).toBe(7)
+      }
+    ] satisfies Array<{
+      name: string;
+      expectedMethod: string;
+      response: unknown;
+      invoke: (client: MembraneClient) => Promise<unknown>;
+      assertResult: (result: unknown) => void;
+    }>;
 
-    const record = await client.ingest_event("user_input", "session-1");
+    for (const testCase of aliasCases) {
+      const transport = new FakeTransport(testCase.response);
+      const client = new MembraneClient("localhost:9090", { transport });
 
-    expect(record.id).toBe("alias-1");
-    expect(transport.calls[0]?.method).toBe("IngestEvent");
+      const result = await testCase.invoke(client);
+
+      testCase.assertResult(result);
+      expect(transport.calls[0]?.method).toBe(testCase.expectedMethod);
+    }
   });
 });
