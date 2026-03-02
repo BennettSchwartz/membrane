@@ -327,3 +327,38 @@ class MemoryRecord:
         if self.payload:
             d["payload"] = self.payload
         return d
+
+
+@dataclass
+class SelectionResult:
+    """Selector metadata returned alongside retrieval results."""
+
+    selected: list[MemoryRecord] = field(default_factory=list)
+    confidence: float = 0.0
+    needs_more: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SelectionResult:
+        selected = data.get("selected", data.get("Selected", []))
+        confidence = data.get("confidence", data.get("Confidence", 0.0))
+        needs_more = data.get("needs_more", data.get("NeedsMore", False))
+        return cls(
+            selected=[MemoryRecord.from_dict(item) for item in selected or []],
+            confidence=float(confidence),
+            needs_more=bool(needs_more),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected": [item.to_dict() for item in self.selected],
+            "confidence": self.confidence,
+            "needs_more": self.needs_more,
+        }
+
+
+@dataclass
+class RetrieveResult:
+    """Typed retrieval result with records and optional selector metadata."""
+
+    records: list[MemoryRecord] = field(default_factory=list)
+    selection: Optional[SelectionResult] = None

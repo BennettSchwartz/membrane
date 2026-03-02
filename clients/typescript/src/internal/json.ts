@@ -1,4 +1,4 @@
-import { type JsonObject, type MemoryRecord } from "../types";
+import { type JsonObject, type MemoryRecord, type RetrieveResult, type SelectionResult } from "../types";
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,17 +47,58 @@ export function parseRecordEnvelope(response: unknown): MemoryRecord {
 }
 
 export function parseRecordsEnvelope(response: unknown): MemoryRecord[] {
+  return parseRetrieveEnvelope(response).records;
+}
+
+function isEmptyPayload(value: unknown): boolean {
+  if (value == null) {
+    return true;
+  }
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return value.length === 0;
+  }
+  if (typeof value === "string") {
+    return value.length === 0;
+  }
+  return false;
+}
+
+export function parseSelection(value: unknown): SelectionResult {
+  const decoded = decodeJsonValue(value);
+  if (!isObject(decoded)) {
+    throw new TypeError("Expected selection metadata object");
+  }
+
+  const rawSelected = "selected" in decoded ? decoded.selected : decoded.Selected;
+  const confidence = "confidence" in decoded ? decoded.confidence : decoded.Confidence;
+  const needsMore = "needs_more" in decoded ? decoded.needs_more : decoded.NeedsMore;
+
+  return {
+    selected: Array.isArray(rawSelected) ? rawSelected.map((raw) => parseRecord(raw)) : [],
+    confidence: typeof confidence === "number" ? confidence : 0,
+    needs_more: needsMore === true
+  };
+}
+
+export function parseRetrieveEnvelope(response: unknown): RetrieveResult {
   const decoded = decodeJsonValue(response);
   if (!isObject(decoded)) {
     throw new TypeError("Expected object response for records envelope");
   }
 
   const rawRecords = decoded.records;
-  if (!Array.isArray(rawRecords)) {
-    return [];
+  const records = Array.isArray(rawRecords) ? rawRecords.map((raw) => parseRecord(raw)) : [];
+
+  let selection: SelectionResult | undefined;
+  if ("selection" in decoded && !isEmptyPayload(decoded.selection)) {
+    selection = parseSelection(decoded.selection);
   }
 
-  return rawRecords.map((raw) => parseRecord(raw));
+  if (selection === undefined) {
+    return { records };
+  }
+
+  return { records, selection };
 }
 
 export function parseMetricsEnvelope(response: unknown): JsonObject {

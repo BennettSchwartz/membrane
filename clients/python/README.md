@@ -83,7 +83,11 @@ with MembraneClient("localhost:9090") as client:
 | Method | Description |
 |--------|-------------|
 | `retrieve(task_descriptor, ...)` | Retrieve memories relevant to a task |
+| `retrieve_with_selection(task_descriptor, ...)` | Retrieve memories plus optional selector metadata |
 | `retrieve_by_id(record_id, ...)` | Retrieve a single record by ID |
+
+`retrieve()` remains the backward-compatible helper that returns only records.
+Use `retrieve_with_selection()` when you also need `{ records, selection }`.
 
 ### Revision
 

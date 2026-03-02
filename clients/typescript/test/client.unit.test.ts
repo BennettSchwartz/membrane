@@ -84,6 +84,44 @@ describe("MembraneClient unit", () => {
     expect(transport.calls[0]?.request.limit).toBe(10);
   });
 
+  it("retrieveWithSelection parses optional selection metadata", async () => {
+    const transport = new FakeTransport({
+      records: [Buffer.from(JSON.stringify(asRecord("r1")), "utf8")],
+      selection: Buffer.from(
+        JSON.stringify({
+          Selected: [asRecord("r2")],
+          Confidence: 0.4,
+          NeedsMore: true
+        }),
+        "utf8"
+      )
+    });
+    const client = new MembraneClient("localhost:9090", { transport });
+
+    const result = await client.retrieveWithSelection("debug task");
+
+    expect(result.records[0]?.id).toBe("r1");
+    expect(result.selection).toEqual({
+      selected: [asRecord("r2")],
+      confidence: 0.4,
+      needs_more: true
+    });
+  });
+
+  it("retrieve_with_selection omits selection when absent", async () => {
+    const transport = new FakeTransport({
+      records: [Buffer.from(JSON.stringify(asRecord("r1")), "utf8")],
+      selection: Buffer.alloc(0)
+    });
+    const client = new MembraneClient("localhost:9090", { transport });
+
+    const result = await client.retrieve_with_selection("debug task");
+
+    expect(result.records[0]?.id).toBe("r1");
+    expect(result.selection).toBeUndefined();
+    expect(transport.calls[0]?.method).toBe("Retrieve");
+  });
+
   it("getMetrics parses snapshot payload", async () => {
     const transport = new FakeTransport({ snapshot: Buffer.from(JSON.stringify({ total_records: 42 }), "utf8") });
     const client = new MembraneClient("localhost:9090", { transport });
