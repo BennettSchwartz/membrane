@@ -3,7 +3,7 @@ name: Publish TypeScript Client
 on:
   push:
     tags:
-      - 'v*'
+      - 'ts-v*'
 
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
       - name: Verify package version matches tag
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${GITHUB_REF_NAME#ts-v}"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "Version mismatch: package.json=$PKG_VERSION tag=$TAG_VERSION"
             exit 1

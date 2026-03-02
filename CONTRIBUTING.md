@@ -91,11 +91,15 @@ To release a new version of the TypeScript SDK to npm:
 
 ### Version and Tag Requirements
 
-- The git tag `vX.Y.Z` **must match** the version in `clients/typescript/package.json`
+- The git tag `ts-vX.Y.Z` **must match** the version in `clients/typescript/package.json`
 - For example, to release version `1.2.3`:
   1. Update `clients/typescript/package.json` version to `1.2.3`
   2. Commit and push
-  3. Create tag `v1.2.3` (note the `v` prefix)
+  3. Create tag `ts-v1.2.3`
+
+The repository's general `vX.Y.Z` tags continue to drive the main binary
+release workflow. TypeScript npm publishes are opt-in and only run for
+`ts-vX.Y.Z` tags.
 
 ### Release Checklist
 
@@ -103,8 +107,8 @@ To release a new version of the TypeScript SDK to npm:
 2. ✅ Update `CHANGELOG.md` if it exists
 3. ✅ Bump version in `clients/typescript/package.json`
 4. ✅ Commit version changes
-5. ✅ Create git tag: `git tag v1.2.3`
-6. ✅ Push tag: `git push origin v1.2.3`
+5. ✅ Create git tag: `git tag ts-v1.2.3`
+6. ✅ Push tag: `git push origin ts-v1.2.3`
 7. ✅ GitHub Actions will automatically publish to npm
 
 ## Commit Messages
