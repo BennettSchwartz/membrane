@@ -1,5 +1,5 @@
 import { MembraneClient, Sensitivity, type MemoryRecord } from "../src/index";
-import type { RpcTransport } from "../src/internal/grpc";
+import type { RpcMethodName, RpcRequest, RpcResponse, RpcTransport } from "../src/internal/grpc";
 
 class FakeTransport implements RpcTransport {
   readonly calls: Array<{ method: string; request: Record<string, unknown> }> = [];
@@ -9,10 +9,10 @@ class FakeTransport implements RpcTransport {
     this.responses = responses;
   }
 
-  async unary<TResponse>(methodName: string, request: Record<string, unknown>): Promise<TResponse> {
-    this.calls.push({ method: methodName, request });
+  async unary<M extends RpcMethodName>(methodName: M, request: RpcRequest<M>): Promise<RpcResponse<M>> {
+    this.calls.push({ method: methodName, request: request as unknown as Record<string, unknown> });
     const response = this.responses.shift();
-    return response as TResponse;
+    return response as RpcResponse<M>;
   }
 
   close(): void {

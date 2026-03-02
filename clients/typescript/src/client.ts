@@ -1,4 +1,11 @@
-import { createGrpcTransport, type RpcTransport } from "./internal/grpc";
+import {
+  createGrpcTransport,
+  type IngestToolOutputRpcRequest,
+  type IngestWorkingStateRpcRequest,
+  type RetrieveByIdRpcRequest,
+  type RetrieveRpcRequest,
+  type RpcTransport
+} from "./internal/grpc";
 import { encodeJsonBytes, parseMetricsEnvelope, parseRecordEnvelope, parseRetrieveEnvelope } from "./internal/json";
 import { nowRfc3339 } from "./internal/util";
 import {
@@ -102,7 +109,7 @@ export class MembraneClient {
       sensitivity: options.sensitivity ?? "low"
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("IngestEvent", request);
+    const response = await this.transport.unary("IngestEvent", request);
     return parseRecordEnvelope(response);
   }
 
@@ -111,7 +118,7 @@ export class MembraneClient {
   }
 
   async ingestToolOutput(toolName: string, options: IngestToolOutputOptions = {}): Promise<MemoryRecord> {
-    const request: Record<string, unknown> = {
+    const request: IngestToolOutputRpcRequest = {
       source: options.source ?? DEFAULT_SOURCE,
       tool_name: toolName,
       timestamp: options.timestamp ?? nowRfc3339(),
@@ -128,7 +135,7 @@ export class MembraneClient {
       request.result = encodeJsonBytes(options.result);
     }
 
-    const response = await this.transport.unary<Record<string, unknown>>("IngestToolOutput", request);
+    const response = await this.transport.unary("IngestToolOutput", request);
     return parseRecordEnvelope(response);
   }
 
@@ -153,7 +160,7 @@ export class MembraneClient {
       sensitivity: options.sensitivity ?? "low"
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("IngestObservation", request);
+    const response = await this.transport.unary("IngestObservation", request);
     return parseRecordEnvelope(response);
   }
 
@@ -178,7 +185,7 @@ export class MembraneClient {
       timestamp: options.timestamp ?? nowRfc3339()
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("IngestOutcome", request);
+    const response = await this.transport.unary("IngestOutcome", request);
     return parseRecordEnvelope(response);
   }
 
@@ -191,7 +198,7 @@ export class MembraneClient {
   }
 
   async ingestWorkingState(threadId: string, state: string, options: IngestWorkingStateOptions = {}): Promise<MemoryRecord> {
-    const request: Record<string, unknown> = {
+    const request: IngestWorkingStateRpcRequest = {
       source: options.source ?? DEFAULT_SOURCE,
       thread_id: threadId,
       state,
@@ -208,7 +215,7 @@ export class MembraneClient {
       request.active_constraints = encodeJsonBytes(options.activeConstraints);
     }
 
-    const response = await this.transport.unary<Record<string, unknown>>("IngestWorkingState", request);
+    const response = await this.transport.unary("IngestWorkingState", request);
     return parseRecordEnvelope(response);
   }
 
@@ -223,7 +230,7 @@ export class MembraneClient {
   async retrieveWithSelection(taskDescriptor: string, options: RetrieveOptions = {}): Promise<RetrieveResult> {
     const trust = options.trust ?? createDefaultTrustContext();
 
-    const request = {
+    const request: RetrieveRpcRequest = {
       task_descriptor: taskDescriptor,
       trust,
       memory_types: options.memoryTypes ?? [],
@@ -231,7 +238,7 @@ export class MembraneClient {
       limit: options.limit ?? 10
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("Retrieve", request);
+    const response = await this.transport.unary("Retrieve", request);
     return parseRetrieveEnvelope(response);
   }
 
@@ -240,12 +247,12 @@ export class MembraneClient {
   }
 
   async retrieveById(recordId: string, options: { trust?: TrustContext } = {}): Promise<MemoryRecord> {
-    const request = {
+    const request: RetrieveByIdRpcRequest = {
       id: recordId,
       trust: options.trust ?? createDefaultTrustContext()
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("RetrieveByID", request);
+    const response = await this.transport.unary("RetrieveByID", request);
     return parseRecordEnvelope(response);
   }
 
@@ -261,7 +268,7 @@ export class MembraneClient {
       rationale
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("Supersede", request);
+    const response = await this.transport.unary("Supersede", request);
     return parseRecordEnvelope(response);
   }
 
@@ -273,7 +280,7 @@ export class MembraneClient {
       rationale
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("Fork", request);
+    const response = await this.transport.unary("Fork", request);
     return parseRecordEnvelope(response);
   }
 
@@ -284,7 +291,7 @@ export class MembraneClient {
       rationale
     };
 
-    await this.transport.unary<Record<string, unknown>>("Retract", request);
+    await this.transport.unary("Retract", request);
   }
 
   async merge(
@@ -300,7 +307,7 @@ export class MembraneClient {
       rationale
     };
 
-    const response = await this.transport.unary<Record<string, unknown>>("Merge", request);
+    const response = await this.transport.unary("Merge", request);
     return parseRecordEnvelope(response);
   }
 
@@ -312,7 +319,7 @@ export class MembraneClient {
       rationale
     };
 
-    await this.transport.unary<Record<string, unknown>>("Contest", request);
+    await this.transport.unary("Contest", request);
   }
 
   async reinforce(recordId: string, actor: string, rationale: string): Promise<void> {
@@ -322,7 +329,7 @@ export class MembraneClient {
       rationale
     };
 
-    await this.transport.unary<Record<string, unknown>>("Reinforce", request);
+    await this.transport.unary("Reinforce", request);
   }
 
   async penalize(recordId: string, amount: number, actor: string, rationale: string): Promise<void> {
@@ -333,11 +340,11 @@ export class MembraneClient {
       rationale
     };
 
-    await this.transport.unary<Record<string, unknown>>("Penalize", request);
+    await this.transport.unary("Penalize", request);
   }
 
   async getMetrics(): Promise<JsonObject> {
-    const response = await this.transport.unary<Record<string, unknown>>("GetMetrics", {});
+    const response = await this.transport.unary("GetMetrics", {});
     return parseMetricsEnvelope(response);
   }
 
