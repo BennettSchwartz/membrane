@@ -3,6 +3,7 @@ package tests_test
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,16 @@ func decodeRecord(t *testing.T, data []byte) *schema.MemoryRecord {
 		t.Fatalf("unmarshal record: %v", err)
 	}
 	return &rec
+}
+
+func requireGRPCError(t *testing.T, err error, code codes.Code, messageContains string) {
+	t.Helper()
+	if status.Code(err) != code {
+		t.Fatalf("expected grpc code %s, got %v", code, err)
+	}
+	if messageContains != "" && !strings.Contains(status.Convert(err).Message(), messageContains) {
+		t.Fatalf("expected grpc message containing %q, got %q", messageContains, status.Convert(err).Message())
+	}
 }
 
 func TestEvalGRPCAuth(t *testing.T) {
@@ -598,5 +609,199 @@ func TestEvalGRPCValidation(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for downstream record validation, got %v", err)
+	}
+}
+
+func TestEvalGRPCNegativeContract(t *testing.T) {
+	env := newGRPCEnv(t, "", 0)
+	ctx := env.ctx()
+	trust := &pb.TrustContext{MaxSensitivity: "low", Authenticated: true}
+	oversized := []byte(strings.Repeat("a", 10*1024*1024+1))
+
+	tests := []struct {
+		name            string
+		call            func() error
+		code            codes.Code
+		messageContains string
+	}{
+		{
+			name: "invalid-sensitivity-enum",
+			call: func() error {
+				_, err := env.client.IngestEvent(ctx, &pb.IngestEventRequest{
+					Source:      "eval",
+					EventKind:   "evt",
+					Ref:         "bad-sensitivity",
+					Sensitivity: "anything",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "sensitivity must be one of: public, low, medium, high, hyper",
+		},
+		{
+			name: "invalid-outcome-status-enum",
+			call: func() error {
+				_, err := env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
+					Source:         "eval",
+					TargetRecordId: "rec-1",
+					OutcomeStatus:  "anything",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "outcome_status must be one of: success, failure, partial",
+		},
+		{
+			name: "invalid-working-state-enum",
+			call: func() error {
+				_, err := env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
+					Source:   "eval",
+					ThreadId: "thread-1",
+					State:    "anything",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "state must be one of: planning, executing, blocked, waiting, done",
+		},
+		{
+			name: "invalid-memory-type-enum",
+			call: func() error {
+				_, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{
+					Trust:       trust,
+					MemoryTypes: []string{"anything"},
+					Limit:       1,
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "memory_types[0] must be one of: episodic, working, semantic, competence, plan_graph",
+		},
+		{
+			name: "malformed-tool-args-json",
+			call: func() error {
+				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
+					Source:   "eval",
+					ToolName: "bash",
+					Args:     []byte("{"),
+					Result:   []byte("{}"),
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "invalid args JSON:",
+		},
+		{
+			name: "malformed-tool-result-json",
+			call: func() error {
+				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
+					Source:   "eval",
+					ToolName: "bash",
+					Args:     []byte("{}"),
+					Result:   []byte("{"),
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "invalid result JSON:",
+		},
+		{
+			name: "malformed-observation-json",
+			call: func() error {
+				_, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
+					Source:    "eval",
+					Subject:   "service",
+					Predicate: "mode",
+					Object:    []byte("{"),
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "invalid object JSON:",
+		},
+		{
+			name: "malformed-active-constraints-json",
+			call: func() error {
+				_, err := env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
+					Source:            "eval",
+					ThreadId:          "thread-1",
+					State:             string(schema.TaskStateExecuting),
+					ActiveConstraints: []byte("{"),
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "invalid active_constraints JSON:",
+		},
+		{
+			name: "oversized-tool-args-payload",
+			call: func() error {
+				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
+					Source:   "eval",
+					ToolName: "bash",
+					Args:     oversized,
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "args exceeds maximum payload size of 10485760 bytes",
+		},
+		{
+			name: "retrieve-limit-too-large",
+			call: func() error {
+				_, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{Trust: trust, Limit: 20000})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "limit must be between 0 and 10000",
+		},
+		{
+			name: "penalize-negative-amount",
+			call: func() error {
+				_, err := env.client.Penalize(ctx, &pb.PenalizeRequest{
+					Id:        "rec-1",
+					Amount:    -0.1,
+					Actor:     "eval",
+					Rationale: "bad",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "amount must be non-negative and finite",
+		},
+		{
+			name: "penalize-nan-amount",
+			call: func() error {
+				_, err := env.client.Penalize(ctx, &pb.PenalizeRequest{
+					Id:        "rec-1",
+					Amount:    math.NaN(),
+					Actor:     "eval",
+					Rationale: "bad",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "amount must be non-negative and finite",
+		},
+		{
+			name: "invalid-event-timestamp",
+			call: func() error {
+				_, err := env.client.IngestEvent(ctx, &pb.IngestEventRequest{
+					Source:    "eval",
+					EventKind: "evt",
+					Ref:       "bad-time",
+					Timestamp: "not-a-time",
+				})
+				return err
+			},
+			code:            codes.InvalidArgument,
+			messageContains: "invalid timestamp:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requireGRPCError(t, tc.call(), tc.code, tc.messageContains)
+		})
 	}
 }
