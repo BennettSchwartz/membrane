@@ -1,11 +1,11 @@
 """Membrane gRPC client.
 
-Communicates with the Membrane daemon over gRPC.
+Communicates with the Membrane daemon over gRPC using the protobuf-defined
+``membrane.v1.MembraneService`` contract.
 
-The service contract is protobuf-defined (`membrane.v1.MembraneService`),
-while several request/response fields carry JSON-encoded bytes payloads.
-This client uses explicit method paths plus custom serializers to map
-Python dictionaries and values to the wire format used by the daemon.
+Several request/response fields still carry JSON-encoded ``bytes`` payloads
+inside the protobuf messages. This client hides that encoding detail behind
+Python-native helper methods.
 """
 
 from __future__ import annotations
@@ -22,23 +22,7 @@ from membrane.types import (
     Sensitivity,
     TrustContext,
 )
-
-# ---------------------------------------------------------------------------
-# JSON codec for gRPC
-# ---------------------------------------------------------------------------
-#
-# The Python client uses ``channel.unary_unary`` with explicit method paths
-# and custom ``request_serializer`` / ``response_deserializer`` callbacks.
-# These callbacks convert dictionaries to/from JSON bytes so callers can work
-# with Python-native structures while matching Membrane's JSON payload shapes.
-
-_SERVICE = "membrane.v1.MembraneService"
-
-
-def _method(name: str) -> str:
-    """Return the full gRPC method path for *name*."""
-    return f"/{_SERVICE}/{name}"
-
+from membrane.v1 import membrane_pb2, membrane_pb2_grpc
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,34 +33,44 @@ def _now_rfc3339() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_record_from_response(response: dict[str, Any]) -> MemoryRecord:
-    """Extract and parse a MemoryRecord from a response dict.
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
-    Both ``IngestResponse`` and ``MemoryRecordResponse`` wrap the record
-    under a ``"record"`` key whose value is a JSON-encoded string *or*
-    an already-decoded dict (depending on codec behaviour).
+
+def _parse_json_bytes(data: bytes) -> Any:
+    return json.loads(data.decode("utf-8"))  # type: ignore[no-any-return]
+
+
+def _parse_record_from_response(record: bytes) -> MemoryRecord:
+    """Parse a JSON-encoded MemoryRecord from a protobuf bytes field.
+
+    Both ``IngestResponse`` and ``MemoryRecordResponse`` expose the record
+    bytes directly on their ``record`` field.
     """
-    raw = response.get("record", response)
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    if isinstance(raw, bytes):
-        raw = json.loads(raw)
-    return MemoryRecord.from_dict(raw)
+    return MemoryRecord.from_dict(_parse_json_bytes(record))
 
 
 def _parse_records_from_response(
-    response: dict[str, Any],
+    response: membrane_pb2.RetrieveResponse,
 ) -> list[MemoryRecord]:
     """Parse a list of records from a RetrieveResponse."""
-    raw_records = response.get("records", [])
-    results: list[MemoryRecord] = []
-    for raw in raw_records:
-        if isinstance(raw, str):
-            raw = json.loads(raw)
-        if isinstance(raw, bytes):
-            raw = json.loads(raw)
-        results.append(MemoryRecord.from_dict(raw))
-    return results
+    return [_parse_record_from_response(raw) for raw in response.records]
+
+
+def _sensitivity_value(value: Sensitivity | str) -> str:
+    return value.value if isinstance(value, Sensitivity) else value
+
+
+def _trust_context_message(trust: TrustContext) -> membrane_pb2.TrustContext:
+    max_sensitivity = trust.max_sensitivity
+    if isinstance(max_sensitivity, Sensitivity):
+        max_sensitivity = max_sensitivity.value
+    return membrane_pb2.TrustContext(
+        max_sensitivity=max_sensitivity,
+        authenticated=trust.authenticated,
+        actor_id=trust.actor_id,
+        scopes=trust.scopes,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,32 +159,7 @@ class MembraneClient:
         else:
             self._channel = grpc.insecure_channel(addr)
 
-        # Pre-build callable stubs for each RPC method.  We use
-        # ``channel.unary_unary`` with the full method path and custom
-        # request/response serializers that speak JSON.
-        self._stubs: dict[str, grpc.UnaryUnaryMultiCallable] = {}
-        for method_name in (
-            "IngestEvent",
-            "IngestToolOutput",
-            "IngestObservation",
-            "IngestOutcome",
-            "IngestWorkingState",
-            "Retrieve",
-            "RetrieveByID",
-            "Supersede",
-            "Fork",
-            "Retract",
-            "Merge",
-            "Contest",
-            "Reinforce",
-            "Penalize",
-            "GetMetrics",
-        ):
-            self._stubs[method_name] = self._channel.unary_unary(
-                _method(method_name),
-                request_serializer=self._serialize,
-                response_deserializer=self._deserialize,
-            )
+        self._stub = membrane_pb2_grpc.MembraneServiceStub(self._channel)
 
     def _call_kwargs(self) -> dict[str, Any]:
         """Return common keyword arguments for gRPC calls."""
@@ -200,18 +169,6 @@ class MembraneClient:
         if self._api_key is not None:
             kwargs["metadata"] = [("authorization", f"Bearer {self._api_key}")]
         return kwargs
-
-    # -- Serialization helpers -----------------------------------------------
-
-    @staticmethod
-    def _serialize(request: dict[str, Any]) -> bytes:
-        """Serialize a request dict to JSON bytes for the wire."""
-        return json.dumps(request, separators=(",", ":")).encode("utf-8")
-
-    @staticmethod
-    def _deserialize(data: bytes) -> dict[str, Any]:
-        """Deserialize a JSON response from the wire."""
-        return json.loads(data)  # type: ignore[no-any-return]
 
     # -- Context manager -----------------------------------------------------
 
@@ -250,22 +207,18 @@ class MembraneClient:
         Returns:
             The created ``MemoryRecord``.
         """
-        req = {
-            "source": source,
-            "event_kind": event_kind,
-            "ref": ref,
-            "summary": summary,
-            "timestamp": timestamp or _now_rfc3339(),
-            "tags": list(tags) if tags else [],
-            "scope": scope,
-            "sensitivity": (
-                sensitivity.value
-                if isinstance(sensitivity, Sensitivity)
-                else sensitivity
-            ),
-        }
-        resp = self._stubs["IngestEvent"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.IngestEventRequest(
+            source=source,
+            event_kind=event_kind,
+            ref=ref,
+            summary=summary,
+            timestamp=timestamp or _now_rfc3339(),
+            tags=list(tags) if tags else [],
+            scope=scope,
+            sensitivity=_sensitivity_value(sensitivity),
+        )
+        resp = self._stub.IngestEvent(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def ingest_tool_output(
         self,
@@ -296,25 +249,21 @@ class MembraneClient:
         Returns:
             The created ``MemoryRecord``.
         """
-        req: dict[str, Any] = {
-            "source": source,
-            "tool_name": tool_name,
-            "timestamp": timestamp or _now_rfc3339(),
-            "tags": list(tags) if tags else [],
-            "scope": scope,
-            "depends_on": list(depends_on) if depends_on else [],
-            "sensitivity": (
-                sensitivity.value
-                if isinstance(sensitivity, Sensitivity)
-                else sensitivity
-            ),
-        }
+        req = membrane_pb2.IngestToolOutputRequest(
+            source=source,
+            tool_name=tool_name,
+            depends_on=list(depends_on) if depends_on else [],
+            timestamp=timestamp or _now_rfc3339(),
+            tags=list(tags) if tags else [],
+            scope=scope,
+            sensitivity=_sensitivity_value(sensitivity),
+        )
         if args is not None:
-            req["args"] = args
+            req.args = _json_bytes(args)
         if result is not None:
-            req["result"] = result
-        resp = self._stubs["IngestToolOutput"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+            req.result = _json_bytes(result)
+        resp = self._stub.IngestToolOutput(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def ingest_observation(
         self,
@@ -343,22 +292,18 @@ class MembraneClient:
         Returns:
             The created ``MemoryRecord``.
         """
-        req: dict[str, Any] = {
-            "source": source,
-            "subject": subject,
-            "predicate": predicate,
-            "object": obj,
-            "timestamp": timestamp or _now_rfc3339(),
-            "tags": list(tags) if tags else [],
-            "scope": scope,
-            "sensitivity": (
-                sensitivity.value
-                if isinstance(sensitivity, Sensitivity)
-                else sensitivity
-            ),
-        }
-        resp = self._stubs["IngestObservation"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.IngestObservationRequest(
+            source=source,
+            subject=subject,
+            predicate=predicate,
+            object=_json_bytes(obj),
+            timestamp=timestamp or _now_rfc3339(),
+            tags=list(tags) if tags else [],
+            scope=scope,
+            sensitivity=_sensitivity_value(sensitivity),
+        )
+        resp = self._stub.IngestObservation(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def ingest_outcome(
         self,
@@ -379,18 +324,18 @@ class MembraneClient:
         Returns:
             The created ``MemoryRecord``.
         """
-        req = {
-            "source": source,
-            "target_record_id": target_record_id,
-            "outcome_status": (
+        req = membrane_pb2.IngestOutcomeRequest(
+            source=source,
+            target_record_id=target_record_id,
+            outcome_status=(
                 outcome_status.value
                 if isinstance(outcome_status, OutcomeStatus)
                 else outcome_status
             ),
-            "timestamp": timestamp or _now_rfc3339(),
-        }
-        resp = self._stubs["IngestOutcome"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+            timestamp=timestamp or _now_rfc3339(),
+        )
+        resp = self._stub.IngestOutcome(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def ingest_working_state(
         self,
@@ -425,26 +370,22 @@ class MembraneClient:
         Returns:
             The created ``MemoryRecord``.
         """
-        req: dict[str, Any] = {
-            "source": source,
-            "thread_id": thread_id,
-            "state": state,
-            "next_actions": list(next_actions) if next_actions else [],
-            "open_questions": list(open_questions) if open_questions else [],
-            "context_summary": context_summary,
-            "timestamp": timestamp or _now_rfc3339(),
-            "tags": list(tags) if tags else [],
-            "scope": scope,
-            "sensitivity": (
-                sensitivity.value
-                if isinstance(sensitivity, Sensitivity)
-                else sensitivity
-            ),
-        }
+        req = membrane_pb2.IngestWorkingStateRequest(
+            source=source,
+            thread_id=thread_id,
+            state=state,
+            next_actions=list(next_actions) if next_actions else [],
+            open_questions=list(open_questions) if open_questions else [],
+            context_summary=context_summary,
+            timestamp=timestamp or _now_rfc3339(),
+            tags=list(tags) if tags else [],
+            scope=scope,
+            sensitivity=_sensitivity_value(sensitivity),
+        )
         if active_constraints is not None:
-            req["active_constraints"] = list(active_constraints)
-        resp = self._stubs["IngestWorkingState"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+            req.active_constraints = _json_bytes(list(active_constraints))
+        resp = self._stub.IngestWorkingState(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     # -- Retrieval -----------------------------------------------------------
 
@@ -480,14 +421,14 @@ class MembraneClient:
                     mt.value if isinstance(mt, MemoryType) else mt
                 )
 
-        req = {
-            "task_descriptor": task_descriptor,
-            "trust": trust.to_dict(),
-            "memory_types": types_list,
-            "min_salience": min_salience,
-            "limit": limit,
-        }
-        resp = self._stubs["Retrieve"](req, **self._call_kwargs())
+        req = membrane_pb2.RetrieveRequest(
+            task_descriptor=task_descriptor,
+            trust=_trust_context_message(trust),
+            memory_types=types_list,
+            min_salience=min_salience,
+            limit=limit,
+        )
+        resp = self._stub.Retrieve(req, **self._call_kwargs())
         return _parse_records_from_response(resp)
 
     def retrieve_by_id(
@@ -509,12 +450,12 @@ class MembraneClient:
         if trust is None:
             trust = TrustContext()
 
-        req = {
-            "id": record_id,
-            "trust": trust.to_dict(),
-        }
-        resp = self._stubs["RetrieveByID"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.RetrieveByIDRequest(
+            id=record_id,
+            trust=_trust_context_message(trust),
+        )
+        resp = self._stub.RetrieveByID(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     # -- Revision ------------------------------------------------------------
 
@@ -539,14 +480,14 @@ class MembraneClient:
         if isinstance(new_record, MemoryRecord):
             new_record = new_record.to_dict()
 
-        req = {
-            "old_id": old_id,
-            "new_record": new_record,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        resp = self._stubs["Supersede"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.SupersedeRequest(
+            old_id=old_id,
+            new_record=_json_bytes(new_record),
+            actor=actor,
+            rationale=rationale,
+        )
+        resp = self._stub.Supersede(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def fork(
         self,
@@ -569,14 +510,14 @@ class MembraneClient:
         if isinstance(forked_record, MemoryRecord):
             forked_record = forked_record.to_dict()
 
-        req = {
-            "source_id": source_id,
-            "forked_record": forked_record,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        resp = self._stubs["Fork"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.ForkRequest(
+            source_id=source_id,
+            forked_record=_json_bytes(forked_record),
+            actor=actor,
+            rationale=rationale,
+        )
+        resp = self._stub.Fork(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def retract(
         self,
@@ -591,12 +532,12 @@ class MembraneClient:
             actor: Identifier of the actor performing the retraction.
             rationale: Human-readable reason for the retraction.
         """
-        req = {
-            "id": record_id,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        self._stubs["Retract"](req, **self._call_kwargs())
+        req = membrane_pb2.RetractRequest(
+            id=record_id,
+            actor=actor,
+            rationale=rationale,
+        )
+        self._stub.Retract(req, **self._call_kwargs())
 
     def merge(
         self,
@@ -619,14 +560,14 @@ class MembraneClient:
         if isinstance(merged_record, MemoryRecord):
             merged_record = merged_record.to_dict()
 
-        req = {
-            "ids": list(record_ids),
-            "merged_record": merged_record,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        resp = self._stubs["Merge"](req, **self._call_kwargs())
-        return _parse_record_from_response(resp)
+        req = membrane_pb2.MergeRequest(
+            ids=list(record_ids),
+            merged_record=_json_bytes(merged_record),
+            actor=actor,
+            rationale=rationale,
+        )
+        resp = self._stub.Merge(req, **self._call_kwargs())
+        return _parse_record_from_response(resp.record)
 
     def contest(
         self,
@@ -643,13 +584,13 @@ class MembraneClient:
             actor: Identifier of the actor contesting the record.
             rationale: Human-readable reason for contesting.
         """
-        req = {
-            "id": record_id,
-            "contesting_ref": contesting_ref,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        self._stubs["Contest"](req, **self._call_kwargs())
+        req = membrane_pb2.ContestRequest(
+            id=record_id,
+            contesting_ref=contesting_ref,
+            actor=actor,
+            rationale=rationale,
+        )
+        self._stub.Contest(req, **self._call_kwargs())
 
     # -- Reinforcement / Penalization ----------------------------------------
 
@@ -666,12 +607,12 @@ class MembraneClient:
             actor: Identifier of the actor performing the reinforcement.
             rationale: Human-readable reason for the reinforcement.
         """
-        req = {
-            "id": record_id,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        self._stubs["Reinforce"](req, **self._call_kwargs())
+        req = membrane_pb2.ReinforceRequest(
+            id=record_id,
+            actor=actor,
+            rationale=rationale,
+        )
+        self._stub.Reinforce(req, **self._call_kwargs())
 
     def penalize(
         self,
@@ -688,13 +629,13 @@ class MembraneClient:
             actor: Identifier of the actor applying the penalty.
             rationale: Human-readable reason for the penalty.
         """
-        req = {
-            "id": record_id,
-            "amount": amount,
-            "actor": actor,
-            "rationale": rationale,
-        }
-        self._stubs["Penalize"](req, **self._call_kwargs())
+        req = membrane_pb2.PenalizeRequest(
+            id=record_id,
+            amount=amount,
+            actor=actor,
+            rationale=rationale,
+        )
+        self._stub.Penalize(req, **self._call_kwargs())
 
     # -- Metrics -------------------------------------------------------------
 
@@ -704,13 +645,11 @@ class MembraneClient:
         Returns:
             A dictionary containing the metrics snapshot.
         """
-        resp = self._stubs["GetMetrics"]({}, **self._call_kwargs())
-        snapshot = resp.get("snapshot", resp)
-        if isinstance(snapshot, str):
-            snapshot = json.loads(snapshot)
-        if isinstance(snapshot, bytes):
-            snapshot = json.loads(snapshot)
-        return snapshot  # type: ignore[no-any-return]
+        resp = self._stub.GetMetrics(
+            membrane_pb2.GetMetricsRequest(),
+            **self._call_kwargs(),
+        )
+        return _parse_json_bytes(resp.snapshot)
 
     # -- Lifecycle -----------------------------------------------------------
 
