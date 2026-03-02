@@ -461,4 +461,53 @@ func TestEvalGRPCValidation(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for invalid memory_types, got %v", err)
 	}
+
+	semanticResp, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
+		Source:    "eval",
+		Subject:   "service",
+		Predicate: "mode",
+		Object:    []byte(`"active"`),
+	})
+	if err != nil {
+		t.Fatalf("IngestObservation: %v", err)
+	}
+	semanticRec := decodeRecord(t, semanticResp.Record)
+
+	_, err = env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
+		Source:         "eval",
+		TargetRecordId: semanticRec.ID,
+		OutcomeStatus:  string(schema.OutcomeStatusSuccess),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for outcome on non-episodic record, got %v", err)
+	}
+
+	_, err = env.client.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: "missing-record",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "low",
+			Authenticated:  true,
+		},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected not found for missing record, got %v", err)
+	}
+
+	replacement := []byte(`{
+		"id": "replacement-1",
+		"type": "semantic",
+		"sensitivity": "low",
+		"confidence": 1,
+		"salience": 1,
+		"payload": {"kind": "mystery"}
+	}`)
+	_, err = env.client.Supersede(ctx, &pb.SupersedeRequest{
+		OldId:     semanticRec.ID,
+		NewRecord: replacement,
+		Actor:     "eval",
+		Rationale: "validate payload mapping",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument for downstream record validation, got %v", err)
+	}
 }

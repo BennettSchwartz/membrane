@@ -3,8 +3,10 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -14,7 +16,9 @@ import (
 	"github.com/GustyCube/membrane/pkg/ingestion"
 	"github.com/GustyCube/membrane/pkg/membrane"
 	"github.com/GustyCube/membrane/pkg/retrieval"
+	"github.com/GustyCube/membrane/pkg/revision"
 	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/GustyCube/membrane/pkg/storage"
 )
 
 // ---------------------------------------------------------------------------
@@ -153,7 +157,7 @@ func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalRecordResponse(rec)
@@ -211,7 +215,7 @@ func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutput
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalRecordResponse(rec)
@@ -261,7 +265,7 @@ func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservati
 		Sensitivity: schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalRecordResponse(rec)
@@ -294,7 +298,7 @@ func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeReques
 		Timestamp:      ts,
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalRecordResponse(rec)
@@ -350,7 +354,7 @@ func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingS
 		Sensitivity:       schema.Sensitivity(req.Sensitivity),
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalRecordResponse(rec)
@@ -390,7 +394,7 @@ func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.Re
 		Limit:          int(req.Limit),
 	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	records := make([][]byte, len(resp.Records))
@@ -429,7 +433,7 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest)
 
 	rec, err := h.membrane.RetrieveByID(ctx, req.Id, trust)
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalMemoryRecordResponse(rec)
@@ -448,7 +452,7 @@ func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.
 
 	rec, err := h.membrane.Supersede(ctx, req.OldId, newRec, req.Actor, req.Rationale)
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalMemoryRecordResponse(rec)
@@ -467,7 +471,7 @@ func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryReco
 
 	rec, err := h.membrane.Fork(ctx, req.SourceId, forkedRec, req.Actor, req.Rationale)
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalMemoryRecordResponse(rec)
@@ -476,7 +480,7 @@ func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryReco
 // Retract converts the gRPC request and delegates to Membrane.Retract.
 func (h *Handler) Retract(ctx context.Context, req *pb.RetractRequest) (*pb.RetractResponse, error) {
 	if err := h.membrane.Retract(ctx, req.Id, req.Actor, req.Rationale); err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 	return &pb.RetractResponse{}, nil
 }
@@ -500,7 +504,7 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 
 	rec, err := h.membrane.Merge(ctx, req.Ids, mergedRec, req.Actor, req.Rationale)
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	return marshalMemoryRecordResponse(rec)
@@ -516,7 +520,7 @@ func (h *Handler) Reinforce(ctx context.Context, req *pb.ReinforceRequest) (*pb.
 	}
 
 	if err := h.membrane.Reinforce(ctx, req.Id, req.Actor, req.Rationale); err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 	return &pb.ReinforceResponse{}, nil
 }
@@ -534,7 +538,7 @@ func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.Pe
 	}
 
 	if err := h.membrane.Penalize(ctx, req.Id, req.Amount, req.Actor, req.Rationale); err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 	return &pb.PenalizeResponse{}, nil
 }
@@ -543,7 +547,7 @@ func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.Pe
 func (h *Handler) GetMetrics(ctx context.Context, _ *pb.GetMetricsRequest) (*pb.MetricsResponse, error) {
 	snap, err := h.membrane.GetMetrics(ctx)
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 
 	data, err := json.Marshal(snap)
@@ -564,7 +568,7 @@ func (h *Handler) Contest(ctx context.Context, req *pb.ContestRequest) (*pb.Cont
 	}
 
 	if err := h.membrane.Contest(ctx, req.Id, req.ContestingRef, req.Actor, req.Rationale); err != nil {
-		return nil, internalErr(err)
+		return nil, serviceErr(err)
 	}
 	return &pb.ContestResponse{}, nil
 }
@@ -618,6 +622,42 @@ func marshalMemoryRecordResponse(rec *schema.MemoryRecord) (*pb.MemoryRecordResp
 		return nil, internalErr(fmt.Errorf("marshal record: %w", err))
 	}
 	return &pb.MemoryRecordResponse{Record: data}, nil
+}
+
+func serviceErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
+
+	var validationErr *schema.ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		return status.Error(codes.InvalidArgument, validationErr.Error())
+	case errors.Is(err, storage.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, storage.ErrAlreadyExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, retrieval.ErrAccessDenied):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, retrieval.ErrNilTrust):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, revision.ErrEpisodicImmutable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case isInvalidInputError(err):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return internalErr(err)
+	}
+}
+
+func isInvalidInputError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "ingestion policy:") ||
+		strings.Contains(msg, "semantic revision requires evidence") ||
+		strings.HasSuffix(msg, " is not episodic")
 }
 
 // internalErr wraps an error as a gRPC Internal status.
