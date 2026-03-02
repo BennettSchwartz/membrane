@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -21,11 +22,12 @@ import (
 )
 
 type grpcEnv struct {
-	client pb.MembraneServiceClient
-	conn   *grpc.ClientConn
-	server *grpcapi.Server
-	mem    *membrane.Membrane
-	apiKey string
+	client       pb.MembraneServiceClient
+	healthClient healthpb.HealthClient
+	conn         *grpc.ClientConn
+	server       *grpcapi.Server
+	mem          *membrane.Membrane
+	apiKey       string
 }
 
 func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
@@ -87,11 +89,12 @@ func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
 	})
 
 	return &grpcEnv{
-		client: pb.NewMembraneServiceClient(conn),
-		conn:   conn,
-		server: srv,
-		mem:    m,
-		apiKey: apiKey,
+		client:       pb.NewMembraneServiceClient(conn),
+		healthClient: healthpb.NewHealthClient(conn),
+		conn:         conn,
+		server:       srv,
+		mem:          m,
+		apiKey:       apiKey,
 	}
 }
 
@@ -171,6 +174,65 @@ func TestEvalGRPCRateLimitPerClient(t *testing.T) {
 
 	if _, err := secondClient.GetMetrics(ctx, &pb.GetMetricsRequest{}); err != nil {
 		t.Fatalf("second client should have independent quota, got %v", err)
+	}
+}
+
+func TestEvalGRPCHealth(t *testing.T) {
+	env := newGRPCEnv(t, "", 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	check := func(service string) {
+		resp, err := env.healthClient.Check(ctx, &healthpb.HealthCheckRequest{Service: service})
+		if err != nil {
+			t.Fatalf("Health Check(%q): %v", service, err)
+		}
+		if resp.Status != healthpb.HealthCheckResponse_SERVING {
+			t.Fatalf("expected %q to be SERVING, got %v", service, resp.Status)
+		}
+	}
+
+	check("")
+	check(pb.MembraneService_ServiceDesc.ServiceName)
+
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+
+	stream, err := env.healthClient.Watch(watchCtx, &healthpb.HealthCheckRequest{
+		Service: pb.MembraneService_ServiceDesc.ServiceName,
+	})
+	if err != nil {
+		t.Fatalf("Health Watch: %v", err)
+	}
+
+	initial, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Health Watch initial recv: %v", err)
+	}
+	if initial.Status != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("expected initial health status SERVING, got %v", initial.Status)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		env.server.Stop()
+		close(stopped)
+	}()
+
+	update, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Health Watch shutdown recv: %v", err)
+	}
+	if update.Status != healthpb.HealthCheckResponse_NOT_SERVING {
+		t.Fatalf("expected shutdown health status NOT_SERVING, got %v", update.Status)
+	}
+	watchCancel()
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("server.Stop did not complete after health shutdown")
 	}
 }
 
