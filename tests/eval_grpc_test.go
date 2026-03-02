@@ -147,6 +147,33 @@ func TestEvalGRPCRateLimit(t *testing.T) {
 	}
 }
 
+func TestEvalGRPCRateLimitPerClient(t *testing.T) {
+	env := newGRPCEnv(t, "", 1)
+
+	secondConn, err := grpc.NewClient(env.server.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient second client: %v", err)
+	}
+	secondConn.Connect()
+	t.Cleanup(func() {
+		_ = secondConn.Close()
+	})
+
+	secondClient := pb.NewMembraneServiceClient(secondConn)
+	ctx := context.Background()
+
+	if _, err := env.client.GetMetrics(ctx, &pb.GetMetricsRequest{}); err != nil {
+		t.Fatalf("first client initial GetMetrics failed: %v", err)
+	}
+	if _, err := env.client.GetMetrics(ctx, &pb.GetMetricsRequest{}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected first client to hit rate limit, got %v", err)
+	}
+
+	if _, err := secondClient.GetMetrics(ctx, &pb.GetMetricsRequest{}); err != nil {
+		t.Fatalf("second client should have independent quota, got %v", err)
+	}
+}
+
 func TestEvalGRPCSurface(t *testing.T) {
 	env := newGRPCEnv(t, "", 0)
 	ctx := env.ctx()

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
@@ -69,9 +70,9 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 // chainInterceptors builds a unary server interceptor that applies
 // authentication and rate limiting.
 func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterceptor {
-	var limiter *rateLimiter
+	var limiter *clientRateLimiter
 	if ratePerSecond > 0 {
-		limiter = newRateLimiter(ratePerSecond)
+		limiter = newClientRateLimiter(ratePerSecond)
 	}
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -89,13 +90,28 @@ func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterce
 
 		// Rate limiting.
 		if limiter != nil {
-			if !limiter.allow() {
+			if !limiter.allow(clientIdentity(ctx)) {
 				return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 			}
 		}
 
 		return handler(ctx, req)
 	}
+}
+
+func clientIdentity(ctx context.Context) string {
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		return p.Addr.String()
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return "anonymous"
+	}
+	tokens := md.Get("authorization")
+	if len(tokens) > 0 {
+		return "auth:" + tokens[0]
+	}
+	return "anonymous"
 }
 
 // rateLimiter implements a simple token bucket rate limiter.
@@ -108,19 +124,22 @@ type rateLimiter struct {
 }
 
 func newRateLimiter(perSecond int) *rateLimiter {
+	return newRateLimiterAt(perSecond, time.Now())
+}
+
+func newRateLimiterAt(perSecond int, now time.Time) *rateLimiter {
 	return &rateLimiter{
 		tokens:     float64(perSecond),
 		maxTokens:  float64(perSecond),
 		refillRate: float64(perSecond),
-		lastRefill: time.Now(),
+		lastRefill: now,
 	}
 }
 
-func (r *rateLimiter) allow() bool {
+func (r *rateLimiter) allowAt(now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
 	elapsed := now.Sub(r.lastRefill).Seconds()
 	r.tokens += elapsed * r.refillRate
 	if r.tokens > r.maxTokens {
@@ -133,6 +152,91 @@ func (r *rateLimiter) allow() bool {
 	}
 	r.tokens--
 	return true
+}
+
+const (
+	rateLimiterIdleTTL    = 5 * time.Minute
+	rateLimiterMaxClients = 4096
+)
+
+type clientRateLimiter struct {
+	mu          sync.Mutex
+	perSecond   int
+	idleTTL     time.Duration
+	maxClients  int
+	lastCleanup time.Time
+	buckets     map[string]*clientBucket
+}
+
+type clientBucket struct {
+	limiter  *rateLimiter
+	lastSeen time.Time
+}
+
+func newClientRateLimiter(perSecond int) *clientRateLimiter {
+	return &clientRateLimiter{
+		perSecond:   perSecond,
+		idleTTL:     rateLimiterIdleTTL,
+		maxClients:  rateLimiterMaxClients,
+		lastCleanup: time.Now(),
+		buckets:     make(map[string]*clientBucket),
+	}
+}
+
+func (r *clientRateLimiter) allow(clientID string) bool {
+	now := time.Now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if now.Sub(r.lastCleanup) >= r.idleTTL/2 {
+		r.evictIdleLocked(now)
+		r.lastCleanup = now
+	}
+
+	bucket, ok := r.buckets[clientID]
+	if !ok {
+		if len(r.buckets) >= r.maxClients {
+			r.evictOldestLocked(now)
+		}
+		bucket = &clientBucket{
+			limiter:  newRateLimiterAt(r.perSecond, now),
+			lastSeen: now,
+		}
+		r.buckets[clientID] = bucket
+	}
+
+	bucket.lastSeen = now
+	return bucket.limiter.allowAt(now)
+}
+
+func (r *clientRateLimiter) evictIdleLocked(now time.Time) {
+	for clientID, bucket := range r.buckets {
+		if now.Sub(bucket.lastSeen) > r.idleTTL {
+			delete(r.buckets, clientID)
+		}
+	}
+}
+
+func (r *clientRateLimiter) evictOldestLocked(now time.Time) {
+	r.evictIdleLocked(now)
+	if len(r.buckets) < r.maxClients {
+		return
+	}
+
+	var oldestClient string
+	var oldestSeen time.Time
+	first := true
+	for clientID, bucket := range r.buckets {
+		if first || bucket.lastSeen.Before(oldestSeen) {
+			first = false
+			oldestClient = clientID
+			oldestSeen = bucket.lastSeen
+		}
+	}
+	if oldestClient != "" {
+		delete(r.buckets, oldestClient)
+	}
 }
 
 // Start serves gRPC requests. It blocks until Stop is called or an
