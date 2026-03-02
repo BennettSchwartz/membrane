@@ -30,8 +30,8 @@ make fmt      # Format code
 ### Python Client
 
 ```bash
-pip install -e clients/python[dev]
-pytest clients/python/tests/
+python -m pip install -e "clients/python[dev]"
+python -m pytest clients/python/tests/
 ```
 
 ### TypeScript Client
