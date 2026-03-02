@@ -13,6 +13,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	grpcHealth "google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -25,6 +27,7 @@ import (
 type Server struct {
 	membrane *membrane.Membrane
 	grpc     *grpc.Server
+	health   *grpcHealth.Server
 	listener net.Listener
 }
 
@@ -56,6 +59,9 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	opts = append(opts, grpc.UnaryInterceptor(interceptor))
 
 	gs := grpc.NewServer(opts...)
+	healthServer := grpcHealth.NewServer()
+	healthServer.SetServingStatus(pb.MembraneService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(gs, healthServer)
 
 	handler := &Handler{membrane: m}
 	pb.RegisterMembraneServiceServer(gs, handler)
@@ -63,6 +69,7 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	return &Server{
 		membrane: m,
 		grpc:     gs,
+		health:   healthServer,
 		listener: lis,
 	}, nil
 }
@@ -248,6 +255,9 @@ func (s *Server) Start() error {
 // Stop performs a graceful shutdown of the gRPC server, finishing in-flight
 // RPCs before returning.
 func (s *Server) Stop() {
+	if s.health != nil {
+		s.health.Shutdown()
+	}
 	s.grpc.GracefulStop()
 }
 
