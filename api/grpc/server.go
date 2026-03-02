@@ -61,6 +61,8 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	rateLimit := cfg.RateLimitPerSecond
 	interceptor := chainInterceptors(apiKey, rateLimit)
 	opts = append(opts, grpc.UnaryInterceptor(interceptor))
+	// Allow requests large enough to reach the application's 10 MiB payload checks.
+	opts = append(opts, grpc.MaxRecvMsgSize(maxPayloadSize+(1<<20)))
 
 	gs := grpc.NewServer(opts...)
 	healthServer := grpcHealth.NewServer()
