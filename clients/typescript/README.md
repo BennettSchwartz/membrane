@@ -54,7 +54,12 @@ The SDK mirrors the Python client behavior and defaults.
 ### Retrieval
 
 - `retrieve(...)`
+- `retrieveWithSelection(...)` / `retrieve_with_selection(...)`
 - `retrieveById(...)` / `retrieve_by_id(...)`
+
+`retrieve(...)` remains the backward-compatible helper that returns only
+records. Use `retrieveWithSelection()` when you also need
+`{ records, selection }`.
 
 ### Revision
 

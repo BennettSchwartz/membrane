@@ -19,6 +19,8 @@ import grpc
 from membrane.types import (
     MemoryRecord,
     MemoryType,
+    RetrieveResult,
+    SelectionResult,
     Sensitivity,
     TrustContext,
 )
@@ -55,6 +57,16 @@ def _parse_records_from_response(
 ) -> list[MemoryRecord]:
     """Parse a list of records from a RetrieveResponse."""
     return [_parse_record_from_response(raw) for raw in response.records]
+
+
+def _parse_selection_from_response(data: bytes) -> SelectionResult | None:
+    if not data:
+        return None
+
+    raw = _parse_json_bytes(data)
+    if not isinstance(raw, dict):
+        raise TypeError("Expected selection metadata object")
+    return SelectionResult.from_dict(raw)
 
 
 def _sensitivity_value(value: Sensitivity | str) -> str:
@@ -411,6 +423,28 @@ class MembraneClient:
         Returns:
             List of matching ``MemoryRecord`` instances.
         """
+        return self.retrieve_with_selection(
+            task_descriptor,
+            trust=trust,
+            memory_types=memory_types,
+            min_salience=min_salience,
+            limit=limit,
+        ).records
+
+    def retrieve_with_selection(
+        self,
+        task_descriptor: str,
+        *,
+        trust: TrustContext | None = None,
+        memory_types: Sequence[MemoryType | str] | None = None,
+        min_salience: float = 0.0,
+        limit: int = 10,
+    ) -> RetrieveResult:
+        """Retrieve memories plus optional selector metadata.
+
+        This is the backward-compatible opt-in API for callers that need the
+        selector's ranked candidates and confidence details.
+        """
         if trust is None:
             trust = TrustContext()
 
@@ -429,7 +463,10 @@ class MembraneClient:
             limit=limit,
         )
         resp = self._stub.Retrieve(req, **self._call_kwargs())
-        return _parse_records_from_response(resp)
+        return RetrieveResult(
+            records=_parse_records_from_response(resp),
+            selection=_parse_selection_from_response(resp.selection),
+        )
 
     def retrieve_by_id(
         self,

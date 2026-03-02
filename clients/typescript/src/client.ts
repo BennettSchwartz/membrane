@@ -1,5 +1,5 @@
 import { createGrpcTransport, type RpcTransport } from "./internal/grpc";
-import { encodeJsonBytes, parseMetricsEnvelope, parseRecordEnvelope, parseRecordsEnvelope } from "./internal/json";
+import { encodeJsonBytes, parseMetricsEnvelope, parseRecordEnvelope, parseRetrieveEnvelope } from "./internal/json";
 import { nowRfc3339 } from "./internal/util";
 import {
   createDefaultTrustContext,
@@ -7,6 +7,7 @@ import {
   type MemoryRecord,
   type MemoryType,
   type OutcomeStatus,
+  type RetrieveResult,
   type Sensitivity,
   type TrustContext
 } from "./types";
@@ -216,6 +217,10 @@ export class MembraneClient {
   }
 
   async retrieve(taskDescriptor: string, options: RetrieveOptions = {}): Promise<MemoryRecord[]> {
+    return (await this.retrieveWithSelection(taskDescriptor, options)).records;
+  }
+
+  async retrieveWithSelection(taskDescriptor: string, options: RetrieveOptions = {}): Promise<RetrieveResult> {
     const trust = options.trust ?? createDefaultTrustContext();
 
     const request = {
@@ -227,7 +232,11 @@ export class MembraneClient {
     };
 
     const response = await this.transport.unary<Record<string, unknown>>("Retrieve", request);
-    return parseRecordsEnvelope(response);
+    return parseRetrieveEnvelope(response);
+  }
+
+  async retrieve_with_selection(taskDescriptor: string, options: RetrieveOptions = {}): Promise<RetrieveResult> {
+    return await this.retrieveWithSelection(taskDescriptor, options);
   }
 
   async retrieveById(recordId: string, options: { trust?: TrustContext } = {}): Promise<MemoryRecord> {

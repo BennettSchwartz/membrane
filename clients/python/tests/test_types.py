@@ -12,7 +12,9 @@ from membrane.types import (
     Provenance,
     ProvenanceSource,
     Relation,
+    RetrieveResult,
     RevisionStatus,
+    SelectionResult,
     Sensitivity,
     TrustContext,
 )
@@ -242,3 +244,30 @@ class TestSubstructures:
         assert ae.action == "revise"
         assert ae.actor == "agent-2"
         assert ae.rationale == "Updated based on feedback"
+
+    def test_selection_result_from_go_json_shape(self):
+        selection = SelectionResult.from_dict(
+            {
+                "Selected": [
+                    {
+                        "id": "rec-1",
+                        "type": "competence",
+                        "sensitivity": "low",
+                        "confidence": 0.9,
+                        "salience": 0.8,
+                    }
+                ],
+                "Confidence": 0.42,
+                "NeedsMore": True,
+            }
+        )
+
+        assert len(selection.selected) == 1
+        assert selection.selected[0].id == "rec-1"
+        assert selection.confidence == 0.42
+        assert selection.needs_more is True
+
+    def test_retrieve_result_defaults(self):
+        result = RetrieveResult()
+        assert result.records == []
+        assert result.selection is None

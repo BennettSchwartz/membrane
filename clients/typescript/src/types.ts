@@ -166,6 +166,17 @@ export interface MemoryRecord {
 
 export type JsonObject = Record<string, unknown>;
 
+export interface SelectionResult {
+  selected: MemoryRecord[];
+  confidence: number;
+  needs_more: boolean;
+}
+
+export interface RetrieveResult {
+  records: MemoryRecord[];
+  selection?: SelectionResult;
+}
+
 export function createDefaultTrustContext(): TrustContext {
   return {
     max_sensitivity: Sensitivity.LOW,
