@@ -1,6 +1,6 @@
 {
   "name": "@gustycube/membrane",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "TypeScript client for the Membrane memory substrate",
   "license": "MIT",
   "author": "Bennett Schwartz",
