@@ -50,8 +50,7 @@ npx brainplex init  # Auto-detects and configures all plugins
 | `context_limit` | `5` | Max memories to inject |
 | `min_salience` | `0.3` | Minimum salience score for retrieval |
 | `context_types` | `["event", "tool_output", "observation"]` | Memory types to include |
-| `buffer_size` | `100` | Event buffer for reliability |
-| `flush_interval_ms` | `5000` | Buffer flush interval |
+
 
 ## Usage
 

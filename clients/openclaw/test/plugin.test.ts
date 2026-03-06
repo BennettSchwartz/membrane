@@ -30,8 +30,8 @@ describe("createConfig", () => {
   });
 
   it("ignores invalid types", () => {
-    const config = createConfig({ buffer_size: "not-a-number" });
-    expect(config.buffer_size).toBe(DEFAULT_CONFIG.buffer_size);
+    const config = createConfig({ context_limit: "not-a-number" });
+    expect(config.context_limit).toBe(DEFAULT_CONFIG.context_limit);
   });
 });
 
