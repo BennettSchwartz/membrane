@@ -24,7 +24,7 @@ func main() {
 
 	if *showVersion {
 		fmt.Printf("membraned %s\n", version)
-		os.Exit(0)
+		return
 	}
 
 	// Load configuration.
