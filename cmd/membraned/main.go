@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,11 +13,19 @@ import (
 	"github.com/GustyCube/membrane/pkg/membrane"
 )
 
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to YAML config file")
 	dbPath := flag.String("db", "", "SQLite database path (overrides config)")
 	addr := flag.String("addr", "", "gRPC listen address (overrides config)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("membraned version", version)
+		os.Exit(0)
+	}
 
 	// Load configuration.
 	var cfg *membrane.Config
