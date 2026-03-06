@@ -35,116 +35,127 @@ export function validateConfig(raw: Record<string, unknown> | undefined): Partia
   return result;
 }
 
-// ── Plugin Lifecycle ──
+// ── Plugin Class ──
 
-let client: MembraneClient | null = null;
-let config: PluginConfig = DEFAULT_CONFIG;
-let log: PluginLogger = console;
+/**
+ * OpenClaw plugin bridge to Membrane episodic memory.
+ * Each instance owns its own client and config — no module-level singletons.
+ */
+export class OpenClawMembranePlugin {
+  private client: MembraneClient | null = null;
+  private config: PluginConfig;
+  private log: PluginLogger;
 
-/** Initialize the plugin — called by OpenClaw on load */
-export function activate(api: PluginApi): void {
-  config = createConfig(api.config);
-  log = api.log;
+  constructor(api: PluginApi) {
+    this.config = createConfig(api.config);
+    this.log = api.log;
+  }
 
-  client = new MembraneClient(config.grpc_endpoint);
-  log.info(`[membrane] Connected to ${config.grpc_endpoint}`);
-}
-
-/** Cleanup — called by OpenClaw on shutdown */
-export function deactivate(): void {
-  if (client) client.close();
-  client = null;
-  log.info("[membrane] Disconnected");
-}
-
-// ── Hooks ──
-
-/** Ingest agent replies and tool outputs into Membrane */
-export async function handleEvent(event: OpenClawEvent): Promise<void> {
-  if (!client) return;
-
-  const kind = mapEventKind(event);
-  const sensitivity = mapSensitivity(config.default_sensitivity);
-  const tags = buildTags(event);
-  const source = event.agentId ?? "openclaw";
-
-  try {
-    if (kind === "tool_output" && event.toolName) {
-      await client.ingestToolOutput(event.toolName, {
-        args: (event.toolParams ?? {}) as Record<string, unknown>,
-        result: event.toolResult ?? null,
-        sensitivity,
-        source,
-        tags,
-      });
-    } else {
-      await client.ingestEvent(event.hook, source, {
-        summary: summarize(event),
-        sensitivity,
-        tags,
-      });
+  /** Connect to Membrane */
+  activate(): void {
+    if (this.client) {
+      this.client.close();
     }
-  } catch (err) {
-    log.warn(`[membrane] Ingestion failed: ${err instanceof Error ? err.message : String(err)}`);
+    this.client = new MembraneClient(this.config.grpc_endpoint);
+    this.log.info(`[membrane] Connected to ${this.config.grpc_endpoint}`);
   }
-}
 
-/** Search Membrane for relevant memories (exposed as membrane_search tool) */
-export async function search(
-  query: string,
-  options?: { limit?: number; memoryTypes?: string[]; minSalience?: number },
-): Promise<MemoryRecord[]> {
-  if (!client) return [];
-
-  try {
-    const retrieveOpts: RetrieveOptions = {
-      limit: options?.limit ?? config.context_limit,
-      minSalience: options?.minSalience ?? config.min_salience,
-    };
-    if (options?.memoryTypes) {
-      retrieveOpts.memoryTypes = options.memoryTypes as MemoryType[];
+  /** Disconnect from Membrane */
+  deactivate(): void {
+    if (this.client) {
+      this.client.close();
+      this.client = null;
     }
-    return await client.retrieve(query, retrieveOpts);
-  } catch (err) {
-    log.warn(`[membrane] Search failed: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
-  }
-}
-
-/** Auto-inject context before agent starts (if enabled) */
-export async function getContext(agentId: string): Promise<string | null> {
-  if (!config.auto_context || !client) return null;
-
-  try {
-    const records = await client.retrieve(`context for agent ${agentId}`, {
-      limit: config.context_limit,
-      memoryTypes: config.context_types as MemoryType[],
-      minSalience: config.min_salience,
-    });
-
-    if (records.length === 0) return null;
-
-    const lines = records.map((r: MemoryRecord, i: number) =>
-      `${i + 1}. [${r.type}] ${r.id}`
-    );
-    return `Episodic memory from Membrane:\n${lines.join("\n")}`;
-  } catch (err) {
-    log.debug(`[membrane] Context injection skipped: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
-/** Get connection status and stats */
-export async function getStatus(): Promise<{ connected: boolean; endpoint: string; metrics?: unknown }> {
-  if (!client) {
-    return { connected: false, endpoint: config.grpc_endpoint };
+    this.log.info("[membrane] Disconnected");
   }
 
-  try {
-    const metrics = await client.getMetrics();
-    return { connected: true, endpoint: config.grpc_endpoint, metrics };
-  } catch {
-    return { connected: false, endpoint: config.grpc_endpoint };
+  /** Ingest agent replies and tool outputs into Membrane */
+  async handleEvent(event: OpenClawEvent): Promise<void> {
+    if (!this.client) return;
+
+    const kind = mapEventKind(event);
+    const sensitivity = mapSensitivity(this.config.default_sensitivity);
+    const tags = buildTags(event);
+    const source = event.agentId ?? "openclaw";
+
+    try {
+      if (kind === "tool_output" && event.toolName) {
+        await this.client.ingestToolOutput(event.toolName, {
+          args: (event.toolParams ?? {}) as Record<string, unknown>,
+          result: event.toolResult ?? null,
+          sensitivity,
+          source,
+          tags,
+        });
+      } else {
+        await this.client.ingestEvent(event.hook, source, {
+          summary: summarize(event),
+          sensitivity,
+          tags,
+        });
+      }
+    } catch (err) {
+      this.log.warn(`[membrane] Ingestion failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Search Membrane for relevant memories */
+  async search(
+    query: string,
+    options?: { limit?: number; memoryTypes?: string[]; minSalience?: number },
+  ): Promise<MemoryRecord[]> {
+    if (!this.client) return [];
+
+    try {
+      const retrieveOpts: RetrieveOptions = {
+        limit: options?.limit ?? this.config.context_limit,
+        minSalience: options?.minSalience ?? this.config.min_salience,
+      };
+      if (options?.memoryTypes) {
+        retrieveOpts.memoryTypes = options.memoryTypes as MemoryType[];
+      }
+      return await this.client.retrieve(query, retrieveOpts);
+    } catch (err) {
+      this.log.warn(`[membrane] Search failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** Auto-inject context before agent starts */
+  async getContext(agentId: string): Promise<string | null> {
+    if (!this.config.auto_context || !this.client) return null;
+
+    try {
+      const records = await this.client.retrieve(`context for agent ${agentId}`, {
+        limit: this.config.context_limit,
+        memoryTypes: this.config.context_types as MemoryType[],
+        minSalience: this.config.min_salience,
+      });
+
+      if (records.length === 0) return null;
+
+      const lines = records.map((r: MemoryRecord, i: number) =>
+        `${i + 1}. [${r.type}] ${r.id}`
+      );
+      return `Episodic memory from Membrane:\n${lines.join("\n")}`;
+    } catch (err) {
+      this.log.debug(`[membrane] Context injection skipped: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** Get connection status and stats */
+  async getStatus(): Promise<{ connected: boolean; endpoint: string; metrics?: unknown }> {
+    if (!this.client) {
+      return { connected: false, endpoint: this.config.grpc_endpoint };
+    }
+
+    try {
+      const metrics = await this.client.getMetrics();
+      return { connected: true, endpoint: this.config.grpc_endpoint, metrics };
+    } catch {
+      return { connected: false, endpoint: this.config.grpc_endpoint };
+    }
   }
 }
 
