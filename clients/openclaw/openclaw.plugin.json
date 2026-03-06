@@ -14,7 +14,8 @@
       "parameters": {
         "query": { "type": "string", "description": "Natural language query to search memories" },
         "limit": { "type": "number", "description": "Maximum results to return (default: 5)" },
-        "memory_types": { "type": "array", "description": "Filter by memory type: event, tool_output, observation, working_state" }
+        "memory_types": { "type": "array", "description": "Filter by memory type: event, tool_output, observation, working_state" },
+        "min_salience": { "type": "number", "description": "Minimum salience score (0-1, default: 0.3)" }
       }
     }
   ],

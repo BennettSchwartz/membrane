@@ -26,8 +26,13 @@ describe("mapEventKind", () => {
     expect(mapEventKind(event)).toBe("event");
   });
 
-  it("defaults to observation", () => {
+  it("maps before_agent_start to observation", () => {
     const event: OpenClawEvent = { hook: "before_agent_start" };
+    expect(mapEventKind(event)).toBe("observation");
+  });
+
+  it("maps after_tool_call without toolName to observation", () => {
+    const event: OpenClawEvent = { hook: "after_tool_call" };
     expect(mapEventKind(event)).toBe("observation");
   });
 });

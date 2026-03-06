@@ -24,11 +24,9 @@ export function validateConfig(raw: Record<string, unknown> | undefined): Partia
   const result: Partial<PluginConfig> = {};
   if (typeof raw.grpc_endpoint === "string") result.grpc_endpoint = raw.grpc_endpoint;
   if (typeof raw.default_sensitivity === "string") result.default_sensitivity = raw.default_sensitivity;
-  if (typeof raw.buffer_size === "number") result.buffer_size = raw.buffer_size;
   if (typeof raw.auto_context === "boolean") result.auto_context = raw.auto_context;
   if (typeof raw.context_limit === "number") result.context_limit = raw.context_limit;
   if (typeof raw.min_salience === "number") result.min_salience = raw.min_salience;
-  if (typeof raw.flush_interval_ms === "number") result.flush_interval_ms = raw.flush_interval_ms;
   if (Array.isArray(raw.context_types)) {
     result.context_types = raw.context_types.filter((t): t is string => typeof t === "string");
   }
@@ -87,10 +85,21 @@ export class OpenClawMembranePlugin {
           source,
           tags,
         });
+      } else if (kind === "observation") {
+        // Observation: subject=agentId, predicate=hook, obj=summary
+        await this.client.ingestObservation(
+          source,
+          event.hook,
+          summarize(event),
+          { sensitivity, source, tags },
+        );
       } else {
-        await this.client.ingestEvent(event.hook, source, {
+        // Event: ref = sessionKey or hook (unique reference for the event)
+        const ref = event.sessionKey ?? event.hook;
+        await this.client.ingestEvent(event.hook, ref, {
           summary: summarize(event),
           sensitivity,
+          source,
           tags,
         });
       }
@@ -102,17 +111,27 @@ export class OpenClawMembranePlugin {
   /** Search Membrane for relevant memories */
   async search(
     query: string,
-    options?: { limit?: number; memoryTypes?: string[]; minSalience?: number },
+    options?: {
+      limit?: number;
+      memoryTypes?: string[];
+      memory_types?: string[];
+      minSalience?: number;
+      min_salience?: number;
+    },
   ): Promise<MemoryRecord[]> {
     if (!this.client) return [];
 
     try {
+      const effectiveMemoryTypes = options?.memoryTypes ?? options?.memory_types;
+      const effectiveMinSalience =
+        options?.minSalience ?? options?.min_salience ?? this.config.min_salience;
+
       const retrieveOpts: RetrieveOptions = {
         limit: options?.limit ?? this.config.context_limit,
-        minSalience: options?.minSalience ?? this.config.min_salience,
+        minSalience: effectiveMinSalience,
       };
-      if (options?.memoryTypes) {
-        retrieveOpts.memoryTypes = options.memoryTypes as MemoryType[];
+      if (effectiveMemoryTypes) {
+        retrieveOpts.memoryTypes = effectiveMemoryTypes as MemoryType[];
       }
       return await this.client.retrieve(query, retrieveOpts);
     } catch (err) {
