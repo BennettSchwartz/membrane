@@ -1,0 +1,44 @@
+{
+  "name": "@vainplex/openclaw-membrane",
+  "version": "0.4.0",
+  "description": "Membrane bridge plugin for OpenClaw — episodic memory ingestion, search, and auto-context injection",
+  "license": "MIT",
+  "author": "Vainplex <dev@vainplex.de>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GustyCube/membrane.git",
+    "directory": "clients/openclaw"
+  },
+  "homepage": "https://github.com/GustyCube/membrane",
+  "bugs": {
+    "url": "https://github.com/GustyCube/membrane/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@gustycube/membrane": "^0.1.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

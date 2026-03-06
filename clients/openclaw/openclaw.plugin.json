@@ -1,0 +1,27 @@
+{
+  "name": "openclaw-membrane",
+  "version": "0.4.0",
+  "description": "Membrane episodic memory bridge — ingest events, search memories, auto-inject context",
+  "hooks": [
+    "after_agent_reply",
+    "after_tool_call",
+    "before_agent_start"
+  ],
+  "tools": [
+    {
+      "name": "membrane_search",
+      "description": "Search episodic memory in Membrane for relevant context",
+      "parameters": {
+        "query": { "type": "string", "description": "Natural language query to search memories" },
+        "limit": { "type": "number", "description": "Maximum results to return (default: 5)" },
+        "memory_types": { "type": "array", "description": "Filter by memory type: event, tool_output, observation, working_state" }
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "membrane",
+      "description": "Show Membrane connection status and memory stats"
+    }
+  ]
+}
