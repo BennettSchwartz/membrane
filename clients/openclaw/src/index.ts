@@ -11,7 +11,7 @@
 import { MembraneClient, type MemoryRecord, type MemoryType, type RetrieveOptions } from "@gustycube/membrane";
 import { mapSensitivity, mapEventKind, summarize, buildTags } from "./mapping.js";
 import type { PluginConfig, PluginApi, PluginLogger, OpenClawEvent } from "./types.js";
-import { DEFAULT_CONFIG } from "./types.js";
+import { DEFAULT_CONFIG, VALID_MEMORY_TYPES } from "./types.js";
 
 // ── Config ──
 
@@ -32,7 +32,9 @@ export function validateConfig(raw: Record<string, unknown> | undefined): Partia
     result.min_salience = raw.min_salience;
   }
   if (Array.isArray(raw.context_types)) {
-    const filtered = raw.context_types.filter((t): t is string => typeof t === "string");
+    const filtered = raw.context_types.filter(
+      (t): t is string => typeof t === "string" && (VALID_MEMORY_TYPES as readonly string[]).includes(t),
+    );
     if (filtered.length > 0) result.context_types = filtered;
   }
   return result;
@@ -140,7 +142,12 @@ export class OpenClawMembranePlugin {
         minSalience: effectiveMinSalience,
       };
       if (effectiveMemoryTypes) {
-        retrieveOpts.memoryTypes = effectiveMemoryTypes as MemoryType[];
+        const validTypes = effectiveMemoryTypes.filter(
+          (t) => (VALID_MEMORY_TYPES as readonly string[]).includes(t),
+        );
+        if (validTypes.length > 0) {
+          retrieveOpts.memoryTypes = validTypes as MemoryType[];
+        }
       }
       return await this.client.retrieve(query, retrieveOpts);
     } catch (err) {
@@ -165,7 +172,15 @@ export class OpenClawMembranePlugin {
       const lines = records.map((r: MemoryRecord, i: number) => {
         // Extract human-readable summary from payload when available
         const payload = r.payload as Record<string, unknown> | undefined;
-        const summary = payload?.summary ?? payload?.content ?? r.id;
+        // Episodic records store summaries in payload.timeline[].summary
+        let summary: unknown = undefined;
+        if (Array.isArray(payload?.timeline)) {
+          const entry = (payload.timeline as Array<Record<string, unknown>>).find(
+            (e) => typeof e?.summary === "string" && e.summary.length > 0,
+          );
+          if (entry) summary = entry.summary;
+        }
+        summary = summary ?? payload?.summary ?? payload?.content ?? r.id;
         return `${i + 1}. [${r.type}] ${String(summary)}`;
       });
       return `Episodic memory from Membrane:\n${lines.join("\n")}`;
@@ -193,5 +208,5 @@ export class OpenClawMembranePlugin {
 
 // Re-exports
 export type { PluginConfig, PluginApi, PluginLogger, OpenClawEvent } from "./types.js";
-export { DEFAULT_CONFIG } from "./types.js";
+export { DEFAULT_CONFIG, VALID_MEMORY_TYPES } from "./types.js";
 export { mapSensitivity, mapEventKind, summarize, buildTags } from "./mapping.js";

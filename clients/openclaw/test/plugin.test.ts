@@ -40,9 +40,9 @@ describe("validateConfig", () => {
     expect(validateConfig(undefined)).toEqual({});
   });
 
-  it("filters context_types to strings only", () => {
-    const result = validateConfig({ context_types: ["event", 42, "observation"] });
-    expect(result.context_types).toEqual(["event", "observation"]);
+  it("filters context_types to valid string types only", () => {
+    const result = validateConfig({ context_types: ["episodic", 42, "working"] });
+    expect(result.context_types).toEqual(["episodic", "working"]);
   });
 
   it("rejects NaN and negative context_limit", () => {
@@ -66,6 +66,16 @@ describe("validateConfig", () => {
 
   it("drops empty context_types array to preserve defaults", () => {
     const result = validateConfig({ context_types: [42, true] });
+    expect(result.context_types).toBeUndefined();
+  });
+
+  it("filters context_types to valid Membrane memory types only", () => {
+    const result = validateConfig({ context_types: ["episodic", "unsupported", "semantic", "event"] });
+    expect(result.context_types).toEqual(["episodic", "semantic"]);
+  });
+
+  it("drops context_types when none are valid Membrane types", () => {
+    const result = validateConfig({ context_types: ["event", "tool_output", "observation"] });
     expect(result.context_types).toBeUndefined();
   });
 });

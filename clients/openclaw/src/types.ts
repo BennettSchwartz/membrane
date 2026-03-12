@@ -17,13 +17,16 @@ export interface PluginConfig {
   context_types: string[];
 }
 
+/** Valid Membrane memory types for retrieval filtering */
+export const VALID_MEMORY_TYPES = ["episodic", "working", "semantic", "competence", "plan_graph"] as const;
+
 export const DEFAULT_CONFIG: PluginConfig = {
   grpc_endpoint: "localhost:4222",
   default_sensitivity: "low",
   auto_context: true,
   context_limit: 5,
   min_salience: 0.3,
-  context_types: ["event", "tool_output", "observation"],
+  context_types: ["episodic", "semantic", "competence"],
 };
 
 /** OpenClaw hook event passed to plugin hooks */

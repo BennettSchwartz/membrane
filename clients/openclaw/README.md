@@ -29,17 +29,20 @@ npx brainplex init  # Auto-detects and configures all plugins
 
 ## Configuration
 
-`~/.openclaw/plugins/openclaw-membrane/config.json`:
+In your OpenClaw config (`openclaw.yaml`), under `plugins.entries`:
 
-```json
-{
-  "grpc_endpoint": "localhost:4222",
-  "default_sensitivity": "low",
-  "auto_context": true,
-  "context_limit": 5,
-  "min_salience": 0.3,
-  "context_types": ["event", "tool_output", "observation"]
-}
+```yaml
+plugins:
+  entries:
+    openclaw-membrane:
+      enabled: true
+      config:
+        grpc_endpoint: "localhost:4222"
+        default_sensitivity: "low"
+        auto_context: true
+        context_limit: 5
+        min_salience: 0.3
+        context_types: ["episodic", "semantic", "competence"]
 ```
 
 | Option | Default | Description |
@@ -49,7 +52,7 @@ npx brainplex init  # Auto-detects and configures all plugins
 | `auto_context` | `true` | Auto-inject memories before each agent turn |
 | `context_limit` | `5` | Max memories to inject |
 | `min_salience` | `0.3` | Minimum salience score for retrieval |
-| `context_types` | `["event", "tool_output", "observation"]` | Memory types to include |
+| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph` |
 
 
 ## Usage
