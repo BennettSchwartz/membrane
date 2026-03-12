@@ -65,3 +65,4 @@ node_modules/
 # Plan files
 plan.md
 .claude/
+clients/openclaw/package-lock.json

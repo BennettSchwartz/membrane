@@ -1,0 +1,51 @@
+{
+  "id": "openclaw-membrane",
+  "kind": "memory",
+  "name": "openclaw-membrane",
+  "version": "0.4.0",
+  "description": "Membrane episodic memory bridge — ingest events, search memories, auto-inject context",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "grpc_endpoint": { "type": "string", "default": "localhost:4222" },
+      "default_sensitivity": { "type": "string", "enum": ["public", "low", "medium", "high", "hyper"], "default": "low" },
+      "auto_context": { "type": "boolean", "default": true },
+      "context_limit": { "type": "integer", "minimum": 1, "default": 5 },
+      "min_salience": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+      "context_types": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["episodic", "working", "semantic", "competence", "plan_graph"] },
+        "default": ["episodic", "semantic", "competence"]
+      }
+    },
+    "additionalProperties": false
+  },
+  "hooks": [
+    "after_agent_reply",
+    "after_tool_call",
+    "before_agent_start"
+  ],
+  "tools": [
+    {
+      "name": "membrane_search",
+      "description": "Search episodic memory in Membrane for relevant context",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Natural language query to search memories" },
+          "limit": { "type": "integer", "minimum": 1, "description": "Maximum results to return (default: 5)" },
+          "memory_types": { "type": "array", "items": { "type": "string", "enum": ["episodic", "working", "semantic", "competence", "plan_graph"] }, "description": "Filter by memory type: episodic, working, semantic, competence, plan_graph" },
+          "min_salience": { "type": "number", "minimum": 0, "maximum": 1, "description": "Minimum salience score (0-1, default: 0.3)" }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "membrane",
+      "description": "Show Membrane connection status and memory stats"
+    }
+  ]
+}
