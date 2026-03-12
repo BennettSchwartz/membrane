@@ -1,5 +1,6 @@
 {
   "id": "openclaw-membrane",
+  "kind": "memory",
   "name": "openclaw-membrane",
   "version": "0.4.0",
   "description": "Membrane episodic memory bridge — ingest events, search memories, auto-inject context",
