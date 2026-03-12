@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: "en-US"
 
 reviews:
@@ -9,23 +10,23 @@ reviews:
     ignore_title_keywords:
       - "wip"
       - "draft"
-  auto_pause_after_reviewed_commits: 0
-  ignore:
-    - "go.sum"
-    - "**/package-lock.json"
-    - "**/pnpm-lock.yaml"
-    - "**/yarn.lock"
-    - "**/*.snap"
-    - "**/dist/**"
-    - "**/build/**"
-    - "**/.vitepress/dist/**"
-    - "**/coverage/**"
-    - "**/.next/**"
-    - "**/site/**"
-    - "**/docs/.vitepress/cache/**"
-    - "**/*.min.js"
-    - "**/*.generated.*"
-    - "**/*pb.go"
+    auto_pause_after_reviewed_commits: 0
+  path_filters:
+    - "!go.sum"
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+    - "!**/yarn.lock"
+    - "!**/*.snap"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/.vitepress/dist/**"
+    - "!**/coverage/**"
+    - "!**/.next/**"
+    - "!**/site/**"
+    - "!**/docs/.vitepress/cache/**"
+    - "!**/*.min.js"
+    - "!**/*.generated.*"
+    - "!**/*pb.go"
 
 chat:
   auto_reply: true
