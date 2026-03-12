@@ -145,9 +145,11 @@ export class OpenClawMembranePlugin {
         const validTypes = effectiveMemoryTypes.filter(
           (t) => (VALID_MEMORY_TYPES as readonly string[]).includes(t),
         );
-        if (validTypes.length > 0) {
-          retrieveOpts.memoryTypes = validTypes as MemoryType[];
+        if (validTypes.length === 0) {
+          this.log.warn(`[membrane] All provided memoryTypes are invalid: ${effectiveMemoryTypes.join(", ")}`);
+          return [];
         }
+        retrieveOpts.memoryTypes = validTypes as MemoryType[];
       }
       return await this.client.retrieve(query, retrieveOpts);
     } catch (err) {
