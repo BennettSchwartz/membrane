@@ -25,10 +25,15 @@ export function validateConfig(raw: Record<string, unknown> | undefined): Partia
   if (typeof raw.grpc_endpoint === "string") result.grpc_endpoint = raw.grpc_endpoint;
   if (typeof raw.default_sensitivity === "string") result.default_sensitivity = raw.default_sensitivity;
   if (typeof raw.auto_context === "boolean") result.auto_context = raw.auto_context;
-  if (typeof raw.context_limit === "number") result.context_limit = raw.context_limit;
-  if (typeof raw.min_salience === "number") result.min_salience = raw.min_salience;
+  if (typeof raw.context_limit === "number" && Number.isInteger(raw.context_limit) && raw.context_limit > 0) {
+    result.context_limit = raw.context_limit;
+  }
+  if (typeof raw.min_salience === "number" && Number.isFinite(raw.min_salience) && raw.min_salience >= 0 && raw.min_salience <= 1) {
+    result.min_salience = raw.min_salience;
+  }
   if (Array.isArray(raw.context_types)) {
-    result.context_types = raw.context_types.filter((t): t is string => typeof t === "string");
+    const filtered = raw.context_types.filter((t): t is string => typeof t === "string");
+    if (filtered.length > 0) result.context_types = filtered;
   }
   return result;
 }
@@ -94,8 +99,12 @@ export class OpenClawMembranePlugin {
           { sensitivity, source, tags },
         );
       } else {
-        // Event: ref = sessionKey or hook (unique reference for the event)
-        const ref = event.sessionKey ?? event.hook;
+        // Event: ref must be unique per ingestion to avoid collisions
+        const ref = [
+          event.sessionKey ?? source,
+          event.hook,
+          event.timestamp ?? String(Date.now()),
+        ].join(":");
         await this.client.ingestEvent(event.hook, ref, {
           summary: summarize(event),
           sensitivity,
@@ -153,9 +162,12 @@ export class OpenClawMembranePlugin {
 
       if (records.length === 0) return null;
 
-      const lines = records.map((r: MemoryRecord, i: number) =>
-        `${i + 1}. [${r.type}] ${r.id}`
-      );
+      const lines = records.map((r: MemoryRecord, i: number) => {
+        // Extract human-readable summary from payload when available
+        const payload = r.payload as Record<string, unknown> | undefined;
+        const summary = payload?.summary ?? payload?.content ?? r.id;
+        return `${i + 1}. [${r.type}] ${String(summary)}`;
+      });
       return `Episodic memory from Membrane:\n${lines.join("\n")}`;
     } catch (err) {
       this.log.debug(`[membrane] Context injection skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -172,8 +184,9 @@ export class OpenClawMembranePlugin {
     try {
       const metrics = await this.client.getMetrics();
       return { connected: true, endpoint: this.config.grpc_endpoint, metrics };
-    } catch {
-      return { connected: false, endpoint: this.config.grpc_endpoint };
+    } catch (err) {
+      this.log.debug(`[membrane] Metrics unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      return { connected: true, endpoint: this.config.grpc_endpoint };
     }
   }
 }

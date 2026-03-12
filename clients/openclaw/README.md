@@ -58,7 +58,7 @@ npx brainplex init  # Auto-detects and configures all plugins
 
 Your agent can search episodic memory:
 
-```
+```javascript
 membrane_search("what happened in yesterday's meeting", { limit: 10 })
 ```
 
@@ -70,14 +70,14 @@ When `auto_context: true`, the plugin injects relevant memories into the agent's
 
 Check connection status:
 
-```
+```text
 /membrane
 → Membrane: connected (localhost:4222) | 1,247 records | 3 memory types
 ```
 
 ## Architecture
 
-```
+```text
 OpenClaw Agent
      │
      ├── after_agent_reply ──→ ingestEvent()

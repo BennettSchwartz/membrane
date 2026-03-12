@@ -44,6 +44,30 @@ describe("validateConfig", () => {
     const result = validateConfig({ context_types: ["event", 42, "observation"] });
     expect(result.context_types).toEqual(["event", "observation"]);
   });
+
+  it("rejects NaN and negative context_limit", () => {
+    expect(validateConfig({ context_limit: NaN })).toEqual({});
+    expect(validateConfig({ context_limit: -1 })).toEqual({});
+    expect(validateConfig({ context_limit: 0 })).toEqual({});
+    expect(validateConfig({ context_limit: 3.5 })).toEqual({});
+  });
+
+  it("rejects out-of-range min_salience", () => {
+    expect(validateConfig({ min_salience: -0.1 })).toEqual({});
+    expect(validateConfig({ min_salience: 1.5 })).toEqual({});
+    expect(validateConfig({ min_salience: NaN })).toEqual({});
+  });
+
+  it("accepts valid min_salience", () => {
+    expect(validateConfig({ min_salience: 0 })).toEqual({ min_salience: 0 });
+    expect(validateConfig({ min_salience: 0.5 })).toEqual({ min_salience: 0.5 });
+    expect(validateConfig({ min_salience: 1 })).toEqual({ min_salience: 1 });
+  });
+
+  it("drops empty context_types array to preserve defaults", () => {
+    const result = validateConfig({ context_types: [42, true] });
+    expect(result.context_types).toBeUndefined();
+  });
 });
 
 describe("OpenClawMembranePlugin", () => {
