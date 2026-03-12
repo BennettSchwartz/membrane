@@ -37,7 +37,8 @@
           "memory_types": { "type": "array", "items": { "type": "string", "enum": ["episodic", "working", "semantic", "competence", "plan_graph"] }, "description": "Filter by memory type: episodic, working, semantic, competence, plan_graph" },
           "min_salience": { "type": "number", "minimum": 0, "maximum": 1, "description": "Minimum salience score (0-1, default: 0.3)" }
         },
-        "required": ["query"]
+        "required": ["query"],
+        "additionalProperties": false
       }
     }
   ],
