@@ -62,12 +62,14 @@ Membrane makes memory **selective** and **revisable**. It captures raw experienc
 - **Typed Memory** -- Explicit schemas and lifecycles for each memory type, not a flat text store.
 - **Revisable Knowledge** -- Supersede, fork, retract, merge, and contest records with full provenance tracking.
 - **Competence Learning** -- Agents learn *how* to solve problems (procedures, success rates), not just *what* happened.
-- **Decay and Consolidation** -- Time-based salience decay keeps memory useful; background consolidation extracts durable knowledge from episodic traces.
+- **Decay and Consolidation** -- Time-based salience decay keeps memory useful; background consolidation extracts semantic facts, competence records, and plan graphs from episodic traces.
+- **LLM-Based Semantic Extraction** -- On the Postgres + LLM tier, episodic records can be converted into typed semantic facts asynchronously through a structured extraction pipeline.
 - **Trust-Aware Retrieval** -- Sensitivity levels (public, low, medium, high, hyper) with graduated access control and redacted responses for records above the caller's trust level.
 - **Security and Operations** -- SQLCipher encryption at rest, optional TLS and API key authentication, configurable rate limiting, full audit logs.
 - **Observability** -- Built-in metrics for retrieval usefulness, competence success rate, plan reuse frequency, memory growth, and revision rate.
 - **gRPC API** -- 15-method gRPC service with TypeScript and Python client SDKs, or use Membrane as an embedded Go library.
-- **LLM-Ready Context Retrieval** -- Retrieve trust-filtered, typed memory and inject it directly into LLM prompts for planning, execution, and self-correction loops.
+- **Vector-Aware Retrieval** -- With the Postgres + pgvector backend enabled, competence and plan-graph applicability can be scored with embedding similarity instead of the confidence-only fallback.
+- **LLM-Ready Context Retrieval** -- Retrieve trust-filtered, typed memory and inject it directly into LLM prompts for planning, execution, self-correction, and background learning loops.
 
 ## Memory Types
 
@@ -105,6 +107,9 @@ make test
 
 # Start with default SQLite storage
 ./bin/membraned
+
+# Start with Postgres + pgvector instead
+./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
 
 # With custom configuration
 ./bin/membraned --config /path/to/config.yaml
@@ -206,9 +211,18 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 
 ### Storage Model
 
-- **Authoritative Store** -- SQLCipher-encrypted SQLite database for metadata, lifecycle state, revision chains, relations, and audit history.
+- **Authoritative Store** -- SQLite with SQLCipher remains the default embedded store; Postgres + pgvector is available as an opt-in backend for concurrent deployments and embedding-backed retrieval.
 - **Structured Payloads** -- Type-specific schemas stored as JSON within the authoritative store.
 - **Relationship Graph** -- Relations between records (supersedes, derived_from, contested_by, supports, contradicts) stored alongside the records they describe.
+
+### Deployment Tiers
+
+| Tier | Backend | Embedding | LLM | Behavior |
+|------|---------|-----------|-----|----------|
+| **1** | SQLite | - | - | Zero-infra default, confidence-based applicability fallback |
+| **2** | Postgres | - | - | Concurrent writers, JSONB storage, same retrieval semantics as tier 1 |
+| **3** | Postgres + pgvector | Yes | - | Embedding-based applicability scoring for competence and plan_graph selection |
+| **4** | Postgres + pgvector | Yes | Yes | Full system with LLM-backed episodic to semantic extraction |
 
 ### Background Jobs
 
@@ -216,7 +230,7 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 |-----|-----------------|---------|
 | **Decay** | 1 hour | Applies time-based salience decay using an exponential curve |
 | **Pruning** | With decay | Deletes records with `auto_prune` policy whose salience has reached 0 |
-| **Consolidation** | 6 hours | Extracts semantic facts, competence records, and plan graphs from episodic memory |
+| **Consolidation** | 6 hours | Runs structural semantic consolidation, LLM-backed semantic extraction when configured, competence extraction, and plan-graph extraction |
 
 ### Security Model
 
@@ -232,12 +246,25 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 Membrane is configured via a YAML file or command-line flags. Secrets should come from environment variables.
 
 ```yaml
+backend: "sqlite"
 db_path: "membrane.db"
+# postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
 listen_addr: ":9090"
 decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
 selection_confidence_threshold: 0.7
+
+# Optional embedding-backed retrieval (Postgres only)
+# embedding_endpoint: "https://api.openai.com/v1/embeddings"
+# embedding_model: "text-embedding-3-small"
+# embedding_dimensions: 1536
+# embedding_api_key: ""   # or set MEMBRANE_EMBEDDING_API_KEY
+
+# Optional LLM-backed semantic extraction (Postgres only)
+# llm_endpoint: "https://api.openai.com/v1/chat/completions"
+# llm_model: "gpt-5-mini"
+# llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
 
 # Security (prefer environment variables for keys)
 # encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
@@ -250,6 +277,9 @@ rate_limit_per_second: 100
 | Variable | Purpose |
 |----------|---------|
 | `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the database |
+| `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN used when `backend: postgres` |
+| `MEMBRANE_EMBEDDING_API_KEY` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_API_KEY` | API key for the semantic extraction LLM endpoint |
 | `MEMBRANE_API_KEY` | Bearer token for gRPC authentication |
 
 ## gRPC API
@@ -347,7 +377,7 @@ Local run (Feb 5, 2026):
 - **Unit/Integration**: 22 top-level eval tests + 7 subtests = 29 test cases, 0 failures (~0.40s)
 - **Vector E2E**: 35 records, 18 queries -- recall@k 1.000, precision@k 0.267, MRR@k 0.956, NDCG@k 0.955
 
-Note: Membrane itself does not implement vector similarity search. End-to-end recall depends on the retrieval backend and the agent policy driving ingestion and reinforcement. Treat recall tests as scenario-level regression guards rather than universal benchmarks.
+Note: Membrane can use pgvector-backed similarity search and embedding-based applicability scoring when the Postgres backend is enabled. End-to-end recall still depends on ingestion quality, trust filters, and reinforcement behavior, so treat recall tests as scenario-level regression guards rather than universal benchmarks.
 
 ## Observability
 
@@ -434,6 +464,8 @@ Membrane is designed to sit between your orchestration layer and the model call.
 2. Retrieve relevant memory for the next task.
 3. Build an LLM prompt using those retrieved records.
 4. Use the model output to act, then ingest outcomes and reinforce useful records.
+
+When Postgres plus an LLM endpoint are configured, Membrane can also run a background semantic extractor that turns episodic traces into typed semantic facts asynchronously during consolidation.
 
 ```ts
 import OpenAI from "openai";
