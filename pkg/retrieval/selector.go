@@ -1,6 +1,7 @@
 package retrieval
 
 import (
+	"context"
 	"math"
 	"sort"
 	"time"
@@ -23,6 +24,9 @@ type SelectionResult struct {
 	// NeedsMore is true when confidence falls below the selector's threshold,
 	// indicating that additional information or user disambiguation is needed.
 	NeedsMore bool
+
+	// Scores contains the computed score for each selected record ID.
+	Scores map[string]float64
 }
 
 // Selector performs multi-solution selection for competence and plan_graph
@@ -30,6 +34,12 @@ type SelectionResult struct {
 // recency of reinforcement.
 type Selector struct {
 	confidenceThreshold float64
+	embedding           EmbeddingProvider
+}
+
+// EmbeddingProvider computes record applicability against a query embedding.
+type EmbeddingProvider interface {
+	Similarity(ctx context.Context, recordID string, query []float32) (float64, bool)
 }
 
 // NewSelector creates a Selector with the given confidence threshold.
@@ -40,6 +50,14 @@ func NewSelector(confidenceThreshold float64) *Selector {
 	}
 }
 
+// NewSelectorWithEmbedding creates a selector that uses embeddings for applicability when available.
+func NewSelectorWithEmbedding(confidenceThreshold float64, embedding EmbeddingProvider) *Selector {
+	return &Selector{
+		confidenceThreshold: confidenceThreshold,
+		embedding:           embedding,
+	}
+}
+
 // Select ranks candidate records and returns a SelectionResult.
 // Candidates are scored using three equally-weighted signals:
 //  1. Applicability conditions - trigger/constraint match (approximated by confidence field).
@@ -47,17 +65,18 @@ func NewSelector(confidenceThreshold float64) *Selector {
 //  3. Recency of reinforcement - more recently reinforced records score higher.
 //
 // If fewer than one candidate is provided, the result has zero confidence.
-func (s *Selector) Select(candidates []*schema.MemoryRecord) *SelectionResult {
+func (s *Selector) Select(ctx context.Context, candidates []*schema.MemoryRecord, queryEmbedding []float32) *SelectionResult {
 	if len(candidates) == 0 {
 		return &SelectionResult{
 			Selected:   nil,
 			Confidence: 0,
 			NeedsMore:  true,
+			Scores:     map[string]float64{},
 		}
 	}
 
 	if len(candidates) == 1 {
-		score := s.scoreRecord(candidates[0])
+		score := s.scoreRecord(ctx, candidates[0], queryEmbedding)
 		conf := score // single candidate: confidence is the score itself
 		if conf > 1.0 {
 			conf = 1.0
@@ -66,6 +85,7 @@ func (s *Selector) Select(candidates []*schema.MemoryRecord) *SelectionResult {
 			Selected:   candidates,
 			Confidence: conf,
 			NeedsMore:  conf < s.confidenceThreshold,
+			Scores:     map[string]float64{candidates[0].ID: score},
 		}
 	}
 
@@ -76,7 +96,7 @@ func (s *Selector) Select(candidates []*schema.MemoryRecord) *SelectionResult {
 	}
 	items := make([]scored, len(candidates))
 	for i, c := range candidates {
-		items[i] = scored{record: c, score: s.scoreRecord(c)}
+		items[i] = scored{record: c, score: s.scoreRecord(ctx, c, queryEmbedding)}
 	}
 
 	// Sort by score descending.
@@ -86,8 +106,10 @@ func (s *Selector) Select(candidates []*schema.MemoryRecord) *SelectionResult {
 
 	// Build ranked result.
 	ranked := make([]*schema.MemoryRecord, len(items))
+	scores := make(map[string]float64, len(items))
 	for i, item := range items {
 		ranked[i] = item.record
+		scores[item.record.ID] = item.score
 	}
 
 	// Compute confidence as the normalized gap between best and second-best.
@@ -102,12 +124,13 @@ func (s *Selector) Select(candidates []*schema.MemoryRecord) *SelectionResult {
 		Selected:   ranked,
 		Confidence: confidence,
 		NeedsMore:  confidence < s.confidenceThreshold,
+		Scores:     scores,
 	}
 }
 
 // scoreRecord computes a composite score for a candidate record using
 // three equally-weighted signals.
-func (s *Selector) scoreRecord(record *schema.MemoryRecord) float64 {
+func (s *Selector) scoreRecord(ctx context.Context, record *schema.MemoryRecord, queryEmbedding []float32) float64 {
 	// If payload is nil, return neutral score.
 	if record.Payload == nil {
 		return 0.5
@@ -116,6 +139,11 @@ func (s *Selector) scoreRecord(record *schema.MemoryRecord) float64 {
 	// Signal 1: Applicability - use the record's Confidence field as a proxy
 	// for how well this record's triggers/constraints match.
 	applicability := record.Confidence
+	if s.embedding != nil && len(queryEmbedding) > 0 {
+		if sim, ok := s.embedding.Similarity(ctx, record.ID, queryEmbedding); ok {
+			applicability = sim
+		}
+	}
 
 	// Signal 2: Observed success rate from PerformanceStats.
 	successRate := s.extractSuccessRate(record)

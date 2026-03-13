@@ -1,6 +1,7 @@
 package revision
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -21,12 +22,23 @@ var (
 // Service provides revision operations for memory records.
 // All operations are atomic — partial revisions are never externally visible (RFC 15.7).
 type Service struct {
-	store storage.Store
+	store    storage.Store
+	embedder Embedder
 }
 
 // NewService creates a new revision Service backed by the given Store.
 func NewService(store storage.Store) *Service {
 	return &Service{store: store}
+}
+
+// Embedder stores embeddings for durable records when available.
+type Embedder interface {
+	EmbedRecord(ctx context.Context, rec *schema.MemoryRecord) error
+}
+
+// NewServiceWithEmbedder creates a new revision Service with best-effort embedding support.
+func NewServiceWithEmbedder(store storage.Store, embedder Embedder) *Service {
+	return &Service{store: store, embedder: embedder}
 }
 
 // ensureRevisable checks that a record exists and is not episodic.
@@ -64,4 +76,11 @@ func retractRecord(rec *schema.MemoryRecord) {
 		}
 		sp.Revision.Status = schema.RevisionStatusRetracted
 	}
+}
+
+func (s *Service) embedRecord(ctx context.Context, rec *schema.MemoryRecord) {
+	if s.embedder == nil || rec == nil {
+		return
+	}
+	_ = s.embedder.EmbedRecord(ctx, rec)
 }

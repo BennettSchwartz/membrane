@@ -25,7 +25,7 @@ type Lifecycle struct {
 // RFC 15A.7: Decay profiles MUST be monotonic and reversible via reinforcement.
 type DecayProfile struct {
 	// Curve specifies the mathematical function for decay.
-	// RFC 15A.3: Required field, one of exponential, linear, or custom.
+	// RFC 15A.3: Required field. The current implementation supports exponential decay only.
 	Curve DecayCurve `json:"curve"`
 
 	// HalfLifeSeconds defines the time for salience to decay by half.

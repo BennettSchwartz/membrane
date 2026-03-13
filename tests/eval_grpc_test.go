@@ -34,9 +34,8 @@ type grpcEnv struct {
 func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
 	t.Helper()
 
-	dbPath := t.TempDir() + "/membrane.db"
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = dbPath
+	cfg.DBPath = t.TempDir() + "/membrane.db"
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.APIKey = apiKey
 	cfg.RateLimitPerSecond = rateLimit

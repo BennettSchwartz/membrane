@@ -42,8 +42,6 @@ class TestEnums:
 
     def test_decay_curve_values(self):
         assert DecayCurve.EXPONENTIAL == "exponential"
-        assert DecayCurve.LINEAR == "linear"
-        assert DecayCurve.CUSTOM == "custom"
 
     def test_deletion_policy_values(self):
         assert DeletionPolicy.AUTO_PRUNE == "auto_prune"
@@ -196,9 +194,9 @@ class TestMemoryRecord:
 class TestSubstructures:
     def test_decay_profile_from_dict(self):
         dp = DecayProfile.from_dict(
-            {"curve": "linear", "half_life_seconds": 3600}
+            {"curve": "exponential", "half_life_seconds": 3600}
         )
-        assert dp.curve is DecayCurve.LINEAR
+        assert dp.curve is DecayCurve.EXPONENTIAL
         assert dp.half_life_seconds == 3600
 
     def test_lifecycle_from_dict(self):

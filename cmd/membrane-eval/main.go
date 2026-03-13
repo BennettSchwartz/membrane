@@ -63,6 +63,7 @@ type candidate struct {
 func main() {
 	var (
 		datasetPath = flag.String("dataset", "tests/data/recall_dataset.jsonl", "Path to JSONL dataset")
+		postgresDSN = flag.String("postgres-dsn", "", "Optional PostgreSQL DSN for the evaluation database")
 		model       = flag.String("model", "all-MiniLM-L6-v2", "Sentence-transformers model name")
 		defaultK    = flag.Int("k", 5, "Default K when query does not specify one")
 		minRecall   = flag.Float64("min-recall", -1, "Fail if mean recall@k is below this threshold")
@@ -87,6 +88,10 @@ func main() {
 
 	cfg := membrane.DefaultConfig()
 	cfg.DBPath = filepath.Join(tmpDir, "membrane-eval.db")
+	if *postgresDSN != "" {
+		cfg.Backend = "postgres"
+		cfg.PostgresDSN = *postgresDSN
+	}
 	m, err := membrane.New(cfg)
 	if err != nil {
 		fatal("create membrane", err)

@@ -18,6 +18,7 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", "", "path to YAML config file")
 	dbPath := flag.String("db", "", "SQLite database path (overrides config)")
+	postgresDSN := flag.String("postgres-dsn", "", "PostgreSQL DSN (overrides config and selects the postgres backend)")
 	addr := flag.String("addr", "", "gRPC listen address (overrides config)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -42,6 +43,10 @@ func main() {
 	// Apply flag overrides.
 	if *dbPath != "" {
 		cfg.DBPath = *dbPath
+	}
+	if *postgresDSN != "" {
+		cfg.Backend = "postgres"
+		cfg.PostgresDSN = *postgresDSN
 	}
 	if *addr != "" {
 		cfg.ListenAddr = *addr

@@ -21,8 +21,14 @@ var (
 // Service is the main retrieval service implementing layered memory retrieval
 // per RFC 15.8.
 type Service struct {
-	store    storage.Store
-	selector *Selector
+	store     storage.Store
+	selector  *Selector
+	embedding EmbeddingService
+}
+
+// EmbeddingService generates query embeddings for retrieval-time applicability scoring.
+type EmbeddingService interface {
+	EmbedQuery(ctx context.Context, taskDescriptor string) ([]float32, error)
 }
 
 // RetrieveRequest specifies parameters for a layered retrieval query.
@@ -72,6 +78,15 @@ func NewService(store storage.Store, selector *Selector) *Service {
 	}
 }
 
+// NewServiceWithEmbedding creates a new retrieval Service with embedding support.
+func NewServiceWithEmbedding(store storage.Store, selector *Selector, embedding EmbeddingService) *Service {
+	return &Service{
+		store:     store,
+		selector:  selector,
+		embedding: embedding,
+	}
+}
+
 // Retrieve performs layered retrieval as specified in RFC 15.8.
 // It queries the store for each memory type layer in order, applies trust and
 // salience filtering, runs competence/plan_graph results through the selector,
@@ -90,6 +105,11 @@ func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*Retrie
 	var allRecords []*schema.MemoryRecord
 	var selectionCandidates []*schema.MemoryRecord
 	var selection *SelectionResult
+	var queryEmbedding []float32
+
+	if svc.embedding != nil && req.TaskDescriptor != "" {
+		queryEmbedding, _ = svc.embedding.EmbedQuery(ctx, req.TaskDescriptor)
+	}
 
 	for _, memType := range layers {
 		records, err := svc.store.ListByType(ctx, memType)
@@ -115,11 +135,14 @@ func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*Retrie
 
 	// Run selector on competence/plan_graph candidates if any exist.
 	if len(selectionCandidates) > 0 && svc.selector != nil {
-		selection = svc.selector.Select(selectionCandidates)
+		selection = svc.selector.Select(ctx, selectionCandidates, queryEmbedding)
 	}
 
-	// Sort all results by salience descending.
-	SortBySalience(allRecords)
+	if selection != nil && len(selection.Selected) > 0 && req.TaskDescriptor != "" {
+		allRecords = rankRecordsWithSelection(allRecords, selection)
+	} else {
+		SortBySalience(allRecords)
+	}
 
 	// Apply limit.
 	if req.Limit > 0 && len(allRecords) > req.Limit {
@@ -130,6 +153,30 @@ func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*Retrie
 		Records:   allRecords,
 		Selection: selection,
 	}, nil
+}
+
+func rankRecordsWithSelection(records []*schema.MemoryRecord, selection *SelectionResult) []*schema.MemoryRecord {
+	ranked := make([]*schema.MemoryRecord, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	selectedIDs := make(map[string]struct{}, len(selection.Selected))
+	for _, rec := range selection.Selected {
+		selectedIDs[rec.ID] = struct{}{}
+		ranked = append(ranked, rec)
+		seen[rec.ID] = struct{}{}
+	}
+
+	remaining := make([]*schema.MemoryRecord, 0, len(records))
+	for _, rec := range records {
+		if _, ok := seen[rec.ID]; ok {
+			continue
+		}
+		if _, ok := selectedIDs[rec.ID]; ok {
+			continue
+		}
+		remaining = append(remaining, rec)
+	}
+	SortBySalience(remaining)
+	return append(ranked, remaining...)
 }
 
 // RetrieveByID fetches a single record by ID and checks it against the trust context.

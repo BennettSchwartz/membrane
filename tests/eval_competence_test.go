@@ -1,6 +1,7 @@
 package tests_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func TestEvalCompetenceSelection(t *testing.T) {
 	mid := evalCompetenceRecord("mid", 0.70, 60, 40, now.Add(-7*24*time.Hour))
 	worst := evalCompetenceRecord("worst", 0.40, 20, 80, now.Add(-30*24*time.Hour))
 
-	result := selector.Select([]*schema.MemoryRecord{mid, worst, best})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{mid, worst, best}, nil)
 	if len(result.Selected) != 3 {
 		t.Fatalf("expected 3 selected, got %d", len(result.Selected))
 	}
@@ -64,7 +65,7 @@ func TestEvalPlanGraphSelection(t *testing.T) {
 	planB.Confidence = 0.5
 	planB.Lifecycle.LastReinforcedAt = now.Add(-14 * 24 * time.Hour)
 
-	result := selector.Select([]*schema.MemoryRecord{planB, planA})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{planB, planA}, nil)
 	if len(result.Selected) != 2 {
 		t.Fatalf("expected 2 selected, got %d", len(result.Selected))
 	}

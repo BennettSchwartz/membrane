@@ -25,28 +25,8 @@ func Exponential(currentSalience, elapsedSeconds float64, profile schema.DecayPr
 	return math.Max(decayed, profile.MinSalience)
 }
 
-// Linear computes linear decay: salience - (elapsed / halfLife) * salience,
-// floored at MinSalience.
-// RFC 15A.7: Linear decay over time.
-func Linear(currentSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
-	halfLife := float64(profile.HalfLifeSeconds)
-	if halfLife <= 0 {
-		return math.Max(currentSalience, profile.MinSalience)
-	}
-	decayed := currentSalience - (elapsedSeconds/halfLife)*currentSalience
-	return math.Max(decayed, profile.MinSalience)
-}
-
-// GetDecayFunc returns the appropriate decay function for a curve type.
-// Falls back to Exponential for unknown or custom curve types.
+// GetDecayFunc returns the decay function used by the implementation.
+// Membrane currently supports exponential decay only.
 func GetDecayFunc(curve schema.DecayCurve) DecayFunc {
-	switch curve {
-	case schema.DecayCurveLinear:
-		return Linear
-	case schema.DecayCurveExponential:
-		return Exponential
-	default:
-		// Custom and unknown curves default to exponential.
-		return Exponential
-	}
+	return Exponential
 }

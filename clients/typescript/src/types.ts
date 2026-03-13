@@ -27,9 +27,7 @@ export const OutcomeStatus = {
 export type OutcomeStatus = (typeof OutcomeStatus)[keyof typeof OutcomeStatus];
 
 export const DecayCurve = {
-  EXPONENTIAL: "exponential",
-  LINEAR: "linear",
-  CUSTOM: "custom"
+  EXPONENTIAL: "exponential"
 } as const;
 
 export type DecayCurve = (typeof DecayCurve)[keyof typeof DecayCurve];

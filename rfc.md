@@ -365,7 +365,7 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
       "type": "object",
       "required": ["curve", "half_life_seconds"],
       "properties": {
-        "curve": {"type": "string", "enum": ["exponential","linear","custom"]},
+        "curve": {"type": "string", "enum": ["exponential"]},
         "half_life_seconds": {"type": "integer", "minimum": 1},
         "min_salience": {"type": "number", "minimum": 0, "maximum": 1},
         "max_age_seconds": {"type": "integer", "minimum": 1}
@@ -786,7 +786,7 @@ Plan graphs MUST be reusable, versioned, and selectable by constraint matching.
 
 ```
 DecayProfile {
-  function: DecayFunction,          // exponential | linear | custom
+  function: DecayFunction,          // exponential
   half_life: Duration,
   floor: Float,
   reinforcement_gain: Float

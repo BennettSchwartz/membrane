@@ -1,6 +1,7 @@
 package tests_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func TestSelectorRanksByApplicabilitySuccessRecency(t *testing.T) {
 	// Candidate C: low confidence, low success rate, very old.
 	candC := makeCompetenceRecord(t, "cand-c", 0.40, 20, 80, now.Add(-60*24*time.Hour))
 
-	result := selector.Select([]*schema.MemoryRecord{candC, candA, candB})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{candC, candA, candB}, nil)
 
 	// Verify candidate A is ranked first (best overall score).
 	if len(result.Selected) != 3 {
@@ -80,7 +81,7 @@ func TestSelectorNeedsMoreBelowThreshold(t *testing.T) {
 	candA := makeCompetenceRecord(t, "close-a", 0.80, 70, 30, now.Add(-2*time.Hour))
 	candB := makeCompetenceRecord(t, "close-b", 0.78, 68, 32, now.Add(-3*time.Hour))
 
-	result := selector.Select([]*schema.MemoryRecord{candA, candB})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{candA, candB}, nil)
 
 	// With near-identical scores, confidence should be below the high threshold.
 	if !result.NeedsMore {
@@ -93,7 +94,7 @@ func TestSelectorSingleCandidate(t *testing.T) {
 	selector := retrieval.NewSelector(0.3)
 
 	cand := makeCompetenceRecord(t, "solo", 0.90, 80, 20, now.Add(-1*time.Hour))
-	result := selector.Select([]*schema.MemoryRecord{cand})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{cand}, nil)
 
 	if len(result.Selected) != 1 {
 		t.Fatalf("expected 1 selected, got %d", len(result.Selected))
@@ -110,7 +111,7 @@ func TestSelectorSingleCandidate(t *testing.T) {
 
 func TestSelectorEmpty(t *testing.T) {
 	selector := retrieval.NewSelector(0.3)
-	result := selector.Select([]*schema.MemoryRecord{})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{}, nil)
 
 	if len(result.Selected) != 0 {
 		t.Errorf("expected 0 selected for empty input, got %d", len(result.Selected))
@@ -159,7 +160,7 @@ func TestSelectorPlanGraphRecords(t *testing.T) {
 	planB.Confidence = 0.5
 	planB.Lifecycle.LastReinforcedAt = now.Add(-30 * 24 * time.Hour)
 
-	result := selector.Select([]*schema.MemoryRecord{planB, planA})
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{planB, planA}, nil)
 
 	if len(result.Selected) != 2 {
 		t.Fatalf("expected 2 selected, got %d", len(result.Selected))
@@ -168,5 +169,32 @@ func TestSelectorPlanGraphRecords(t *testing.T) {
 	// plan-a should be ranked first: higher confidence, better success rate, more recent.
 	if result.Selected[0].ID != "plan-a" {
 		t.Errorf("expected plan-a ranked first, got %s", result.Selected[0].ID)
+	}
+}
+
+type stubEmbeddingProvider struct {
+	scores map[string]float64
+}
+
+func (s stubEmbeddingProvider) Similarity(_ context.Context, recordID string, _ []float32) (float64, bool) {
+	score, ok := s.scores[recordID]
+	return score, ok
+}
+
+func TestSelectorUsesEmbeddingApplicabilityWhenAvailable(t *testing.T) {
+	now := time.Now().UTC()
+	selector := retrieval.NewSelectorWithEmbedding(0.2, stubEmbeddingProvider{
+		scores: map[string]float64{
+			"better-match": 0.95,
+			"worse-match":  0.10,
+		},
+	})
+
+	betterMatch := makeCompetenceRecord(t, "better-match", 0.40, 70, 30, now.Add(-2*time.Hour))
+	worseMatch := makeCompetenceRecord(t, "worse-match", 0.95, 70, 30, now.Add(-2*time.Hour))
+
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{worseMatch, betterMatch}, []float32{1, 0, 0})
+	if result.Selected[0].ID != "better-match" {
+		t.Fatalf("expected embedding match to outrank confidence proxy, got %s", result.Selected[0].ID)
 	}
 }
