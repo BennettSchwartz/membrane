@@ -21,12 +21,18 @@ const minToolGraphNodes = 3
 // are promoted, ensuring that trivial single-tool invocations are not
 // turned into plans.
 type PlanGraphConsolidator struct {
-	store storage.Store
+	store    storage.Store
+	embedder Embedder
 }
 
 // NewPlanGraphConsolidator creates a PlanGraphConsolidator backed by store.
 func NewPlanGraphConsolidator(store storage.Store) *PlanGraphConsolidator {
 	return &PlanGraphConsolidator{store: store}
+}
+
+// NewPlanGraphConsolidatorWithEmbedder creates a plan graph consolidator with embedding support.
+func NewPlanGraphConsolidatorWithEmbedder(store storage.Store, embedder Embedder) *PlanGraphConsolidator {
+	return &PlanGraphConsolidator{store: store, embedder: embedder}
 }
 
 // Consolidate finds episodic records with complex tool graphs (more
@@ -139,6 +145,9 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 		})
 		if err != nil {
 			return created, err
+		}
+		if c.embedder != nil {
+			_ = c.embedder.EmbedRecord(ctx, newRec)
 		}
 
 		derivedFrom[rec.ID] = true

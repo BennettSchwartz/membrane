@@ -103,5 +103,6 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 	if err != nil {
 		return nil, fmt.Errorf("merge: %w", err)
 	}
+	s.embedRecord(ctx, mergedRecord)
 	return mergedRecord, nil
 }

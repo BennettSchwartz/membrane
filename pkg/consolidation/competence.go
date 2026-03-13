@@ -25,12 +25,18 @@ const mixedScopeFallback = "consolidated:mixed-scope"
 // tool usage signature and promotes patterns that appear at least
 // minPatternOccurrences times.
 type CompetenceConsolidator struct {
-	store storage.Store
+	store    storage.Store
+	embedder Embedder
 }
 
 // NewCompetenceConsolidator creates a CompetenceConsolidator backed by store.
 func NewCompetenceConsolidator(store storage.Store) *CompetenceConsolidator {
 	return &CompetenceConsolidator{store: store}
+}
+
+// NewCompetenceConsolidatorWithEmbedder creates a competence consolidator with embedding support.
+func NewCompetenceConsolidatorWithEmbedder(store storage.Store, embedder Embedder) *CompetenceConsolidator {
+	return &CompetenceConsolidator{store: store, embedder: embedder}
 }
 
 // Consolidate finds episodic records with tool graphs and successful
@@ -197,6 +203,9 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		})
 		if err != nil {
 			return created, reinforced, err
+		}
+		if c.embedder != nil {
+			_ = c.embedder.EmbedRecord(ctx, newRec)
 		}
 
 		existingSkills[skillName] = newRec

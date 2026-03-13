@@ -151,7 +151,7 @@ func newCompetenceRecord(id string) *schema.MemoryRecord {
 		UpdatedAt:   now,
 		Lifecycle: schema.Lifecycle{
 			Decay: schema.DecayProfile{
-				Curve:             schema.DecayCurveLinear,
+				Curve:             schema.DecayCurveExponential,
 				HalfLifeSeconds:   172800,
 				MinSalience:       0.2,
 				ReinforcementGain: 0.15,

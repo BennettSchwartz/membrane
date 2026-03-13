@@ -81,5 +81,6 @@ func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schem
 	if err != nil {
 		return nil, fmt.Errorf("fork: %w", err)
 	}
+	s.embedRecord(ctx, forkedRecord)
 	return forkedRecord, nil
 }

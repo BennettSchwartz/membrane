@@ -7,12 +7,14 @@ import (
 
 	"github.com/GustyCube/membrane/pkg/consolidation"
 	"github.com/GustyCube/membrane/pkg/decay"
+	"github.com/GustyCube/membrane/pkg/embedding"
 	"github.com/GustyCube/membrane/pkg/ingestion"
 	"github.com/GustyCube/membrane/pkg/metrics"
 	"github.com/GustyCube/membrane/pkg/retrieval"
 	"github.com/GustyCube/membrane/pkg/revision"
 	"github.com/GustyCube/membrane/pkg/schema"
 	"github.com/GustyCube/membrane/pkg/storage"
+	"github.com/GustyCube/membrane/pkg/storage/postgres"
 	"github.com/GustyCube/membrane/pkg/storage/sqlite"
 )
 
@@ -27,6 +29,7 @@ type Membrane struct {
 	revision      *revision.Service
 	consolidation *consolidation.Service
 	metrics       *metrics.Collector
+	embedding     *embedding.Service
 
 	decayScheduler  *decay.Scheduler
 	consolScheduler *consolidation.Scheduler
@@ -39,13 +42,38 @@ func New(cfg *Config) (*Membrane, error) {
 		return nil, fmt.Errorf("membrane: invalid default sensitivity %q", cfg.DefaultSensitivity)
 	}
 
-	encKey := cfg.EncryptionKey
-	if encKey == "" {
-		encKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
-	}
-	store, err := sqlite.Open(cfg.DBPath, encKey)
-	if err != nil {
-		return nil, fmt.Errorf("membrane: open store: %w", err)
+	var (
+		store   storage.Store
+		pgStore *postgres.PostgresStore
+		err     error
+	)
+	switch cfg.Backend {
+	case "", "sqlite":
+		encKey := cfg.EncryptionKey
+		if encKey == "" {
+			encKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
+		}
+		store, err = sqlite.Open(cfg.DBPath, encKey)
+		if err != nil {
+			return nil, fmt.Errorf("membrane: open sqlite store: %w", err)
+		}
+	case "postgres":
+		if cfg.PostgresDSN == "" {
+			cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
+		}
+		if cfg.PostgresDSN == "" {
+			return nil, fmt.Errorf("membrane: postgres_dsn is required when backend=postgres")
+		}
+		pgStore, err = postgres.Open(cfg.PostgresDSN, postgres.EmbeddingConfig{
+			Dimensions: cfg.EmbeddingDimensions,
+			Model:      cfg.EmbeddingModel,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("membrane: open postgres store: %w", err)
+		}
+		store = pgStore
+	default:
+		return nil, fmt.Errorf("membrane: unsupported backend %q", cfg.Backend)
 	}
 
 	// Ingestion
@@ -55,19 +83,51 @@ func New(cfg *Config) (*Membrane, error) {
 	policyEngine := ingestion.NewPolicyEngine(policyDefaults)
 	ingestionSvc := ingestion.NewService(store, classifier, policyEngine)
 
+	var embService *embedding.Service
+	if pgStore != nil && cfg.EmbeddingEndpoint != "" && cfg.EmbeddingModel != "" {
+		apiKey := cfg.EmbeddingAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("MEMBRANE_EMBEDDING_API_KEY")
+		}
+		embClient := embedding.NewHTTPClient(
+			cfg.EmbeddingEndpoint,
+			cfg.EmbeddingModel,
+			apiKey,
+			cfg.EmbeddingDimensions,
+		)
+		embService = embedding.NewService(embClient, store, pgStore, cfg.EmbeddingModel)
+	}
+
 	// Retrieval
-	selector := retrieval.NewSelector(cfg.SelectionConfidenceThreshold)
-	retrievalSvc := retrieval.NewService(store, selector)
+	var selector *retrieval.Selector
+	var retrievalSvc *retrieval.Service
+	if embService != nil {
+		selector = retrieval.NewSelectorWithEmbedding(cfg.SelectionConfidenceThreshold, embService)
+		retrievalSvc = retrieval.NewServiceWithEmbedding(store, selector, embService)
+	} else {
+		selector = retrieval.NewSelector(cfg.SelectionConfidenceThreshold)
+		retrievalSvc = retrieval.NewService(store, selector)
+	}
 
 	// Decay
 	decaySvc := decay.NewService(store)
 	decayScheduler := decay.NewScheduler(decaySvc, cfg.DecayInterval)
 
 	// Revision
-	revisionSvc := revision.NewService(store)
+	var revisionSvc *revision.Service
+	if embService != nil {
+		revisionSvc = revision.NewServiceWithEmbedder(store, embService)
+	} else {
+		revisionSvc = revision.NewService(store)
+	}
 
 	// Consolidation
-	consolidationSvc := consolidation.NewService(store)
+	var consolidationSvc *consolidation.Service
+	if embService != nil {
+		consolidationSvc = consolidation.NewServiceWithEmbedder(store, embService)
+	} else {
+		consolidationSvc = consolidation.NewService(store)
+	}
 	consolScheduler := consolidation.NewScheduler(consolidationSvc, cfg.ConsolidationInterval)
 
 	// Metrics
@@ -82,6 +142,7 @@ func New(cfg *Config) (*Membrane, error) {
 		revision:        revisionSvc,
 		consolidation:   consolidationSvc,
 		metrics:         metricsCollector,
+		embedding:       embService,
 		decayScheduler:  decayScheduler,
 		consolScheduler: consolScheduler,
 	}, nil
@@ -91,6 +152,11 @@ func New(cfg *Config) (*Membrane, error) {
 func (m *Membrane) Start(ctx context.Context) error {
 	m.decayScheduler.Start(ctx)
 	m.consolScheduler.Start(ctx)
+	if m.embedding != nil {
+		go func() {
+			_, _ = m.embedding.BackfillMissing(ctx)
+		}()
+	}
 	return nil
 }
 

@@ -68,9 +68,25 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.go_core == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: membrane_test
+          POSTGRES_USER: membrane
+          POSTGRES_PASSWORD: membrane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U membrane -d membrane_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     strategy:
       matrix:
         go-version: ['1.22', '1.23']
+    env:
+      TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
 
     steps:
       - name: Checkout code
@@ -84,6 +100,17 @@ jobs:
 
       - name: Download dependencies
         run: go mod download
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
 
       - name: Check formatting
         run: test -z "$(gofmt -l .)"

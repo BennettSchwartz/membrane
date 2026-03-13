@@ -13,8 +13,14 @@ import (
 
 // Config holds all configurable parameters for a Membrane instance.
 type Config struct {
+	// Backend selects the storage backend: "sqlite" (default) or "postgres".
+	Backend string `yaml:"backend"`
+
 	// DBPath is the SQLite database path.
 	DBPath string `yaml:"db_path"`
+
+	// PostgresDSN is the PostgreSQL connection string used when Backend == "postgres".
+	PostgresDSN string `yaml:"postgres_dsn"`
 
 	// ListenAddr is the gRPC listen address (default: ":9090").
 	ListenAddr string `yaml:"listen_addr"`
@@ -32,10 +38,22 @@ type Config struct {
 	// selector to consider a competence or plan_graph candidate (default: 0.7).
 	SelectionConfidenceThreshold float64 `yaml:"selection_confidence_threshold"`
 
-	// EncryptionKey is the SQLCipher encryption key for the database.
+	// EncryptionKey is the SQLCipher encryption key for the SQLite database.
 	// If empty, the database is not encrypted. Read from MEMBRANE_ENCRYPTION_KEY
 	// environment variable if not set in config.
 	EncryptionKey string `yaml:"encryption_key"`
+
+	// EmbeddingEndpoint is the HTTP endpoint used to generate embeddings.
+	EmbeddingEndpoint string `yaml:"embedding_endpoint"`
+
+	// EmbeddingModel is the embedding model name sent to the embedding endpoint.
+	EmbeddingModel string `yaml:"embedding_model"`
+
+	// EmbeddingDimensions is the output dimension of the embedding model.
+	EmbeddingDimensions int `yaml:"embedding_dimensions"`
+
+	// EmbeddingAPIKey authenticates requests to the embedding endpoint.
+	EmbeddingAPIKey string `yaml:"embedding_api_key"`
 
 	// TLSCertFile is the path to the TLS certificate PEM file.
 	// If empty, the server runs without TLS.
@@ -57,6 +75,7 @@ type Config struct {
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
+		Backend:                      "sqlite",
 		DBPath:                       "membrane.db",
 		ListenAddr:                   ":9090",
 		DecayInterval:                1 * time.Hour,
@@ -64,6 +83,7 @@ func DefaultConfig() *Config {
 		DefaultSensitivity:           "low",
 		SelectionConfidenceThreshold: 0.7,
 		EncryptionKey:                "",
+		EmbeddingDimensions:          1536,
 		RateLimitPerSecond:           100,
 	}
 }

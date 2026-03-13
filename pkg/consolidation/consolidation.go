@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GustyCube/membrane/pkg/schema"
 	"github.com/GustyCube/membrane/pkg/storage"
 )
 
@@ -41,10 +42,16 @@ type ConsolidationResult struct {
 // competence extraction, and plan graph extraction in sequence.
 type Service struct {
 	store      storage.Store
+	embedder   Embedder
 	episodic   *EpisodicConsolidator
 	semantic   *SemanticConsolidator
 	competence *CompetenceConsolidator
 	plangraph  *PlanGraphConsolidator
+}
+
+// Embedder stores embeddings for newly created durable records when configured.
+type Embedder interface {
+	EmbedRecord(ctx context.Context, rec *schema.MemoryRecord) error
 }
 
 // NewService creates a new consolidation Service backed by the given store.
@@ -55,6 +62,18 @@ func NewService(store storage.Store) *Service {
 		semantic:   NewSemanticConsolidator(store),
 		competence: NewCompetenceConsolidator(store),
 		plangraph:  NewPlanGraphConsolidator(store),
+	}
+}
+
+// NewServiceWithEmbedder creates a new consolidation Service with embedding support.
+func NewServiceWithEmbedder(store storage.Store, embedder Embedder) *Service {
+	return &Service{
+		store:      store,
+		embedder:   embedder,
+		episodic:   NewEpisodicConsolidator(store),
+		semantic:   NewSemanticConsolidator(store),
+		competence: NewCompetenceConsolidatorWithEmbedder(store, embedder),
+		plangraph:  NewPlanGraphConsolidatorWithEmbedder(store, embedder),
 	}
 }
 

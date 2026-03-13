@@ -117,5 +117,6 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 	if err != nil {
 		return nil, fmt.Errorf("supersede: %w", err)
 	}
+	s.embedRecord(ctx, newRecord)
 	return newRecord, nil
 }

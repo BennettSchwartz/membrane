@@ -49,8 +49,6 @@ class DecayCurve(str, Enum):
     """Mathematical function used for salience decay (RFC 15A.3)."""
 
     EXPONENTIAL = "exponential"
-    LINEAR = "linear"
-    CUSTOM = "custom"
 
 
 class DeletionPolicy(str, Enum):

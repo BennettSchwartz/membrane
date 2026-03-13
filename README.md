@@ -214,7 +214,7 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 
 | Job | Default Interval | Purpose |
 |-----|-----------------|---------|
-| **Decay** | 1 hour | Applies time-based salience decay using exponential or linear curves |
+| **Decay** | 1 hour | Applies time-based salience decay using an exponential curve |
 | **Pruning** | With decay | Deletes records with `auto_prune` policy whose salience has reached 0 |
 | **Consolidation** | 6 hours | Extracts semantic facts, competence records, and plan graphs from episodic memory |
 

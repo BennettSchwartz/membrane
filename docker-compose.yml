@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: membrane_test
+      POSTGRES_USER: membrane
+      POSTGRES_PASSWORD: membrane
+    ports:
+      - "5432:5432"

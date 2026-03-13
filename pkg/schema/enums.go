@@ -78,12 +78,6 @@ type DecayCurve string
 const (
 	// DecayCurveExponential uses exponential decay with a half-life parameter.
 	DecayCurveExponential DecayCurve = "exponential"
-
-	// DecayCurveLinear uses linear decay over time.
-	DecayCurveLinear DecayCurve = "linear"
-
-	// DecayCurveCustom allows implementation-defined decay behavior.
-	DecayCurveCustom DecayCurve = "custom"
 )
 
 // DeletionPolicy defines how memory records may be deleted.
