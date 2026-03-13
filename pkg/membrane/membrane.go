@@ -98,6 +98,15 @@ func New(cfg *Config) (*Membrane, error) {
 		embService = embedding.NewService(embClient, store, pgStore, cfg.EmbeddingModel)
 	}
 
+	var llmClient consolidation.LLMClient
+	if pgStore != nil && cfg.LLMEndpoint != "" && cfg.LLMModel != "" {
+		apiKey := cfg.LLMAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("MEMBRANE_LLM_API_KEY")
+		}
+		llmClient = consolidation.NewHTTPLLMClient(cfg.LLMEndpoint, cfg.LLMModel, apiKey)
+	}
+
 	// Retrieval
 	var selector *retrieval.Selector
 	var retrievalSvc *retrieval.Service
@@ -123,7 +132,9 @@ func New(cfg *Config) (*Membrane, error) {
 
 	// Consolidation
 	var consolidationSvc *consolidation.Service
-	if embService != nil {
+	if llmClient != nil {
+		consolidationSvc = consolidation.NewServiceWithExtractor(store, embService, decaySvc, llmClient, pgStore)
+	} else if embService != nil {
 		consolidationSvc = consolidation.NewServiceWithEmbedder(store, embService)
 	} else {
 		consolidationSvc = consolidation.NewService(store)

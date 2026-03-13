@@ -24,6 +24,10 @@ type ConsolidationResult struct {
 	// created from episodic observations.
 	SemanticExtracted int
 
+	// SemanticTriplesExtracted is the number of new semantic facts created
+	// by the LLM-backed semantic extractor.
+	SemanticTriplesExtracted int
+
 	// CompetenceExtracted is the number of new competence records
 	// created from repeated successful episodic patterns.
 	CompetenceExtracted int
@@ -35,6 +39,10 @@ type ConsolidationResult struct {
 	// DuplicatesResolved is the number of duplicate records that were
 	// identified and resolved (e.g., by reinforcing existing records).
 	DuplicatesResolved int
+
+	// ExtractionSkipped is the number of claimed episodic records that
+	// could not be fully processed and will be retried later.
+	ExtractionSkipped int
 }
 
 // Service is the top-level consolidation service that orchestrates all
@@ -45,6 +53,7 @@ type Service struct {
 	embedder   Embedder
 	episodic   *EpisodicConsolidator
 	semantic   *SemanticConsolidator
+	extractor  *SemanticExtractor
 	competence *CompetenceConsolidator
 	plangraph  *PlanGraphConsolidator
 }
@@ -56,24 +65,46 @@ type Embedder interface {
 
 // NewService creates a new consolidation Service backed by the given store.
 func NewService(store storage.Store) *Service {
-	return &Service{
-		store:      store,
-		episodic:   NewEpisodicConsolidator(store),
-		semantic:   NewSemanticConsolidator(store),
-		competence: NewCompetenceConsolidator(store),
-		plangraph:  NewPlanGraphConsolidator(store),
-	}
+	return newService(store, nil, nil)
 }
 
 // NewServiceWithEmbedder creates a new consolidation Service with embedding support.
 func NewServiceWithEmbedder(store storage.Store, embedder Embedder) *Service {
+	return newService(store, embedder, nil)
+}
+
+// NewServiceWithExtractor creates a new consolidation Service with semantic extraction.
+// embedder may be nil when record embeddings are not configured.
+func NewServiceWithExtractor(
+	store storage.Store,
+	embedder Embedder,
+	reinforcer Reinforcer,
+	llm LLMClient,
+	extractionStore ExtractionStore,
+) *Service {
+	return newService(
+		store,
+		embedder,
+		NewSemanticExtractor(store, extractionStore, reinforcer, llm),
+	)
+}
+
+func newService(store storage.Store, embedder Embedder, extractor *SemanticExtractor) *Service {
+	competence := NewCompetenceConsolidator(store)
+	plangraph := NewPlanGraphConsolidator(store)
+	if embedder != nil {
+		competence = NewCompetenceConsolidatorWithEmbedder(store, embedder)
+		plangraph = NewPlanGraphConsolidatorWithEmbedder(store, embedder)
+	}
+
 	return &Service{
 		store:      store,
 		embedder:   embedder,
 		episodic:   NewEpisodicConsolidator(store),
 		semantic:   NewSemanticConsolidator(store),
-		competence: NewCompetenceConsolidatorWithEmbedder(store, embedder),
-		plangraph:  NewPlanGraphConsolidatorWithEmbedder(store, embedder),
+		extractor:  extractor,
+		competence: competence,
+		plangraph:  plangraph,
 	}
 }
 
@@ -96,6 +127,15 @@ func (s *Service) RunAll(ctx context.Context) (*ConsolidationResult, error) {
 	}
 	result.SemanticExtracted = semanticCount
 	result.DuplicatesResolved += semanticReinforced
+
+	if s.extractor != nil {
+		extracted, skipped, err := s.extractor.Extract(ctx)
+		if err != nil {
+			return result, fmt.Errorf("semantic extraction: %w", err)
+		}
+		result.SemanticTriplesExtracted = extracted
+		result.ExtractionSkipped = skipped
+	}
 
 	competenceCount, competenceReinforced, err := s.competence.Consolidate(ctx)
 	if err != nil {

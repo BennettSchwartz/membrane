@@ -917,10 +917,119 @@ func (s *PostgresStore) SearchByEmbedding(ctx context.Context, query []float32, 
 	return ids, nil
 }
 
+// ClaimUnextractedEpisodics atomically claims up to limit episodic records
+// for semantic extraction and returns their record IDs.
+func (s *PostgresStore) ClaimUnextractedEpisodics(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`INSERT INTO episodic_extraction_log (record_id, extracted_at, triple_count)
+		 SELECT mr.id, NOW(), -1
+		 FROM memory_records mr
+		 LEFT JOIN episodic_extraction_log eel ON mr.id = eel.record_id
+		 WHERE mr.type = 'episodic'
+		   AND eel.record_id IS NULL
+		 ORDER BY mr.created_at ASC
+		 LIMIT $1
+		 ON CONFLICT (record_id) DO NOTHING
+		 RETURNING record_id`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("claim episodic extraction records: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan claimed episodic extraction record: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// MarkEpisodicExtracted marks a claimed episodic record as fully processed.
+func (s *PostgresStore) MarkEpisodicExtracted(ctx context.Context, recordID string, tripleCount int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE episodic_extraction_log
+		 SET triple_count = $2, extracted_at = NOW()
+		 WHERE record_id = $1`,
+		recordID, tripleCount,
+	)
+	if err != nil {
+		return fmt.Errorf("mark episodic extracted: %w", err)
+	}
+	return nil
+}
+
+// ReleaseEpisodicClaim clears an in-flight extraction claim so the episode can be retried.
+func (s *PostgresStore) ReleaseEpisodicClaim(ctx context.Context, recordID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM episodic_extraction_log
+		 WHERE record_id = $1
+		   AND triple_count = -1`,
+		recordID,
+	)
+	if err != nil {
+		return fmt.Errorf("release episodic claim: %w", err)
+	}
+	return nil
+}
+
+// CleanStaleExtractionClaims deletes in-flight claims older than olderThan.
+func (s *PostgresStore) CleanStaleExtractionClaims(ctx context.Context, olderThan time.Duration) error {
+	if olderThan <= 0 {
+		olderThan = time.Hour
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM episodic_extraction_log
+		 WHERE triple_count = -1
+		   AND extracted_at < NOW() - ($1 * INTERVAL '1 second')`,
+		int64(olderThan.Seconds()),
+	)
+	if err != nil {
+		return fmt.Errorf("clean stale extraction claims: %w", err)
+	}
+	return nil
+}
+
+func findSemanticExact(ctx context.Context, q queryable, subject, predicate, object string) (*schema.MemoryRecord, error) {
+	var id string
+	err := q.QueryRowContext(ctx,
+		`SELECT mr.id
+		 FROM memory_records mr
+		 JOIN payloads p ON mr.id = p.record_id
+		 WHERE mr.type = 'semantic'
+		   AND p.payload_json->>'subject' = $1
+		   AND p.payload_json->>'predicate' = $2
+		   AND p.payload_json->>'object' = $3
+		 LIMIT 1`,
+		subject, predicate, object,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find semantic exact: %w", err)
+	}
+	return getRecord(ctx, q, id)
+}
+
+// FindSemanticExact retrieves a semantic record by exact subject-predicate-object match.
+func (s *PostgresStore) FindSemanticExact(ctx context.Context, subject, predicate, object string) (*schema.MemoryRecord, error) {
+	return findSemanticExact(ctx, s.db, subject, predicate, object)
+}
+
 // Reset deletes all stored records and embeddings. Intended for tests and local evaluation flows.
 func (s *PostgresStore) Reset(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		TRUNCATE TABLE
+			episodic_extraction_log,
 			trigger_embeddings,
 			competence_stats,
 			audit_log,
