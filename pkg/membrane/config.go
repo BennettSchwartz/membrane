@@ -55,6 +55,15 @@ type Config struct {
 	// EmbeddingAPIKey authenticates requests to the embedding endpoint.
 	EmbeddingAPIKey string `yaml:"embedding_api_key"`
 
+	// LLMEndpoint is the HTTP endpoint used for semantic fact extraction.
+	LLMEndpoint string `yaml:"llm_endpoint"`
+
+	// LLMModel is the chat model name sent to the LLM endpoint.
+	LLMModel string `yaml:"llm_model"`
+
+	// LLMAPIKey authenticates requests to the LLM endpoint.
+	LLMAPIKey string `yaml:"llm_api_key"`
+
 	// TLSCertFile is the path to the TLS certificate PEM file.
 	// If empty, the server runs without TLS.
 	TLSCertFile string `yaml:"tls_cert_file"`

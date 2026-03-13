@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS competence_stats (
     failure_count BIGINT NOT NULL DEFAULT 0
 );
 
+-- trigger_embeddings stores per-record embeddings despite the legacy name.
+-- It was introduced for trigger signals first and is kept for backward
+-- compatibility until a dedicated migration can rename it safely.
 CREATE TABLE IF NOT EXISTS trigger_embeddings (
     record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
     embedding vector({{EMBEDDING_DIMENSIONS}}),
@@ -98,3 +101,15 @@ CREATE INDEX IF NOT EXISTS idx_provenance_record ON provenance_sources(record_id
 CREATE INDEX IF NOT EXISTS idx_trigger_embeddings_ann
     ON trigger_embeddings USING ivfflat (embedding vector_cosine_ops)
     WITH (lists = 100);
+
+-- episodic_extraction_log tracks extractor queue state for episodic records.
+-- triple_count = -1 means the record has been claimed and is in-flight.
+CREATE TABLE IF NOT EXISTS episodic_extraction_log (
+    record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
+    extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    triple_count INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_log_inflight
+    ON episodic_extraction_log(extracted_at)
+    WHERE triple_count = -1;

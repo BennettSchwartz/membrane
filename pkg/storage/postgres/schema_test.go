@@ -23,6 +23,7 @@ func newTestStore(t *testing.T) *PostgresStore {
 
 	if _, err := store.db.Exec(`
 		TRUNCATE TABLE
+			episodic_extraction_log,
 			trigger_embeddings,
 			competence_stats,
 			audit_log,
@@ -37,6 +38,61 @@ func newTestStore(t *testing.T) *PostgresStore {
 	}
 
 	return store
+}
+
+func newEpisodicRecord(id string) *schema.MemoryRecord {
+	now := time.Date(2025, 1, 16, 12, 0, 0, 0, time.UTC)
+	return &schema.MemoryRecord{
+		ID:          id,
+		Type:        schema.MemoryTypeEpisodic,
+		Sensitivity: schema.SensitivityLow,
+		Confidence:  0.7,
+		Salience:    0.6,
+		Scope:       "project",
+		Tags:        []string{"test", "episodic"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Lifecycle: schema.Lifecycle{
+			Decay: schema.DecayProfile{
+				Curve:             schema.DecayCurveExponential,
+				HalfLifeSeconds:   86400,
+				MinSalience:       0.1,
+				ReinforcementGain: 0.2,
+			},
+			LastReinforcedAt: now,
+			DeletionPolicy:   schema.DeletionPolicyAutoPrune,
+		},
+		Provenance: schema.Provenance{
+			Sources: []schema.ProvenanceSource{
+				{
+					Kind:      schema.ProvenanceKindEvent,
+					Ref:       "evt-001",
+					CreatedBy: "test-agent",
+					Timestamp: now,
+				},
+			},
+		},
+		Payload: &schema.EpisodicPayload{
+			Kind: "episodic",
+			Timeline: []schema.TimelineEvent{
+				{
+					T:         now,
+					EventKind: "user_input",
+					Ref:       "evt-001",
+					Summary:   "User prefers concise answers",
+				},
+			},
+			Outcome: schema.OutcomeStatusSuccess,
+		},
+		AuditLog: []schema.AuditEntry{
+			{
+				Action:    schema.AuditActionCreate,
+				Actor:     "test",
+				Timestamp: now,
+				Rationale: "initial creation",
+			},
+		},
+	}
 }
 
 func newSemanticRecord(id string) *schema.MemoryRecord {
@@ -141,5 +197,90 @@ func TestTriggerEmbeddings(t *testing.T) {
 	}
 	if len(ids) == 0 || ids[0] != rec.ID {
 		t.Fatalf("expected %q first in search results, got %v", rec.ID, ids)
+	}
+}
+
+func TestExtractionLog(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	ep := newEpisodicRecord("episode-001")
+	if err := store.Create(ctx, ep); err != nil {
+		t.Fatalf("Create episodic: %v", err)
+	}
+
+	claimed, err := store.ClaimUnextractedEpisodics(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimUnextractedEpisodics: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0] != ep.ID {
+		t.Fatalf("claimed = %v, want [%s]", claimed, ep.ID)
+	}
+
+	claimedAgain, err := store.ClaimUnextractedEpisodics(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimUnextractedEpisodics second call: %v", err)
+	}
+	if len(claimedAgain) != 0 {
+		t.Fatalf("claimedAgain = %v, want []", claimedAgain)
+	}
+
+	if err := store.MarkEpisodicExtracted(ctx, ep.ID, 3); err != nil {
+		t.Fatalf("MarkEpisodicExtracted: %v", err)
+	}
+
+	claimedAfterMark, err := store.ClaimUnextractedEpisodics(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimUnextractedEpisodics after mark: %v", err)
+	}
+	if len(claimedAfterMark) != 0 {
+		t.Fatalf("claimedAfterMark = %v, want []", claimedAfterMark)
+	}
+
+	stale := newEpisodicRecord("episode-stale")
+	stale.CreatedAt = stale.CreatedAt.Add(time.Hour)
+	stale.UpdatedAt = stale.CreatedAt
+	stale.Lifecycle.LastReinforcedAt = stale.CreatedAt
+	if err := store.Create(ctx, stale); err != nil {
+		t.Fatalf("Create stale episodic: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx,
+		`INSERT INTO episodic_extraction_log (record_id, extracted_at, triple_count)
+		 VALUES ($1, NOW() - INTERVAL '2 hours', -1)`,
+		stale.ID,
+	); err != nil {
+		t.Fatalf("insert stale claim: %v", err)
+	}
+	if err := store.CleanStaleExtractionClaims(ctx, time.Hour); err != nil {
+		t.Fatalf("CleanStaleExtractionClaims: %v", err)
+	}
+
+	reclaimed, err := store.ClaimUnextractedEpisodics(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimUnextractedEpisodics after cleanup: %v", err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0] != stale.ID {
+		t.Fatalf("reclaimed = %v, want [%s]", reclaimed, stale.ID)
+	}
+
+	semantic := newSemanticRecord("semantic-001")
+	if err := store.Create(ctx, semantic); err != nil {
+		t.Fatalf("Create semantic: %v", err)
+	}
+
+	match, err := store.FindSemanticExact(ctx, "Go", "is_language", "programming")
+	if err != nil {
+		t.Fatalf("FindSemanticExact exact match: %v", err)
+	}
+	if match == nil || match.ID != semantic.ID {
+		t.Fatalf("FindSemanticExact exact match = %#v, want %q", match, semantic.ID)
+	}
+
+	miss, err := store.FindSemanticExact(ctx, "Go", "is_language", "systems")
+	if err != nil {
+		t.Fatalf("FindSemanticExact mismatch: %v", err)
+	}
+	if miss != nil {
+		t.Fatalf("FindSemanticExact mismatch = %#v, want nil", miss)
 	}
 }
