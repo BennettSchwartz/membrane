@@ -103,10 +103,11 @@ jobs:
 
       - name: Wait for Postgres
         run: |
-          for i in {1..30}; do
+          for attempt in $(seq 1 30); do
             if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
               exit 0
             fi
+            echo "Waiting for Postgres (${attempt}/30)..."
             sleep 2
           done
           echo "Postgres did not become ready in time" >&2
