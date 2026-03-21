@@ -221,7 +221,7 @@ Membrane runs as a long-lived daemon or embedded library. The architecture is or
 |------|---------|-----------|-----|----------|
 | **1** | SQLite | - | - | Zero-infra default, confidence-based applicability fallback |
 | **2** | Postgres | - | - | Concurrent writers, JSONB storage, same retrieval semantics as tier 1 |
-| **3** | Postgres + pgvector | Yes | - | Embedding-based applicability scoring for competence and plan_graph selection |
+| **3** | Postgres + pgvector | Yes | - | Recommended: hybrid vector+salience ranking for all record types |
 | **4** | Postgres + pgvector | Yes | Yes | Full system with LLM-backed episodic to semantic extraction |
 
 ### Background Jobs
@@ -406,12 +406,21 @@ Membrane matches RAG on pure retrieval quality while adding typed storage, trust
 
 | Scenario | RAG | Membrane | Winner |
 |----------|-----|----------|--------|
-| Retraction | Returns wrong fact | Filters retracted record | **Membrane** |
-| Reinforcement | Ranks bad procedure first | Ranks proven procedure first | **Membrane** |
-| Supersession | Returns outdated value | Returns current value only | **Membrane** |
-| Decay | Ranks stale record first | Ranks fresh record first | **Membrane** |
+| Retraction | 0 (returns wrong fact) | 1 (filters retracted record) | Membrane |
+| Reinforcement | 0 (ranks bad procedure first) | 1 (ranks proven procedure first) | Membrane |
+| Supersession | 0 (returns outdated value) | 1 (returns current value only) | Membrane |
+| Decay | 0 (ranks stale record first) | 1 (ranks fresh record first) | Membrane |
+| **Total** | **0/4** | **4/4** | **Membrane** |
 
-Membrane wins: **4/4** scenarios. RAG has no concept of knowledge lifecycle — it returns whatever is most similar, including retracted, superseded, and stale information.
+<details>
+<summary>What each scenario tests</summary>
+
+- **Retraction**: A wrong fact (MySQL) is retracted. RAG still returns it via similarity; Membrane sets salience to 0 and filters it out.
+- **Reinforcement**: Two debugging procedures exist. The proven one is reinforced 5x. RAG ranks by similarity alone (bad procedure first); Membrane's hybrid scoring promotes the reinforced one.
+- **Supersession**: API rate limit changed from 50 to 200 rps. RAG returns both old and new; Membrane supersedes the old record (salience=0) and only returns the current value.
+- **Decay**: Deployment target changed from Heroku to Kubernetes. The stale record is penalized. RAG ignores salience; Membrane's hybrid scoring demotes it.
+
+</details>
 
 Retrieval eval results depend on embedding quality, trust filters, and reinforcement behavior. Treat them as scenario-level regression guards. The lifecycle eval demonstrates Membrane's structural advantages over flat vector search. CI auto-updates this section when scores change.
 

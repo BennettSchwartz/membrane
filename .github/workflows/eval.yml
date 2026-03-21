@@ -170,12 +170,26 @@ jobs:
               print ""
               print "| Scenario | RAG | Membrane | Winner |"
               print "|----------|-----|----------|--------|"
-              print "| Retraction | Returns wrong fact | Filters retracted record | **" retraction "** |"
-              print "| Reinforcement | Ranks bad procedure first | Ranks proven procedure first | **" reinforcement "** |"
-              print "| Supersession | Returns outdated value | Returns current value only | **" supersession "** |"
-              print "| Decay | Ranks stale record first | Ranks fresh record first | **" decay "** |"
+              r_score = (retraction == "Membrane") ? 1 : 0
+              print "| Retraction | " (1-r_score) " (returns wrong fact) | " r_score " (filters retracted record) | " retraction " |"
+              rf_score = (reinforcement == "Membrane") ? 1 : 0
+              print "| Reinforcement | " (1-rf_score) " (ranks bad procedure first) | " rf_score " (ranks proven procedure first) | " reinforcement " |"
+              s_score = (supersession == "Membrane") ? 1 : 0
+              print "| Supersession | " (1-s_score) " (returns outdated value) | " s_score " (returns current value only) | " supersession " |"
+              d_score = (decay == "Membrane") ? 1 : 0
+              print "| Decay | " (1-d_score) " (ranks stale record first) | " d_score " (ranks fresh record first) | " decay " |"
+              rag_total = (4 - mem_wins)
+              print "| **Total** | **" rag_total "/4** | **" mem_wins "/4** | **" ((mem_wins > rag_total) ? "Membrane" : (mem_wins < rag_total) ? "RAG" : "Tie") "** |"
               print ""
-              print "Membrane wins: **" mem_wins "/" total "** scenarios. RAG has no concept of knowledge lifecycle — it returns whatever is most similar, including retracted, superseded, and stale information."
+              print "<details>"
+              print "<summary>What each scenario tests</summary>"
+              print ""
+              print "- **Retraction**: A wrong fact (MySQL) is retracted. RAG still returns it via similarity; Membrane sets salience to 0 and filters it out."
+              print "- **Reinforcement**: Two debugging procedures exist. The proven one is reinforced 5x. RAG ranks by similarity alone (bad procedure first); Membrane'"'"'s hybrid scoring promotes the reinforced one."
+              print "- **Supersession**: API rate limit changed from 50 to 200 rps. RAG returns both old and new; Membrane supersedes the old record (salience=0) and only returns the current value."
+              print "- **Decay**: Deployment target changed from Heroku to Kubernetes. The stale record is penalized. RAG ignores salience; Membrane'"'"'s hybrid scoring demotes it."
+              print ""
+              print "</details>"
               print ""
               print "Retrieval eval results depend on embedding quality, trust filters, and reinforcement behavior. Treat them as scenario-level regression guards. The lifecycle eval demonstrates Membrane'"'"'s structural advantages over flat vector search. CI auto-updates this section when scores change."
               skip=1
