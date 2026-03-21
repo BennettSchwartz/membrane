@@ -1,0 +1,197 @@
+---
+title: "Metrics"
+description: "Point-in-time observability snapshot via GetMetrics."
+---
+
+## GetMetrics
+
+Returns a point-in-time snapshot of the memory substrate's health and behavioural metrics. The response payload is a JSON-encoded `Snapshot` object.
+
+This method takes no input parameters:
+
+```protobuf
+message GetMetricsRequest {}
+
+message MetricsResponse {
+    bytes snapshot = 1; // JSON-encoded metrics.Snapshot
+}
+```
+
+### Response fields
+
+<ResponseField name="collected_at" type="string">
+  RFC 3339 timestamp when the snapshot was collected.
+</ResponseField>
+
+<ResponseField name="total_records" type="number">
+  Total number of records in the store across all memory types.
+</ResponseField>
+
+<ResponseField name="records_by_type" type="object">
+  Count of records broken down by memory type.
+  <Expandable title="properties">
+    <ResponseField name="episodic" type="number">
+      Count of episodic records.
+    </ResponseField>
+    <ResponseField name="working" type="number">
+      Count of working memory records.
+    </ResponseField>
+    <ResponseField name="semantic" type="number">
+      Count of semantic records.
+    </ResponseField>
+    <ResponseField name="competence" type="number">
+      Count of competence records.
+    </ResponseField>
+    <ResponseField name="plan_graph" type="number">
+      Count of plan graph records.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="avg_salience" type="number">
+  Mean salience across all records. Range [0, 1].
+</ResponseField>
+
+<ResponseField name="avg_confidence" type="number">
+  Mean confidence across all records. Range [0, 1].
+</ResponseField>
+
+<ResponseField name="salience_distribution" type="object">
+  Count of records in each salience bucket.
+  <Expandable title="properties">
+    <ResponseField name="0.0-0.2" type="number">
+      Records with salience in [0.0, 0.2).
+    </ResponseField>
+    <ResponseField name="0.2-0.4" type="number">
+      Records with salience in [0.2, 0.4).
+    </ResponseField>
+    <ResponseField name="0.4-0.6" type="number">
+      Records with salience in [0.4, 0.6).
+    </ResponseField>
+    <ResponseField name="0.6-0.8" type="number">
+      Records with salience in [0.6, 0.8).
+    </ResponseField>
+    <ResponseField name="0.8-1.0" type="number">
+      Records with salience in [0.8, 1.0].
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="active_records" type="number">
+  Number of records with salience greater than 0.
+</ResponseField>
+
+<ResponseField name="pinned_records" type="number">
+  Number of records marked as pinned (exempt from automatic decay and pruning).
+</ResponseField>
+
+<ResponseField name="total_audit_entries" type="number">
+  Total number of audit log entries across all records.
+</ResponseField>
+
+<ResponseField name="memory_growth_rate" type="number">
+  Fraction of records created in the last 24 hours: `recent_records / total_records`. Indicates how rapidly new memory is being accumulated.
+</ResponseField>
+
+<ResponseField name="retrieval_usefulness" type="number">
+  Ratio of `reinforce` audit actions to total audit entries: `reinforce_count / total_audit_entries`. Measures how often retrieved records are marked as useful.
+</ResponseField>
+
+<ResponseField name="competence_success_rate" type="number">
+  Average `success_rate` across all competence records that have performance data. Indicates how reliably the agent's learned procedures succeed.
+</ResponseField>
+
+<ResponseField name="plan_reuse_frequency" type="number">
+  Average `execution_count` across all plan graph records that have metrics. Higher values indicate plans are being discovered and reused rather than recreated.
+</ResponseField>
+
+<ResponseField name="revision_rate" type="number">
+  Fraction of audit entries that are revisions (`revise`, `fork`, or `merge` actions): `revision_count / total_audit_entries`. Indicates how actively knowledge is being updated.
+</ResponseField>
+
+### Metric descriptions
+
+| Metric | Description |
+|--------|-------------|
+| `memory_growth_rate` | Fraction of records created in the last 24 hours |
+| `retrieval_usefulness` | Ratio of reinforce actions to total audit entries |
+| `competence_success_rate` | Average success rate across competence records |
+| `plan_reuse_frequency` | Average execution count across plan graph records |
+| `revision_rate` | Fraction of audit entries that are revisions (supersede, fork, merge) |
+
+### Example snapshot
+
+```json
+{
+  "collected_at": "2026-02-05T14:23:10Z",
+  "total_records": 142,
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
+  "avg_salience": 0.62,
+  "avg_confidence": 0.78,
+  "salience_distribution": {
+    "0.0-0.2": 12,
+    "0.2-0.4": 18,
+    "0.4-0.6": 30,
+    "0.6-0.8": 45,
+    "0.8-1.0": 37
+  },
+  "active_records": 130,
+  "pinned_records": 3,
+  "total_audit_entries": 890,
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+### Calling GetMetrics
+
+<CodeGroup>
+
+```go Go
+snap, err := m.GetMetrics(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Total records: %d\n", snap.TotalRecords)
+fmt.Printf("Avg salience:  %.2f\n", snap.AvgSalience)
+fmt.Printf("Retrieval usefulness: %.2f\n", snap.RetrievalUsefulness)
+fmt.Printf("Competence success rate: %.2f\n", snap.CompetenceSuccessRate)
+```
+
+```bash grpcurl
+grpcurl \
+  -H 'authorization: Bearer your-key' \
+  -d '{}' \
+  -plaintext \
+  localhost:9090 \
+  membrane.v1.MembraneService/GetMetrics
+```
+
+```typescript TypeScript
+const snapshot = await client.getMetrics();
+console.log(`Total records: ${snapshot.total_records}`);
+console.log(`Avg salience: ${snapshot.avg_salience}`);
+console.log(`Retrieval usefulness: ${snapshot.retrieval_usefulness}`);
+```
+
+```python Python
+snapshot = client.get_metrics()
+print(f"Total records: {snapshot['total_records']}")
+print(f"Avg salience: {snapshot['avg_salience']:.2f}")
+print(f"Retrieval usefulness: {snapshot['retrieval_usefulness']:.2f}")
+```
+
+</CodeGroup>
+
+<Tip>
+Poll `GetMetrics` periodically and alert when `retrieval_usefulness` drops below a threshold or `revision_rate` spikes unexpectedly. These two metrics are the most direct indicators of whether the agent is learning effectively.
+</Tip>

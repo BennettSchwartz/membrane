@@ -1,0 +1,313 @@
+---
+title: "Revision"
+description: "Atomic revision operations with full audit trails: supersede, fork, retract, merge, contest, reinforce, and penalize."
+---
+
+Revision operations modify the lifecycle and status of existing memory records. All operations are **atomic** — partial revisions are never externally visible. Every operation appends to the record's audit log, preserving a complete history of changes.
+
+<Warning>
+Episodic records are **immutable** and cannot be revised. Attempting to revise an episodic record returns a `FAILED_PRECONDITION` error. This is by design: episodic memory is append-only raw experience and serves as evidence for later knowledge formation.
+</Warning>
+
+## Revision status
+
+Semantic records carry a `revision.status` field in their payload that transitions through:
+
+| Status | Meaning |
+|--------|---------|
+| `active` | Record is currently valid |
+| `contested` | Conflicting evidence exists; status unresolved |
+| `retracted` | Record has been withdrawn; salience is 0 |
+
+---
+
+## Supersede
+
+Atomically replaces an existing record with a new version. The old record's salience is set to 0 and its semantic status is set to `retracted`. The new record is stored with a `supersedes` relation pointing to the old record.
+
+<Info>
+Both the old and new records are persisted. The old record is not deleted; it is retracted so its audit trail remains queryable.
+</Info>
+
+### Request fields
+
+<ParamField path="old_id" type="string" required>
+  ID of the record to supersede. Must not be episodic.
+</ParamField>
+
+<ParamField path="new_record" type="bytes" required>
+  JSON-encoded `MemoryRecord` that replaces the old one. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the operation.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the supersession, stored in both audit entries.
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes">
+  JSON-encoded `MemoryRecord` — the newly created record with its assigned ID and provenance populated.
+</ResponseField>
+
+### Example
+
+```go Go
+// Supersede a semantic record with a new version
+superseded, err := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("New record ID: %s\n", superseded.ID)
+```
+
+---
+
+## Fork
+
+Creates a new record derived from an existing source record. Unlike `Supersede`, **both the source and the forked record remain active**. Use `Fork` to create conditional variants of a fact or procedure without invalidating the original.
+
+The forked record receives a `derived_from` relation pointing to the source, and an audit entry with action `fork` is appended to the source record.
+
+### Request fields
+
+<ParamField path="source_id" type="string" required>
+  ID of the record to fork. Must not be episodic.
+</ParamField>
+
+<ParamField path="forked_record" type="bytes" required>
+  JSON-encoded `MemoryRecord` representing the conditional variant. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the operation.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason stored in both audit entries.
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes">
+  JSON-encoded `MemoryRecord` — the newly created forked record.
+</ResponseField>
+
+### Example
+
+```go Go
+// Fork a record for conditional validity (dev vs. prod)
+forked, err := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev environment")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Forked record ID: %s\n", forked.ID)
+```
+
+---
+
+## Retract
+
+Marks a record as retracted without deleting it. The record's salience is set to 0. For semantic records, the revision status is set to `retracted`. The record remains in the store so its audit trail is preserved.
+
+Retracted records have salience 0 and are excluded from active retrieval results by default.
+
+### Request fields
+
+<ParamField path="id" type="string" required>
+  ID of the record to retract. Must not be episodic.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the retraction.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason stored in the audit entry.
+</ParamField>
+
+### Response
+
+`RetractResponse` is empty. A successful call returns gRPC status `OK`.
+
+### Example
+
+```go Go
+// Retract a record that is no longer valid
+err := m.Retract(ctx, recordID, "agent", "no longer accurate")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Merge
+
+Atomically combines multiple source records into a single merged record. All source records are retracted (salience set to 0, semantic status set to `retracted`). The merged record receives `derived_from` relations for every source, and each source record receives an audit entry with action `merge`.
+
+<Info>
+At least one source ID is required. All source records must be non-episodic. The entire operation runs in a single transaction.
+</Info>
+
+### Request fields
+
+<ParamField path="ids" type="string[]" required>
+  IDs of the records to merge. Must contain at least one ID and no more than 10 000.
+</ParamField>
+
+<ParamField path="merged_record" type="bytes" required>
+  JSON-encoded `MemoryRecord` that consolidates the source records. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the merge.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason stored in all audit entries.
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes">
+  JSON-encoded `MemoryRecord` — the newly created merged record with `derived_from` relations.
+</ResponseField>
+
+### Example
+
+```go Go
+// Merge multiple records into one consolidated record
+merged, err := m.Merge(
+    ctx,
+    []string{id1, id2, id3},
+    mergedRec,
+    "agent",
+    "consolidating duplicates",
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Merged record ID: %s\n", merged.ID)
+```
+
+---
+
+## Contest
+
+Marks a record as contested, indicating that conflicting evidence exists. The record remains active with its salience unchanged, but its semantic revision status transitions to `contested`. A `contested_by` relation is added pointing to the conflicting record.
+
+Contested records are still returned by retrieval, but their status signals to the agent that the information should be treated with caution.
+
+### Request fields
+
+<ParamField path="id" type="string" required>
+  ID of the record to mark as contested. Must not be episodic.
+</ParamField>
+
+<ParamField path="contesting_ref" type="string">
+  ID of the conflicting record or evidence. When provided, a `contested_by` relation is added.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the contest.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason stored in the audit entry.
+</ParamField>
+
+### Response
+
+`ContestResponse` is empty. A successful call returns gRPC status `OK`.
+
+### Example
+
+```go Go
+// Contest a record when conflicting evidence appears
+err := m.Contest(
+    ctx,
+    recordID,
+    conflictingRecordID,
+    "agent",
+    "new evidence contradicts this",
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Reinforce
+
+Boosts a record's salience, signalling that it was useful. This resets the decay clock and increments the audit log with an `AuditActionReinforce` entry. Reinforcement count is tracked in the metrics via `retrieval_usefulness`.
+
+### Request fields
+
+<ParamField path="id" type="string" required>
+  ID of the record to reinforce.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the reinforcement. Maximum 100 000 characters.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the reinforcement. Maximum 100 000 characters.
+</ParamField>
+
+### Response
+
+`ReinforceResponse` is empty. A successful call returns gRPC status `OK`.
+
+### Example
+
+```go Go
+// Reinforce a record after it contributed to a successful outcome
+err := m.Reinforce(ctx, planRecord.ID, "planner-agent", "plan used successfully")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Penalize
+
+Reduces a record's salience by a specified amount. Use this to signal that a record contributed to a failed or unhelpful outcome.
+
+### Request fields
+
+<ParamField path="id" type="string" required>
+  ID of the record to penalize.
+</ParamField>
+
+<ParamField path="amount" type="number" required>
+  Amount by which to reduce salience. Must be non-negative and finite. Salience will not go below 0.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the agent or user performing the penalization. Maximum 100 000 characters.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason stored in the audit entry. Maximum 100 000 characters.
+</ParamField>
+
+### Response
+
+`PenalizeResponse` is empty. A successful call returns gRPC status `OK`.
+
+### Example
+
+```go Go
+// Reduce salience of a record that led to a bad outcome
+err := m.Penalize(ctx, recordID, 0.2, "build-agent", "procedure produced linker error")
+if err != nil {
+    log.Fatal(err)
+}
+```

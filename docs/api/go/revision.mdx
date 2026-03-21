@@ -1,0 +1,381 @@
+---
+title: "revision"
+description: "Atomic revision operations for memory records: supersede, fork, retract, merge, contest, and salience decay."
+---
+
+Import path: `github.com/GustyCube/membrane/pkg/revision`
+
+The `revision` package provides atomic, auditable operations for modifying the state of memory records. All operations are executed inside a single storage transaction so that partial revisions are never externally visible (RFC 15.7).
+
+<Warning>
+  Episodic records are append-only and cannot be revised, forked, retracted, merged, or contested. All revision operations return `ErrEpisodicImmutable` when called on an episodic record.
+</Warning>
+
+## Service
+
+```go
+type Service struct { ... }
+
+func NewService(store storage.Store) *Service
+func NewServiceWithEmbedder(store storage.Store, embedder Embedder) *Service
+```
+
+Use `NewServiceWithEmbedder` to enable best-effort embedding generation for newly created records after each revision. `Membrane.New` picks the right constructor automatically.
+
+### Embedder interface
+
+```go
+type Embedder interface {
+    EmbedRecord(ctx context.Context, rec *schema.MemoryRecord) error
+}
+```
+
+---
+
+## Supersede
+
+```go
+func (s *Service) Supersede(
+    ctx       context.Context,
+    oldID     string,
+    newRecord *schema.MemoryRecord,
+    actor     string,
+    rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+Atomically replaces `oldID` with `newRecord`. The old record is retracted (salience set to `0`, semantic `RevisionStatus` set to `retracted`). The new record receives:
+- A `supersedes` relation pointing to the old record.
+- A `ProvenanceSource` referencing the old record.
+- For semantic payloads: `Revision.Supersedes = oldID` and `Revision.Status = active`.
+
+Both records receive audit entries before the transaction commits.
+
+<ParamField path="oldID" type="string" required>
+  ID of the record to replace.
+</ParamField>
+
+<ParamField path="newRecord" type="*schema.MemoryRecord" required>
+  The replacement record. An ID is generated automatically if `newRecord.ID` is empty. Semantic records must include at least one evidence reference or provenance source.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor performing the revision.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+newRec := &schema.MemoryRecord{
+    Type:        schema.MemoryTypeSemantic,
+    Sensitivity: schema.SensitivityLow,
+    Confidence:  0.95,
+    Salience:    1.0,
+    Payload: &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user:alice",
+        Predicate: "prefers_language",
+        Object:    "Rust",
+        Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+        Evidence: []schema.ProvenanceRef{
+            {SourceType: "observation", SourceID: "obs-001", Timestamp: time.Now()},
+        },
+    },
+}
+
+result, err := m.Supersede(ctx, oldRec.ID, newRec, "agent-core", "user corrected language preference")
+```
+
+</CodeGroup>
+
+---
+
+## Fork
+
+```go
+func (s *Service) Fork(
+    ctx          context.Context,
+    sourceID     string,
+    forkedRecord *schema.MemoryRecord,
+    actor        string,
+    rationale    string,
+) (*schema.MemoryRecord, error)
+```
+
+Creates a new record derived from `sourceID`. Unlike `Supersede`, the source record remains active — both records coexist. The forked record receives a `derived_from` relation pointing to the source.
+
+Use `Fork` to create conditional variants of a fact or plan without invalidating the original.
+
+<ParamField path="sourceID" type="string" required>
+  ID of the record to fork from.
+</ParamField>
+
+<ParamField path="forkedRecord" type="*schema.MemoryRecord" required>
+  The new derived record. An ID is generated automatically if `forkedRecord.ID` is empty. Semantic records must include evidence.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor performing the fork.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+forked := &schema.MemoryRecord{
+    Type:        schema.MemoryTypeSemantic,
+    Sensitivity: schema.SensitivityLow,
+    Confidence:  0.8,
+    Salience:    1.0,
+    Payload: &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user:alice",
+        Predicate: "prefers_language",
+        Object:    "Go",
+        Validity: schema.Validity{
+            Mode:       schema.ValidityModeConditional,
+            Conditions: map[string]any{"context": "backend-work"},
+        },
+        Evidence: []schema.ProvenanceRef{
+            {SourceType: "observation", SourceID: "obs-002", Timestamp: time.Now()},
+        },
+    },
+}
+
+result, err := m.Fork(ctx, sourceRec.ID, forked, "agent-core", "context-specific language preference")
+```
+
+</CodeGroup>
+
+---
+
+## Retract
+
+```go
+func (s *Service) Retract(
+    ctx       context.Context,
+    id        string,
+    actor     string,
+    rationale string,
+) error
+```
+
+Marks a record as retracted without deleting it. Salience is set to `0`. For semantic records, `Payload.Revision.Status` is set to `retracted`. The record remains in storage for auditability.
+
+<ParamField path="id" type="string" required>
+  ID of the record to retract.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor performing the retraction.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+err := m.Retract(ctx, rec.ID, "agent-core", "fact was found to be incorrect")
+```
+
+</CodeGroup>
+
+---
+
+## Merge
+
+```go
+func (s *Service) Merge(
+    ctx          context.Context,
+    ids          []string,
+    mergedRecord *schema.MemoryRecord,
+    actor        string,
+    rationale    string,
+) (*schema.MemoryRecord, error)
+```
+
+Atomically combines multiple source records into a single merged record. All source records are retracted. The merged record receives a `derived_from` relation for each source, and each source receives a `merge` audit entry.
+
+<ParamField path="ids" type="[]string" required>
+  IDs of the source records to merge. Must contain at least one entry.
+</ParamField>
+
+<ParamField path="mergedRecord" type="*schema.MemoryRecord" required>
+  The consolidated record. An ID is generated automatically if `mergedRecord.ID` is empty. Semantic records must include evidence.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor performing the merge.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+merged := &schema.MemoryRecord{
+    Type:        schema.MemoryTypeSemantic,
+    Sensitivity: schema.SensitivityLow,
+    Confidence:  0.9,
+    Salience:    1.0,
+    Payload: &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user:alice",
+        Predicate: "preferred_stack",
+        Object:    map[string]any{"lang": "Go", "db": "postgres"},
+        Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+        Evidence: []schema.ProvenanceRef{
+            {SourceType: "observation", SourceID: "obs-003", Timestamp: time.Now()},
+        },
+    },
+}
+
+result, err := m.Merge(ctx, []string{id1, id2}, merged, "consolidator", "consolidated preference records")
+```
+
+</CodeGroup>
+
+---
+
+## Contest
+
+```go
+func (s *Service) Contest(
+    ctx           context.Context,
+    id            string,
+    contestingRef string,
+    actor         string,
+    rationale     string,
+) error
+```
+
+Marks a record as contested, indicating conflicting evidence exists. For semantic records, `Payload.Revision.Status` is set to `contested`. A `contested_by` relation is added pointing to `contestingRef`.
+
+<ParamField path="id" type="string" required>
+  ID of the record to contest.
+</ParamField>
+
+<ParamField path="contestingRef" type="string" required>
+  ID of the conflicting record or evidence reference.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor raising the contest.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+err := m.Contest(
+    ctx,
+    originalRec.ID,
+    conflictingRec.ID,
+    "agent-core",
+    "conflicting observation recorded by different source",
+)
+```
+
+</CodeGroup>
+
+---
+
+## Decay: Reinforce and Penalize
+
+These methods are exposed on the top-level `Membrane` facade and delegate to `pkg/decay.Service`.
+
+### Reinforce
+
+```go
+func (m *Membrane) Reinforce(
+    ctx       context.Context,
+    id        string,
+    actor     string,
+    rationale string,
+) error
+```
+
+Boosts `Salience` by `DecayProfile.ReinforcementGain`, capped at `1.0`. Updates `Lifecycle.LastReinforcedAt` to reset the decay clock.
+
+<ParamField path="id" type="string" required>
+  ID of the record to reinforce.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+// Called when a retrieved record was used successfully
+err := m.Reinforce(ctx, rec.ID, "agent-core", "plan was applied successfully")
+```
+
+</CodeGroup>
+
+### Penalize
+
+```go
+func (m *Membrane) Penalize(
+    ctx       context.Context,
+    id        string,
+    amount    float64,
+    actor     string,
+    rationale string,
+) error
+```
+
+Reduces `Salience` by `amount`, floored at `DecayProfile.MinSalience`.
+
+<ParamField path="id" type="string" required>
+  ID of the record to penalise.
+</ParamField>
+
+<ParamField path="amount" type="float64" required>
+  Amount to subtract from the record's current salience.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identity of the actor.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation recorded in the audit log.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+// Called when a competence record led to a failed outcome
+err := m.Penalize(ctx, competenceRec.ID, 0.2, "agent-core", "plan failed during execution")
+```
+
+</CodeGroup>
+
+---
+
+## Errors
+
+| Symbol | Description |
+|---|---|
+| `ErrEpisodicImmutable` | Returned when any revision operation is attempted on an episodic record. |
+| `ErrRecordNotFound` | Alias for `storage.ErrNotFound`. Returned when a referenced record does not exist. |

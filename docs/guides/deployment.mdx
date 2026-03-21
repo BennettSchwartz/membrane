@@ -1,0 +1,207 @@
+---
+title: "Deployment"
+description: "Build and run the membraned daemon, configure Postgres, and deploy with Docker Compose."
+---
+
+Membrane ships a standalone daemon binary (`membraned`) that exposes the full gRPC API. This guide covers building the binary, command-line flags, Docker Compose, and deployment tier selection.
+
+## Building the binary
+
+```bash
+git clone https://github.com/GustyCube/membrane.git
+cd membrane
+make build
+```
+
+The binary is written to `./bin/membraned`. Verify the build:
+
+```bash
+./bin/membraned --version
+```
+
+---
+
+## Starting the daemon
+
+<Steps>
+  <Step title="Default SQLite storage">
+    Zero-configuration start. Membrane creates `membrane.db` in the working directory.
+
+    ```bash
+    ./bin/membraned
+    ```
+  </Step>
+  <Step title="With Postgres">
+    Pass a PostgreSQL DSN to switch backends and enable concurrent writers.
+
+    ```bash
+    ./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+    ```
+  </Step>
+  <Step title="With custom config file">
+    Load a YAML config file. Command-line flags override file values.
+
+    ```bash
+    ./bin/membraned --config /etc/membrane/config.yaml
+    ```
+  </Step>
+  <Step title="Override specific settings">
+    Override database path and listen address without a config file.
+
+    ```bash
+    ./bin/membraned --db /data/membrane.db --addr :8080
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Command-line flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--config` | `string` | `""` | Path to YAML config file |
+| `--db` | `string` | `"membrane.db"` | SQLite database path (overrides config) |
+| `--postgres-dsn` | `string` | `""` | PostgreSQL DSN; also switches backend to postgres |
+| `--addr` | `string` | `":9090"` | gRPC listen address (overrides config) |
+| `--version` | `bool` | `false` | Print version and exit |
+
+<Note>
+`--postgres-dsn` implicitly sets `Backend = "postgres"`. You do not need to also set `backend: postgres` in the config file when using this flag.
+</Note>
+
+---
+
+## Docker Compose setup
+
+The repository includes a `docker-compose.yml` for running the Postgres + pgvector backend:
+
+```yaml
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: membrane_test
+      POSTGRES_USER: membrane
+      POSTGRES_PASSWORD: membrane
+    ports:
+      - "5432:5432"
+```
+
+Start the database:
+
+```bash
+docker compose up -d
+```
+
+Then start the daemon pointing at it:
+
+```bash
+./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+```
+
+---
+
+## Postgres setup
+
+Membrane requires PostgreSQL 14+ with the `pgvector` extension. The `pgvector/pgvector:pg16` Docker image includes it pre-installed.
+
+If you are using an existing Postgres instance, install the extension:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Membrane runs schema migrations automatically on startup when the Postgres backend is selected.
+
+<Warning>
+Set `MEMBRANE_ENCRYPTION_KEY` before first run when using SQLite. Changing the key after records are written will make the database unreadable.
+</Warning>
+
+---
+
+## Environment variable reference
+
+| Variable | Purpose |
+|----------|---------|
+| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the SQLite database |
+| `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN, used when `backend: postgres` |
+| `MEMBRANE_EMBEDDING_API_KEY` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_API_KEY` | API key for the semantic extraction LLM endpoint |
+| `MEMBRANE_API_KEY` | Bearer token for gRPC client authentication |
+
+Environment variables are read at startup. If the same value is set both in the config file and an environment variable, the config file value takes precedence for most fields. Exception: `MEMBRANE_API_KEY` is read only from the environment when `api_key` is empty in the config.
+
+---
+
+## Starting with a custom config file
+
+Create a config file and pass it with `--config`:
+
+```yaml
+backend: postgres
+postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+rate_limit_per_second: 100
+
+# Embedding-backed retrieval
+embedding_endpoint: "https://api.openai.com/v1/embeddings"
+embedding_model: "text-embedding-3-small"
+embedding_dimensions: 1536
+
+# LLM-backed semantic extraction
+llm_endpoint: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-5-mini"
+
+# TLS
+tls_cert_file: "/etc/membrane/tls.crt"
+tls_key_file:  "/etc/membrane/tls.key"
+```
+
+```bash
+./bin/membraned --config /etc/membrane/config.yaml
+```
+
+---
+
+## Deployment tiers
+
+Choose a tier based on your concurrency and feature requirements:
+
+| Tier | Backend | Embedding | LLM | When to use |
+|------|---------|-----------|-----|--------------|
+| **1** | SQLite | — | — | Single-process agents, development, zero-infra deployments |
+| **2** | Postgres | — | — | Multiple concurrent writers, production with existing Postgres |
+| **3** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types; recommended for production |
+| **4** | Postgres + pgvector | Yes | Yes | Full system: background LLM extraction turns episodic traces into semantic facts |
+
+<CardGroup cols={2}>
+  <Card title="Tier 1 — SQLite" icon="database">
+    Default. Zero dependencies, embedded store, confidence-based applicability fallback. Ideal for single-agent workloads.
+  </Card>
+  <Card title="Tier 2 — Postgres" icon="server">
+    Concurrent writers, JSONB storage, same retrieval semantics as tier 1. Use when multiple agents or processes share one substrate.
+  </Card>
+  <Card title="Tier 3 — pgvector (recommended)" icon="chart-scatter">
+    Adds hybrid vector+salience ranking for all record types. Retrieval quality matches pure RAG while preserving Membrane's lifecycle advantages (decay, retraction, reinforcement, supersession).
+  </Card>
+  <Card title="Tier 4 — Full" icon="brain">
+    Adds LLM-backed consolidation that automatically extracts typed semantic facts from episodic traces during background consolidation runs.
+  </Card>
+</CardGroup>
+
+---
+
+## Graceful shutdown
+
+The daemon handles `SIGINT` and `SIGTERM`. On receipt, it:
+
+1. Cancels the background context to stop decay and consolidation schedulers.
+2. Drains in-flight gRPC requests.
+3. Closes the database.
+
+This ordering prevents handlers from hitting a closed database. Avoid sending `SIGKILL` during an active consolidation run.

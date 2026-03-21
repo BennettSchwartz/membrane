@@ -1,0 +1,310 @@
+---
+title: "Architecture"
+description: "How Membrane's three logical planes, subsystems, storage backends, and background jobs fit together."
+---
+
+## Overview
+
+Membrane runs as a long-lived daemon (`membraned`) or as an embedded Go library. Either way, the same subsystems wire together under a single `Membrane` struct that exposes a unified API surface.
+
+```
++------------------+     +------------------+     +----------------------+
+|  Ingestion Plane |---->|   Policy Plane   |---->| Storage & Retrieval  |
++------------------+     +------------------+     +----------------------+
+        |                        |                         |
+   Events, tool            Classification,            SQLCipher (encrypted),
+   outputs, obs.,          sensitivity,               audit trails,
+   working state           decay profiles             trust-gated access
+```
+
+All write paths flow left to right: raw experience enters the Ingestion Plane, the Policy Plane stamps it with a sensitivity level and lifecycle, and the result lands in the authoritative store. Retrieval travels right to left, applying trust filters and salience ranking before returning records to the caller.
+
+## Three logical planes
+
+### Ingestion plane
+
+The ingestion plane accepts five kinds of raw input and converts them into typed `MemoryRecord` values. The `ingestion.Service` coordinates three internal components:
+
+- **Classifier** — determines which memory type (`episodic`, `working`, `semantic`, etc.) a candidate belongs to based on its shape.
+- **Policy engine** — assigns sensitivity, confidence, initial salience, and a type-specific decay profile. Tool outputs receive an initial confidence of `0.9`; observations receive `0.7`; events receive `0.8`.
+- **Store write** — persists the record and its initial audit log entry.
+
+Episodic records are immutable once ingested. All other types can be revised through explicit revision operations.
+
+### Policy plane
+
+The policy plane runs inline with ingestion and governs two cross-cutting concerns:
+
+- **Sensitivity assignment** — defaults to the configured `default_sensitivity` (`"low"` out of the box) unless overridden per-record. Sensitivity is stored on the record and used by the trust filter at retrieval time.
+- **Decay profile assignment** — each memory type gets a different exponential decay half-life: episodic records decay in ~1 hour by default; working memory in ~1 day; semantic, competence, and plan-graph records in ~30 days.
+
+### Storage and retrieval plane
+
+The storage and retrieval plane is where records live and where queries are answered. Retrieval follows a canonical layer order defined in `pkg/retrieval/retrieval.go`:
+
+```
+working → semantic → competence → plan_graph → episodic
+```
+
+Each layer is filtered by the caller's `TrustContext` before results are merged. When a pgvector backend and query embedding are available, results are ranked using a hybrid score (70% vector similarity, 30% salience). Otherwise, results are ranked by salience descending. An optional `Limit` caps the returned set.
+
+## Subsystems
+
+<CardGroup cols={2}>
+  <Card title="Ingestion" icon="arrow-down-to-line">
+    Accepts events, tool outputs, observations, outcomes, and working state. Classifies, validates, and persists records with full provenance and an initial audit entry.
+  </Card>
+  <Card title="Retrieval" icon="magnifying-glass">
+    Layered query across all memory types with trust-context filtering. Records are ranked by salience, or by a hybrid vector+salience score when Postgres + pgvector is configured (recommended). Competence and plan-graph records go through an additional multi-solution selector.
+  </Card>
+  <Card title="Decay" icon="clock">
+    Applies exponential salience decay to all non-pinned records on a configurable schedule. Exposes `Reinforce` and `Penalize` to adjust salience explicitly in response to outcomes.
+  </Card>
+  <Card title="Revision" icon="pencil">
+    Five atomic revision operations — supersede, fork, retract, merge, contest — each producing a provenance link and an audit trail entry. Embedding vectors are updated when configured.
+  </Card>
+  <Card title="Consolidation" icon="layers">
+    Background pipeline that promotes raw episodic traces into durable semantic facts, competence records, and plan graphs. Includes an optional LLM-backed semantic extractor for Postgres deployments.
+  </Card>
+  <Card title="Metrics" icon="chart-bar">
+    Point-in-time snapshot collector. Reports total records, salience distribution, retrieval usefulness, competence success rate, plan reuse frequency, and revision rate.
+  </Card>
+  <Card title="Embedding" icon="vector-square">
+    HTTP client for OpenAI-compatible embedding endpoints. Generates query embeddings at retrieval time and record embeddings after ingestion or revision when a Postgres backend is configured.
+  </Card>
+  <Card title="Storage" icon="database">
+    Pluggable store interface backed by SQLite (default, with optional SQLCipher encryption) or Postgres + pgvector. Supports transactional updates, audit appends, and salience-only updates.
+  </Card>
+</CardGroup>
+
+### How they wire together
+
+The `membrane.New` constructor in `pkg/membrane/membrane.go` wires all subsystems based on the provided `Config`:
+
+```go pkg/membrane/membrane.go
+// Membrane wires all subsystems together and exposes the unified API surface.
+type Membrane struct {
+	config *Config
+	store  storage.Store
+
+	ingestion     *ingestion.Service
+	retrieval     *retrieval.Service
+	decay         *decay.Service
+	revision      *revision.Service
+	consolidation *consolidation.Service
+	metrics       *metrics.Collector
+	embedding     *embedding.Service
+
+	decayScheduler  *decay.Scheduler
+	consolScheduler *consolidation.Scheduler
+}
+```
+
+Subsystems that depend on embeddings or LLM extraction are conditionally constructed: if `EmbeddingEndpoint` is set and the Postgres backend is selected, the embedding service is created and passed to retrieval, revision, and consolidation. If `LLMEndpoint` is also set, the consolidation service is upgraded with the LLM-backed semantic extractor.
+
+## Storage model
+
+### Backends
+
+| Backend | When to use | Notes |
+|---------|-------------|-------|
+| **SQLite (default)** | Single-process deployments, local development, zero-infrastructure setups | Uses SQLCipher for encryption at rest when `MEMBRANE_ENCRYPTION_KEY` is set |
+| **Postgres** | Multi-writer deployments, concurrent agents | JSONB payload storage, same retrieval semantics as SQLite |
+| **Postgres + pgvector** | Embedding-backed retrieval and selection | Enables hybrid vector+salience ranking for all record types and embedding-backed multi-solution selection for competence and plan-graph records |
+
+### Record structure
+
+Every `MemoryRecord` shares a common envelope regardless of type:
+
+- **ID** — UUID generated at ingestion time
+- **Type** — one of `episodic`, `working`, `semantic`, `competence`, `plan_graph`
+- **Sensitivity** — `public`, `low`, `medium`, `high`, or `hyper`
+- **Confidence** — epistemic confidence score (0.0–1.0), set by the policy engine at ingestion
+- **Salience** — current relevance score (0.0–1.0), modified by decay, reinforcement, and penalization
+- **Payload** — type-specific JSON struct stored inside the authoritative record
+- **Provenance** — list of source references describing where the record came from
+- **Relations** — directed edges to other records: `supersedes`, `derived_from`, `contested_by`, `supports`, `contradicts`
+- **AuditLog** — append-only list of every action taken on the record
+
+### Relationship graph
+
+Relations between records are stored alongside the records themselves. When a revision operation runs (e.g., `Supersede`), the new record gains a `supersedes` relation to the old one, and the old record's status is updated. This gives every record a queryable lineage without a separate graph store.
+
+## Deployment tiers
+
+Membrane scales from a zero-infrastructure default to a full pipeline with embedding similarity search and LLM-backed knowledge extraction.
+
+| Tier | Backend | Embedding | LLM | Behavior |
+|------|---------|-----------|-----|----------|
+| **1** | SQLite | — | — | Zero-infra default; confidence-based applicability fallback for competence and plan-graph selection |
+| **2** | Postgres | — | — | Concurrent writers; JSONB storage; same retrieval semantics as tier 1 |
+| **3** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types; embedding-backed multi-solution selection for competence and plan_graph |
+| **4** | Postgres + pgvector | Yes | Yes | Full system: LLM-backed episodic-to-semantic extraction runs asynchronously during consolidation |
+
+<Note>
+  Tiers 3 and 4 require a Postgres database with the `pgvector` extension enabled. The provided `docker-compose.yml` starts a `pgvector/pgvector:pg16` image with the correct user and database for local development.
+</Note>
+
+## Background jobs
+
+Two schedulers run as goroutines when `m.Start(ctx)` is called. Both stop cleanly when the context is cancelled.
+
+| Job | Default interval | Purpose |
+|-----|-----------------|---------|
+| **Decay** | 1 hour | Applies exponential salience decay (`salience × 2^(−elapsed/halfLife)`) to all non-pinned records using the per-record `DecayProfile` |
+| **Pruning** | Runs with decay | Deletes records whose salience has reached `0` and whose `DeletionPolicy` is `auto_prune`; pinned records are never pruned |
+| **Consolidation** | 6 hours | Runs the full consolidation pipeline: episodic compression → structural semantic extraction → LLM semantic extraction (if configured) → competence extraction → plan-graph extraction |
+
+### Decay curve
+
+Membrane uses exponential decay. The formula from `pkg/decay/curves.go`:
+
+```go pkg/decay/curves.go
+// Exponential computes exponential decay: salience * 2^(-elapsed/halfLife),
+// floored at MinSalience.
+func Exponential(currentSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
+	halfLife := float64(profile.HalfLifeSeconds)
+	if halfLife <= 0 {
+		return math.Max(currentSalience, profile.MinSalience)
+	}
+	decayed := currentSalience * math.Exp(-elapsedSeconds*math.Log(2)/halfLife)
+	return math.Max(decayed, profile.MinSalience)
+}
+```
+
+Default half-lives are set by the policy engine:
+
+| Memory type | Default half-life |
+|------------|------------------|
+| Episodic | 1 hour |
+| Working | 1 day |
+| Semantic | 30 days |
+| Competence | 30 days |
+| Plan graph | 30 days |
+
+### Consolidation pipeline
+
+The `consolidation.Service.RunAll` method runs four sub-consolidators in sequence:
+
+1. **Episodic consolidator** — compresses old episodic records by reducing their salience once they exceed an age threshold.
+2. **Semantic consolidator** — scans episodic records for observation-like patterns and promotes them to semantic facts; reinforces existing duplicates rather than creating new ones.
+3. **Semantic extractor** (optional, requires LLM) — sends batches of episodic records to a chat completion endpoint and stores the extracted subject-predicate-object triples as semantic memory.
+4. **Competence consolidator** — identifies repeated successful episodic patterns and promotes them to competence records with success-rate tracking.
+5. **Plan-graph consolidator** — extracts multi-step tool-call sequences from episodic tool graphs and stores them as reusable plan graphs.
+
+## Security model
+
+### Encryption at rest
+
+When `MEMBRANE_ENCRYPTION_KEY` (or `encryption_key` in the config) is set, Membrane opens the SQLite database with `PRAGMA key` via SQLCipher. The database file is unreadable without the key. This setting has no effect on the Postgres backend.
+
+### Transport security
+
+TLS is optional. Set `tls_cert_file` and `tls_key_file` in the config to enable it. Without TLS the gRPC server runs in plaintext — acceptable for loopback connections but not for networked deployments.
+
+### Authentication
+
+The daemon enforces a bearer token check on every gRPC call when `MEMBRANE_API_KEY` (or `api_key` in the config) is non-empty. The client must send the token in the `authorization` metadata header. Authentication is disabled when the key is not set.
+
+### Rate limiting
+
+A token-bucket rate limiter is applied per connection. The default is 100 requests per second, configurable via `rate_limit_per_second`. Set to `0` to disable.
+
+### Trust-aware retrieval
+
+The `TrustContext` passed with every retrieval request controls which records are visible:
+
+- **MaxSensitivity** — records at a higher sensitivity level are excluded entirely; records exactly one level above `MaxSensitivity` may be returned in redacted form (metadata only, payload stripped).
+- **Scopes** — if the trust context specifies scopes, only records whose `Scope` matches are returned. Records with an empty scope are unscoped and visible to all callers.
+- **Authenticated** — carried in the trust context for policy decisions.
+
+Sensitivity levels in ascending order: `public` → `low` → `medium` → `high` → `hyper`.
+
+```go pkg/retrieval/trust.go
+// sensitivityOrder maps sensitivity levels to a numeric ordering.
+var sensitivityOrder = map[schema.Sensitivity]int{
+	schema.SensitivityPublic: 0,
+	schema.SensitivityLow:    1,
+	schema.SensitivityMedium: 2,
+	schema.SensitivityHigh:   3,
+	schema.SensitivityHyper:  4,
+}
+```
+
+### Input validation
+
+The policy engine validates every ingestion candidate before creating a record. Checks include: required fields per candidate kind, sensitivity value in the allowed set, and NaN/Inf rejection on numeric fields. Payload size limits, string length limits, and tag count limits are enforced at the gRPC boundary.
+
+## gRPC API surface
+
+The daemon exposes a 15-method gRPC service. All methods use protobuf `bytes` fields carrying JSON-encoded payloads.
+
+| Method | Plane | Description |
+|--------|-------|-------------|
+| `IngestEvent` | Ingestion | Create episodic record from an event |
+| `IngestToolOutput` | Ingestion | Create episodic record from a tool invocation |
+| `IngestObservation` | Ingestion | Create semantic record from an observation |
+| `IngestOutcome` | Ingestion | Update episodic record with outcome data |
+| `IngestWorkingState` | Ingestion | Create working memory record |
+| `Retrieve` | Retrieval | Layered retrieval with trust context |
+| `RetrieveByID` | Retrieval | Fetch single record by ID |
+| `Supersede` | Revision | Replace a record with a new version |
+| `Fork` | Revision | Create conditional variant of a record |
+| `Retract` | Revision | Mark a record as retracted |
+| `Merge` | Revision | Combine multiple records into one |
+| `Contest` | Revision | Mark a record as contested by conflicting evidence |
+| `Reinforce` | Decay | Boost a record's salience |
+| `Penalize` | Decay | Reduce a record's salience |
+| `GetMetrics` | Metrics | Retrieve observability metrics snapshot |
+
+## Observability
+
+`GetMetrics` returns a point-in-time snapshot from the `metrics.Collector`. Example response:
+
+```json
+{
+  "total_records": 142,
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
+  "avg_salience": 0.62,
+  "avg_confidence": 0.78,
+  "active_records": 130,
+  "pinned_records": 3,
+  "total_audit_entries": 890,
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+| Metric | Description |
+|--------|-------------|
+| `memory_growth_rate` | Fraction of records created in the last 24 hours |
+| `retrieval_usefulness` | Ratio of reinforce actions to total audit entries |
+| `competence_success_rate` | Average success rate across competence records |
+| `plan_reuse_frequency` | Average execution count across plan-graph records |
+| `revision_rate` | Fraction of audit entries that are revisions (supersede, fork, merge) |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Memory types" icon="layers" href="/concepts/memory-types">
+    Schemas and lifecycle rules for each of the five memory types.
+  </Card>
+  <Card title="Decay and consolidation" icon="clock" href="/concepts/decay-and-consolidation">
+    How salience decay and background consolidation keep memory lean and useful.
+  </Card>
+  <Card title="Trust and sensitivity" icon="shield" href="/concepts/trust-and-sensitivity">
+    Full model for sensitivity levels, trust contexts, and redacted access.
+  </Card>
+  <Card title="Deployment guide" icon="server" href="/guides/deployment">
+    Running Membrane in production: Postgres, TLS, authentication, and scaling.
+  </Card>
+</CardGroup>

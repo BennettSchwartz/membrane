@@ -1,0 +1,192 @@
+---
+title: "gRPC API overview"
+description: "Transport, authentication, and method reference for the Membrane gRPC API."
+---
+
+Membrane exposes a 15-method gRPC service backed by protoc-generated stubs. All request and response payloads are JSON-encoded and carried in protobuf `bytes` fields, so any gRPC client that can set metadata headers and read raw bytes can call the API.
+
+## Connection details
+
+| Property | Value |
+|----------|-------|
+| Default address | `localhost:9090` |
+| Protocol | gRPC (HTTP/2) |
+| Payload encoding | JSON inside protobuf `bytes` fields |
+| TLS | Optional — set `tls_cert_file` and `tls_key_file` in config |
+| Authentication | Bearer token via `authorization` metadata header |
+| Rate limiting | Token bucket; configurable via `rate_limit_per_second` |
+
+### Authentication
+
+When `api_key` is configured, every RPC must include an `authorization` metadata header with the value `Bearer <your-key>`.
+
+```bash grpcurl example
+grpcurl \
+  -H 'authorization: Bearer your-key' \
+  -d '{"task_descriptor": "fix build error", "trust": {"max_sensitivity": "medium", "authenticated": true}, "memory_types": ["semantic", "competence"], "limit": 10}' \
+  -plaintext \
+  localhost:9090 \
+  membrane.v1.MembraneService/Retrieve
+```
+
+<Note>
+If no `api_key` is set in configuration, authentication is disabled and the `authorization` header is ignored.
+</Note>
+
+### TLS
+
+Enable TLS by providing certificate and key paths in your configuration file:
+
+```yaml config.yaml
+tls_cert_file: "/path/to/server.crt"
+tls_key_file: "/path/to/server.key"
+```
+
+When TLS is enabled, use `-insecure` instead of `-plaintext` with grpcurl, or supply the CA certificate with `--cacert`.
+
+## All methods
+
+| Method | Category | Description |
+|--------|----------|-------------|
+| `IngestEvent` | Ingestion | Create an episodic record from an event |
+| `IngestToolOutput` | Ingestion | Create an episodic record from a tool invocation |
+| `IngestObservation` | Ingestion | Create a semantic record from a subject-predicate-object observation |
+| `IngestOutcome` | Ingestion | Update an existing episodic record with an outcome status |
+| `IngestWorkingState` | Ingestion | Create a working memory record from a task state snapshot |
+| `Retrieve` | Retrieval | Layered retrieval with trust context and salience filtering |
+| `RetrieveByID` | Retrieval | Fetch a single record by ID |
+| `Supersede` | Revision | Atomically replace a record with a new version |
+| `Fork` | Revision | Create a conditional variant of an existing record |
+| `Retract` | Revision | Mark a record as retracted (salience → 0, audit trail preserved) |
+| `Merge` | Revision | Combine multiple records into one consolidated record |
+| `Contest` | Revision | Mark a record as contested by conflicting evidence |
+| `Reinforce` | Salience | Boost a record's salience |
+| `Penalize` | Salience | Reduce a record's salience by a specified amount |
+| `GetMetrics` | Observability | Retrieve a point-in-time metrics snapshot |
+
+## Connecting with TypeScript
+
+Install the official TypeScript client:
+
+```bash
+npm install @gustycube/membrane
+```
+
+```typescript typescript client
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
+
+// Ingest an event
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"],
+});
+
+// Retrieve with trust context
+const results = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: [],
+  },
+  memoryTypes: ["semantic", "competence"],
+});
+
+client.close();
+```
+
+## Connecting with Python
+
+Install the Python client:
+
+```bash
+pip install -e clients/python
+```
+
+```python python client
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+
+# Ingest an event
+record = client.ingest_event(
+    source="my-agent",
+    event_kind="tool_call",
+    ref="task#1",
+    summary="Ran database migration successfully",
+    tags=["db", "migration"],
+)
+
+# Retrieve with trust context
+results = client.retrieve(
+    task_descriptor="database operations",
+    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+    memory_types=["semantic", "competence"],
+)
+```
+
+## Connecting with grpcurl
+
+List available methods:
+
+```bash
+grpcurl -plaintext localhost:9090 list membrane.v1.MembraneService
+```
+
+Call `IngestEvent`:
+
+```bash
+grpcurl \
+  -H 'authorization: Bearer your-key' \
+  -d '{
+    "source": "build-agent",
+    "event_kind": "tool_call",
+    "ref": "build#42",
+    "summary": "Executed go build, failed with linker error",
+    "tags": ["build", "error"]
+  }' \
+  -plaintext \
+  localhost:9090 \
+  membrane.v1.MembraneService/IngestEvent
+```
+
+Call `GetMetrics`:
+
+```bash
+grpcurl \
+  -H 'authorization: Bearer your-key' \
+  -d '{}' \
+  -plaintext \
+  localhost:9090 \
+  membrane.v1.MembraneService/GetMetrics
+```
+
+## Proto definition
+
+The full service definition is at `api/proto/membrane/v1/membrane.proto`. The Go package is `github.com/GustyCube/membrane/api/grpc/gen/membranev1`.
+
+```protobuf membrane.proto
+syntax = "proto3";
+
+package membrane.v1;
+
+service MembraneService {
+    rpc IngestEvent(IngestEventRequest) returns (IngestResponse);
+    rpc IngestToolOutput(IngestToolOutputRequest) returns (IngestResponse);
+    rpc IngestObservation(IngestObservationRequest) returns (IngestResponse);
+    rpc IngestOutcome(IngestOutcomeRequest) returns (IngestResponse);
+    rpc IngestWorkingState(IngestWorkingStateRequest) returns (IngestResponse);
+    rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+    rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
+    rpc Supersede(SupersedeRequest) returns (MemoryRecordResponse);
+    rpc Fork(ForkRequest) returns (MemoryRecordResponse);
+    rpc Retract(RetractRequest) returns (RetractResponse);
+    rpc Merge(MergeRequest) returns (MemoryRecordResponse);
+    rpc Contest(ContestRequest) returns (ContestResponse);
+    rpc Reinforce(ReinforceRequest) returns (ReinforceResponse);
+    rpc Penalize(PenalizeRequest) returns (PenalizeResponse);
+    rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+}
+```

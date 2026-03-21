@@ -1,0 +1,250 @@
+---
+title: "Decay and Consolidation"
+description: "How Membrane keeps memory useful over time through salience decay and background consolidation."
+---
+
+Memory becomes less relevant over time. Membrane manages this with two background processes: **decay** reduces the salience of records that haven't been reinforced recently, and **consolidation** extracts durable knowledge from raw episodic traces.
+
+---
+
+## Salience
+
+Every record has a `salience` field in the range `[0.0, 1.0]` (conceptually unbounded, but capped at 1.0 by reinforcement). Salience represents the current importance of a record. Higher-salience records are ranked first in retrieval results.
+
+- New records start with `salience = 1.0`.
+- Salience decreases over time via the decay function.
+- Salience increases when a record is reinforced.
+- Records with `salience < 0.001` and `deletion_policy: auto_prune` are pruned automatically.
+
+---
+
+## Exponential decay
+
+Membrane uses exponential decay with a configurable half-life:
+
+```
+new_salience = current_salience × 2^(−elapsed / half_life)
+```
+
+Where `elapsed` is the number of seconds since `last_reinforced_at`.
+
+```go
+// From pkg/decay/curves.go
+func Exponential(currentSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
+    halfLife := float64(profile.HalfLifeSeconds)
+    if halfLife <= 0 {
+        return math.Max(currentSalience, profile.MinSalience)
+    }
+    decayed := currentSalience * math.Exp(-elapsedSeconds*math.Log(2)/halfLife)
+    return math.Max(decayed, profile.MinSalience)
+}
+```
+
+The `MinSalience` field acts as a floor: salience never decays below this value, preventing records from reaching zero unless intentionally retracted or penalized.
+
+### DecayProfile fields
+
+```go
+type DecayProfile struct {
+    Curve             DecayCurve // exponential (only supported curve)
+    HalfLifeSeconds   int64      // time for salience to decay by half (minimum: 1)
+    MinSalience       float64    // floor value [0, 1]
+    MaxAgeSeconds     int64      // optional maximum age before deletion eligibility
+    ReinforcementGain float64    // salience boost per Reinforce call
+}
+```
+
+The default `HalfLifeSeconds` for new records is `86400` (1 day).
+
+---
+
+## Reinforce and Penalize
+
+Two operations adjust salience explicitly:
+
+### Reinforce
+
+Boosts salience by `ReinforcementGain`, capped at `1.0`. Updates `last_reinforced_at` and adds a `reinforce` audit entry.
+
+```go
+// From pkg/decay/decay.go
+func (s *Service) Reinforce(ctx context.Context, id string, actor string, rationale string) error {
+    // ...
+    gain := record.Lifecycle.Decay.ReinforcementGain
+    newSalience := record.Salience + gain
+    if newSalience > 1.0 {
+        newSalience = 1.0
+    }
+    // Updates record and adds audit entry
+}
+```
+
+### Penalize
+
+Reduces salience by a specified amount, floored at `MinSalience`. Adds a `decay` audit entry.
+
+```go
+// From pkg/decay/decay.go
+func (s *Service) Penalize(ctx context.Context, id string, amount float64, actor string, rationale string) error {
+    // ...
+    floor := record.Lifecycle.Decay.MinSalience
+    newSalience := record.Salience - amount
+    if newSalience < floor {
+        newSalience = floor
+    }
+    // Updates salience and adds audit entry
+}
+```
+
+---
+
+## Deletion policies
+
+The `deletion_policy` field on each record controls how it may be deleted:
+
+| Policy | Value | Behavior |
+|--------|-------|----------|
+| Auto-prune | `auto_prune` | Deleted automatically when salience reaches floor (< 0.001) |
+| Manual only | `manual_only` | Only deleted by explicit user action |
+| Never | `never` | Deletion is prevented entirely |
+
+<Tip>
+Set `deletion_policy: never` for records that must persist regardless of salience — for example, pinned user preferences or compliance-relevant facts.
+</Tip>
+
+The `pinned` field on `Lifecycle` provides an additional safeguard: pinned records are never decayed or pruned regardless of their deletion policy.
+
+---
+
+## Background decay scheduler
+
+The decay scheduler runs `ApplyDecayAll` at a configurable interval (default: `1h`). After each decay sweep, it runs `Prune` to delete auto-prune records whose salience has reached the floor.
+
+```go
+// From pkg/decay/scheduler.go
+case <-ticker.C:
+    count, err := s.service.ApplyDecayAll(ctx)
+    // ...
+    pruned, err := s.service.Prune(ctx)
+```
+
+```yaml
+# config.yaml
+decay_interval: "1h"
+```
+
+| Job | Default interval | Purpose |
+|-----|-----------------|--------|
+| Decay | `1h` | Applies time-based salience decay using the exponential curve |
+| Pruning | With decay | Deletes records with `auto_prune` policy whose salience has reached 0 |
+
+---
+
+## Consolidation pipeline
+
+Consolidation promotes raw episodic experience into durable knowledge. The pipeline runs every `6h` by default and consists of four stages:
+
+<Steps>
+  <Step title="Episodic compression">
+    Reduces salience of episodic records that have exceeded their age threshold, making room for new experience.
+  </Step>
+  <Step title="Structural semantic consolidation">
+    Scans episodic records with successful outcomes. For each timeline event with a summary, creates a new semantic record (subject: event kind, predicate: `observed_in`, object: summary) or reinforces an existing one.
+  </Step>
+  <Step title="LLM-backed semantic extraction (Tier 4 only)">
+    When `llm_endpoint` is configured (Postgres + LLM tier), sends episodic summaries to an OpenAI-compatible chat completions API. The LLM extracts structured subject-predicate-object triples that are stored as semantic records.
+  </Step>
+  <Step title="Competence extraction">
+    Groups successful episodic records by their tool signature. Patterns that appear at least twice are promoted into competence records with a recipe derived from the tool sequence.
+  </Step>
+  <Step title="Plan graph extraction">
+    Episodic records with tool graphs containing 3 or more nodes are promoted into plan graph records. Tool nodes become plan nodes; `DependsOn` relationships become control-flow edges.
+  </Step>
+</Steps>
+
+```go
+// From pkg/consolidation/consolidation.go — RunAll executes all stages in sequence
+func (s *Service) RunAll(ctx context.Context) (*ConsolidationResult, error) {
+    // 1. Episodic compression
+    episodicCount, err := s.episodic.Consolidate(ctx)
+
+    // 2. Structural semantic extraction
+    semanticCount, semanticReinforced, err := s.semantic.Consolidate(ctx)
+
+    // 3. LLM-backed semantic extraction (optional)
+    if s.extractor != nil {
+        extracted, skipped, err := s.extractor.Extract(ctx)
+    }
+
+    // 4. Competence extraction
+    competenceCount, competenceReinforced, err := s.competence.Consolidate(ctx)
+
+    // 5. Plan graph extraction
+    planGraphCount, err := s.plangraph.Consolidate(ctx)
+
+    return result, nil
+}
+```
+
+### ConsolidationResult fields
+
+```go
+type ConsolidationResult struct {
+    EpisodicCompressed       int // episodic records whose salience was reduced
+    SemanticExtracted        int // new semantic records created structurally
+    SemanticTriplesExtracted int // new semantic facts from LLM extraction
+    CompetenceExtracted      int // new competence records created
+    PlanGraphsExtracted      int // new plan graph records created
+    DuplicatesResolved       int // existing records reinforced instead of duplicated
+    ExtractionSkipped        int // episodic records that could not be processed
+}
+```
+
+---
+
+## LLM-backed semantic extraction
+
+On the Postgres + LLM tier (Tier 4), episodic records can be converted into typed semantic facts asynchronously. The extractor sends episodic content to an OpenAI-compatible endpoint:
+
+```go
+// System prompt used by the LLM extractor (pkg/consolidation/llm.go)
+const semanticExtractorPrompt = "You are a fact extraction system. Given a description "
+    + "of an event or experience, extract structured facts as a JSON array of objects "
+    + "with exactly three keys: \"subject\", \"predicate\", and \"object\". Extract only "
+    + "facts that would be useful to remember across future sessions - persistent "
+    + "preferences, learned capabilities, environment facts, and recurring patterns."
+```
+
+Each extracted triple becomes a semantic record with `created_by: "consolidation/semantic-extractor"`.
+
+Configure the LLM endpoint in `config.yaml`:
+
+```yaml
+llm_endpoint: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-5-mini"
+# llm_api_key: set via MEMBRANE_LLM_API_KEY environment variable
+```
+
+---
+
+## Background consolidation scheduler
+
+```go
+// From pkg/consolidation/scheduler.go
+case <-ticker.C:
+    result, err := s.service.RunAll(ctx)
+    // logs: compressed, semantic, extracted, skipped, competence, plangraph, duplicates
+```
+
+```yaml
+# config.yaml
+consolidation_interval: "6h"
+```
+
+| Job | Default interval | Purpose |
+|-----|-----------------|--------|
+| Consolidation | `6h` | Runs all five pipeline stages |
+
+<Note>
+Consolidation is automatic and requires no user approval per RFC 15B. All promoted knowledge remains subject to decay and can be revised through explicit operations.
+</Note>

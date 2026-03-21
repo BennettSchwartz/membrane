@@ -1,0 +1,199 @@
+---
+title: "Configuration"
+description: "Complete reference for the Membrane YAML config file, Config struct, environment variables, and command-line flags."
+---
+
+Membrane is configured via a YAML file, command-line flags, and environment variables. Flags override file values; environment variables are read for secrets not set in the config.
+
+## YAML config file
+
+Full example with all available fields:
+
+```yaml
+backend: "sqlite"
+db_path: "membrane.db"
+# postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+
+# Optional embedding-backed retrieval (Postgres only)
+# embedding_endpoint: "https://api.openai.com/v1/embeddings"
+# embedding_model: "text-embedding-3-small"
+# embedding_dimensions: 1536
+# embedding_api_key: ""   # or set MEMBRANE_EMBEDDING_API_KEY
+
+# Optional LLM-backed semantic extraction (Postgres only)
+# llm_endpoint: "https://api.openai.com/v1/chat/completions"
+# llm_model: "gpt-5-mini"
+# llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
+
+# Security (prefer environment variables for keys)
+# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""              # or set MEMBRANE_API_KEY
+# tls_cert_file: ""
+# tls_key_file: ""
+rate_limit_per_second: 100
+```
+
+Load the file from Go:
+
+```go
+cfg, err := membrane.LoadConfig("/etc/membrane/config.yaml")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+`LoadConfig` starts from `DefaultConfig()` and unmarshals the YAML on top, so fields not present in the file retain their defaults.
+
+---
+
+## DefaultConfig() defaults
+
+Calling `membrane.DefaultConfig()` produces:
+
+| Field | Default value |
+|-------|---------------|
+| `Backend` | `"sqlite"` |
+| `DBPath` | `"membrane.db"` |
+| `ListenAddr` | `":9090"` |
+| `DecayInterval` | `1h` |
+| `ConsolidationInterval` | `6h` |
+| `DefaultSensitivity` | `"low"` |
+| `SelectionConfidenceThreshold` | `0.7` |
+| `EncryptionKey` | `""` (unencrypted) |
+| `EmbeddingDimensions` | `1536` |
+| `RateLimitPerSecond` | `100` |
+
+---
+
+## Config struct fields
+
+### Storage
+
+<ParamField path="backend" type="string">
+Storage backend. Options: `"sqlite"` (default) or `"postgres"`.
+</ParamField>
+
+<ParamField path="db_path" type="string">
+SQLite database file path. Default: `"membrane.db"`. Ignored when `backend` is `"postgres"`.
+</ParamField>
+
+<ParamField path="postgres_dsn" type="string">
+PostgreSQL connection string. Required when `backend` is `"postgres"`. Falls back to the `MEMBRANE_POSTGRES_DSN` environment variable if not set in config.
+
+Example: `postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable`
+</ParamField>
+
+### Network
+
+<ParamField path="listen_addr" type="string">
+gRPC server listen address. Default: `":9090"`.
+</ParamField>
+
+### Scheduling
+
+<ParamField path="decay_interval" type="duration">
+How often the decay scheduler runs. Default: `"1h"`. Accepts Go duration strings (`"30m"`, `"2h"`, etc.).
+</ParamField>
+
+<ParamField path="consolidation_interval" type="duration">
+How often the consolidation scheduler runs. Default: `"6h"`. Consolidation extracts semantic facts and competence records from episodic traces.
+</ParamField>
+
+### Ingestion
+
+<ParamField path="default_sensitivity" type="string">
+Default sensitivity level assigned to records at ingestion when not explicitly overridden. Default: `"low"`.
+
+Valid values: `public`, `low`, `medium`, `high`, `hyper`.
+</ParamField>
+
+### Retrieval
+
+<ParamField path="selection_confidence_threshold" type="float64">
+Minimum confidence for competence and plan_graph candidates to pass the selector. Default: `0.7`.
+</ParamField>
+
+### Embedding
+
+<ParamField path="embedding_endpoint" type="string">
+HTTP endpoint for generating record and query embeddings. Requires `backend: postgres` and `embedding_model`. Example: `https://api.openai.com/v1/embeddings`.
+</ParamField>
+
+<ParamField path="embedding_model" type="string">
+Embedding model name sent to the embedding endpoint. Example: `text-embedding-3-small`.
+</ParamField>
+
+<ParamField path="embedding_dimensions" type="int">
+Output dimension of the embedding model. Default: `1536`. Must match the model's actual output dimensions.
+</ParamField>
+
+<ParamField path="embedding_api_key" type="string">
+API key for the embedding endpoint. Prefer setting `MEMBRANE_EMBEDDING_API_KEY` instead.
+</ParamField>
+
+### LLM
+
+<ParamField path="llm_endpoint" type="string">
+HTTP endpoint for the LLM used in semantic extraction during consolidation. Requires `backend: postgres`. Example: `https://api.openai.com/v1/chat/completions`.
+</ParamField>
+
+<ParamField path="llm_model" type="string">
+Chat model name sent to the LLM endpoint. Example: `gpt-5-mini`.
+</ParamField>
+
+<ParamField path="llm_api_key" type="string">
+API key for the LLM endpoint. Prefer setting `MEMBRANE_LLM_API_KEY` instead.
+</ParamField>
+
+### Security
+
+<ParamField path="encryption_key" type="string">
+SQLCipher `PRAGMA key` value for encrypting the SQLite database at rest. Falls back to `MEMBRANE_ENCRYPTION_KEY`. When empty, the database is unencrypted.
+</ParamField>
+
+<ParamField path="tls_cert_file" type="string">
+Path to TLS certificate PEM file. TLS is disabled when empty.
+</ParamField>
+
+<ParamField path="tls_key_file" type="string">
+Path to TLS private key PEM file. Required when `tls_cert_file` is set.
+</ParamField>
+
+<ParamField path="api_key" type="string">
+Shared secret for gRPC client authentication via bearer token. Falls back to `MEMBRANE_API_KEY`. Authentication is disabled when empty.
+</ParamField>
+
+<ParamField path="rate_limit_per_second" type="int">
+Maximum gRPC requests per second per client. `0` disables rate limiting. Default: `100`.
+</ParamField>
+
+---
+
+## Environment variables
+
+| Variable | Config field | Description |
+|----------|-------------|-------------|
+| `MEMBRANE_ENCRYPTION_KEY` | `encryption_key` | SQLCipher encryption key for the SQLite database |
+| `MEMBRANE_POSTGRES_DSN` | `postgres_dsn` | PostgreSQL DSN, read when `backend: postgres` |
+| `MEMBRANE_EMBEDDING_API_KEY` | `embedding_api_key` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_API_KEY` | `llm_api_key` | API key for the LLM semantic extraction endpoint |
+| `MEMBRANE_API_KEY` | `api_key` | Bearer token for gRPC client authentication |
+
+---
+
+## Command-line flags
+
+Flags override values set in the config file.
+
+| Flag | Overrides | Description |
+|------|-----------|-------------|
+| `--config <path>` | — | Load YAML config file from `<path>` |
+| `--db <path>` | `db_path` | SQLite database path |
+| `--postgres-dsn <dsn>` | `postgres_dsn` + `backend` | PostgreSQL DSN; also sets `backend = "postgres"` |
+| `--addr <addr>` | `listen_addr` | gRPC listen address |
+| `--version` | — | Print version and exit |

@@ -1,0 +1,244 @@
+---
+title: "OpenClaw plugin"
+description: "OpenClaw plugin that bridges to Membrane, giving your AI agents episodic memory. Ingests events, searches memory, and auto-injects context before each agent turn."
+---
+
+## What it does
+
+<CardGroup cols={2}>
+  <Card title="Ingestion" icon="database">
+    Automatically ingests agent replies, tool calls, and observations into Membrane via `after_agent_reply` and `after_tool_call` hooks.
+  </Card>
+  <Card title="Memory search" icon="magnifying-glass">
+    Exposes the `membrane_search` tool so agents can query episodic memory with natural language.
+  </Card>
+  <Card title="Auto-context" icon="bolt">
+    Injects relevant memories into the agent's context before each turn via the `before_agent_start` hook — no explicit tool calls required.
+  </Card>
+  <Card title="Status command" icon="circle-info">
+    The `/membrane` command reports connection status and live memory stats.
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+- A running [Membrane](https://github.com/GustyCube/membrane) instance (`membraned` daemon)
+- OpenClaw v0.10+
+
+## Installation
+
+<Steps>
+  <Step title="Install from npm">
+    In your OpenClaw extensions directory:
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install @vainplex/openclaw-membrane
+    ```
+
+    ```bash brainplex
+    npx brainplex init
+    ```
+
+    </CodeGroup>
+
+    The `brainplex init` command auto-detects and configures all plugins.
+  </Step>
+
+  <Step title="Configure the plugin">
+    Add the plugin entry to your `openclaw.yaml` under `plugins.entries`:
+
+    ```yaml openclaw.yaml
+    plugins:
+      entries:
+        openclaw-membrane:
+          enabled: true
+          config:
+            grpc_endpoint: "localhost:4222"
+            default_sensitivity: "low"
+            auto_context: true
+            context_limit: 5
+            min_salience: 0.3
+            context_types: ["episodic", "semantic", "competence"]
+    ```
+  </Step>
+
+  <Step title="Start the Membrane daemon">
+    Make sure `membraned` is running and reachable at the configured `grpc_endpoint`:
+
+    ```bash
+    ./bin/membraned
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Configuration reference
+
+All options live under `plugins.entries.openclaw-membrane.config` in `openclaw.yaml`.
+
+<ParamField path="grpc_endpoint" type="string">
+  Membrane gRPC address. Defaults to `"localhost:4222"`.
+</ParamField>
+
+<ParamField path="default_sensitivity" type="string">
+  Sensitivity level applied to all ingested events. One of `"public"`, `"low"`, `"medium"`, `"high"`, `"hyper"`. Defaults to `"low"`.
+</ParamField>
+
+<ParamField path="auto_context" type="boolean">
+  When `true`, injects relevant memories into the agent's context before each turn via the `before_agent_start` hook. Defaults to `true`.
+</ParamField>
+
+<ParamField path="context_limit" type="integer">
+  Maximum number of memories to inject as context. Minimum `1`. Defaults to `5`.
+</ParamField>
+
+<ParamField path="min_salience" type="number">
+  Minimum salience score (0–1) for retrieval during context injection and search. Defaults to `0.3`.
+</ParamField>
+
+<ParamField path="context_types" type="array">
+  Memory types to include in context injection. Valid values: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`. Defaults to `["episodic", "semantic", "competence"]`.
+</ParamField>
+
+### Configuration summary table
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `grpc_endpoint` | `localhost:4222` | Membrane gRPC address |
+| `default_sensitivity` | `low` | Sensitivity for ingested events: `public`, `low`, `medium`, `high`, `hyper` |
+| `auto_context` | `true` | Auto-inject memories before each agent turn |
+| `context_limit` | `5` | Max memories to inject |
+| `min_salience` | `0.3` | Minimum salience score for retrieval |
+| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph` |
+
+---
+
+## `membrane_search` tool
+
+The plugin registers the `membrane_search` tool, which agents can call to query episodic memory:
+
+```javascript
+membrane_search("what happened in yesterday's meeting", { limit: 10 })
+```
+
+### Parameters
+
+<ParamField path="query" type="string" required>
+  Natural language query to search memories.
+</ParamField>
+
+<ParamField path="limit" type="integer">
+  Maximum results to return. Defaults to the configured `context_limit` (5).
+</ParamField>
+
+<ParamField path="memory_types" type="array">
+  Filter by memory type: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`.
+</ParamField>
+
+<ParamField path="min_salience" type="number">
+  Minimum salience score (0–1). Defaults to the configured `min_salience` (0.3).
+</ParamField>
+
+```javascript
+// Search with type filter
+membrane_search("auth middleware patterns", {
+  memory_types: ["competence", "semantic"],
+  limit: 5
+})
+
+// Search with salience filter
+membrane_search("recent deploy failures", {
+  memory_types: ["episodic"],
+  min_salience: 0.6,
+  limit: 10
+})
+```
+
+---
+
+## Auto-context
+
+When `auto_context: true` (the default), the plugin hooks into `before_agent_start` to retrieve and inject relevant memories before each agent turn. Agents get awareness of past interactions without explicit tool calls.
+
+The injected context looks like:
+
+```text
+Episodic memory from Membrane:
+1. [episodic] Agent reply: Refactored the auth middleware to use...
+2. [semantic] User prefers TypeScript for new services
+3. [competence] To fix linker cache error: clear cache, rebuild with flags
+```
+
+Context injection uses the `context_types` and `min_salience` config values. Set `auto_context: false` to disable.
+
+<Tip>
+Increase `context_limit` for long-running sessions with deep history, or lower `min_salience` to surface less-reinforced memories.
+</Tip>
+
+---
+
+## `/membrane` command
+
+Check connection status and memory stats at any time:
+
+```text
+/membrane
+→ Membrane: connected (localhost:4222) | 1,247 records | 3 memory types
+```
+
+If the daemon is unreachable, the command reports the disconnected state without crashing the agent.
+
+---
+
+## Ingestion behavior
+
+The plugin maps OpenClaw hooks to Membrane ingestion methods:
+
+| Hook | Membrane method | Condition |
+|------|----------------|-----------|
+| `after_tool_call` | `ingestToolOutput` | When `toolName` is present |
+| `after_agent_reply` | `ingestEvent` | Always |
+| Other hooks | `ingestObservation` | Fallback |
+
+Tags are automatically built from the event: `hook:<name>`, `agent:<id>`, `tool:<name>`, `session:<key>`.
+
+Ingestion failures are logged as warnings and do not interrupt the agent.
+
+---
+
+## Architecture
+
+```text
+OpenClaw Agent
+     │
+     ├── after_agent_reply ──→ ingestEvent()
+     ├── after_tool_call ────→ ingestToolOutput()
+     ├── before_agent_start ─→ retrieve() → inject context
+     │
+     └── membrane_search ───→ retrieve() → return results
+                                  │
+                                  ▼
+                          Membrane (gRPC)
+                          ┌─────────────┐
+                          │  membraned   │
+                          │  SQLCipher   │
+                          │  Embeddings  │
+                          └─────────────┘
+```
+
+---
+
+## Plugin metadata
+
+| Field | Value |
+|-------|-------|
+| Package | `@vainplex/openclaw-membrane` |
+| Plugin ID | `openclaw-membrane` |
+| Version | `0.4.0` |
+| Kind | `memory` |
+| Hooks | `after_agent_reply`, `after_tool_call`, `before_agent_start` |
+| Tools | `membrane_search` |
+| Commands | `/membrane` |

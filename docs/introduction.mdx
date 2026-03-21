@@ -1,0 +1,89 @@
+---
+title: "Introduction"
+description: "A selective learning and memory substrate for LLM and agentic systems — typed, revisable, decayable memory with competence learning and trust-aware retrieval."
+---
+
+## What is Membrane?
+
+Membrane gives long-lived LLM agents structured, revisable memory with built-in decay, trust-gated retrieval, and audit trails. Instead of an append-only context window or flat text log, agents get typed memory records that can be consolidated, revised, contested, and pruned over time.
+
+Most LLM/agent "memory" is either ephemeral (context windows that reset each turn) or an append-only text log stuffed into a RAG pipeline. That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
+
+Membrane makes memory **selective** and **revisable**. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
+
+## Mental model
+
+<Steps>
+  <Step title="Ingest">
+    Capture events, tool outputs, observations, and working state as episodic memory records.
+  </Step>
+  <Step title="Consolidate">
+    Background jobs promote episodic traces into semantic facts, competence records, and plan graphs.
+  </Step>
+  <Step title="Retrieve">
+    Query memory in layers with trust gating and salience ranking — agents only see what they're allowed to see.
+  </Step>
+  <Step title="Revise">
+    Update knowledge with explicit operations (supersede, fork, merge, contest, retract) and a full audit trail.
+  </Step>
+  <Step title="Decay">
+    Salience decreases over time unless reinforced by success, keeping memory lean and relevant.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Typed memory" icon="database">
+    Five distinct memory types (episodic, working, semantic, competence, plan_graph) with explicit schemas and lifecycle rules — not a flat text store.
+  </Card>
+  <Card title="Revisable knowledge" icon="pencil">
+    Supersede, fork, retract, merge, and contest records with full provenance tracking and audit trails.
+  </Card>
+  <Card title="Competence learning" icon="brain">
+    Agents learn *how* to solve problems — procedures with success rate tracking — not just *what* happened.
+  </Card>
+  <Card title="Trust-aware retrieval" icon="shield">
+    Sensitivity levels (public, low, medium, high, hyper) with graduated access control and redacted responses.
+  </Card>
+  <Card title="Decay and consolidation" icon="clock">
+    Time-based salience decay keeps memory useful; background consolidation extracts structured knowledge from raw experience.
+  </Card>
+  <Card title="Vector-aware retrieval" icon="chart-scatter">
+    With Postgres + pgvector, competence and plan-graph applicability are scored with embedding similarity.
+  </Card>
+  <Card title="gRPC API" icon="server">
+    15-method gRPC service with TypeScript and Python client SDKs, or use Membrane as an embedded Go library.
+  </Card>
+  <Card title="Security and operations" icon="lock">
+    SQLCipher encryption at rest, optional TLS, API key authentication, configurable rate limiting, full audit logs.
+  </Card>
+</CardGroup>
+
+## Deployment tiers
+
+Membrane scales from a zero-infrastructure SQLite default to a full Postgres + pgvector + LLM pipeline:
+
+| Tier | Backend | Embedding | LLM | Behavior |
+|------|---------|-----------|-----|----------|
+| 1 | SQLite | — | — | Zero-infra default, confidence-based applicability fallback |
+| 2 | Postgres | — | — | Concurrent writers, JSONB storage, same retrieval semantics as tier 1 |
+| 3 | Postgres + pgvector | Yes | — | Recommended: hybrid vector+salience ranking for all record types |
+| 4 | Postgres + pgvector | Yes | Yes | Full system with LLM-backed episodic to semantic extraction |
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build and run Membrane in under 5 minutes.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand how the subsystems fit together.
+  </Card>
+  <Card title="Memory types" icon="layers" href="/concepts/memory-types">
+    Learn the five memory types and their lifecycle rules.
+  </Card>
+  <Card title="Go library" icon="code" href="/guides/go-library">
+    Embed Membrane directly in your Go application.
+  </Card>
+</CardGroup>

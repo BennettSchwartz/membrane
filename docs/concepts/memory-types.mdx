@@ -1,0 +1,319 @@
+---
+title: "Memory Types"
+description: "The five typed memory categories in Membrane: episodic, working, semantic, competence, and plan graph."
+---
+
+Memrane stores all knowledge as `MemoryRecord` values. Each record declares a `type` field that determines its schema, lifecycle rules, and consolidation behavior.
+
+## Overview
+
+| Type | Purpose | Example |
+|------|---------|--------|
+| **episodic** | Raw experience capture (immutable) | Tool calls, errors, observations from a debugging session |
+| **working** | Current task state | "Backend initialized, frontend pending, docs TODO" |
+| **semantic** | Stable facts and preferences | "User prefers Go for backend services" |
+| **competence** | Learned procedures with success tracking | "To fix linker cache error: clear cache, rebuild with flags" |
+| **plan_graph** | Reusable solution structures as directed graphs | Multi-step project setup workflow with dependencies |
+
+Episodic records are immutable once ingested. Working memory tracks in-flight task state. Semantic, competence, and plan graph records are the durable output of consolidation and can be revised through explicit operations.
+
+---
+
+## Base record schema
+
+Every memory record shares these common fields regardless of type:
+
+```go
+type MemoryRecord struct {
+    ID          string        // globally unique identifier (UUID)
+    Type        MemoryType    // episodic | working | semantic | competence | plan_graph
+    Sensitivity Sensitivity   // public | low | medium | high | hyper
+    Confidence  float64       // epistemic confidence [0, 1]
+    Salience    float64       // decay-weighted importance score [0, +inf)
+    Scope       string        // visibility scope (user, device, project, workspace, global)
+    Tags        []string      // free-form labels for categorization
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+    Lifecycle   Lifecycle     // decay, reinforcement, and deletion metadata
+    Provenance  Provenance    // links to source events or artifacts
+    Relations   []Relation    // graph edges to other MemoryRecords
+    Payload     Payload       // type-specific structured content
+    AuditLog    []AuditEntry  // every action performed on this record
+}
+```
+
+---
+
+## Episodic
+
+Episodic memory captures raw experience as an append-only, time-ordered sequence of events. It is the source of evidence for later consolidation into semantic facts, competence records, and plan graphs.
+
+<Warning>
+Episodic records are **immutable** once ingested. Semantic correction is forbidden. Attempting to revise an episodic record returns `ErrEpisodicImmutable`.
+</Warning>
+
+### Payload fields
+
+```go
+type EpisodicPayload struct {
+    Kind        string               // const "episodic"
+    Timeline    []TimelineEvent      // time-ordered sequence of events (required)
+    ToolGraph   []ToolNode           // tool calls and data flow during the episode
+    Environment *EnvironmentSnapshot // OS, versions, working directory
+    Outcome     OutcomeStatus        // success | failure | partial
+    Artifacts   []string             // references to external logs, screenshots, files
+    ToolGraphRef string              // optional reference to an external tool graph
+}
+
+type TimelineEvent struct {
+    T         time.Time // timestamp of the event
+    EventKind string    // type of event (e.g., "tool_call", "observation")
+    Ref       string    // reference to the event details
+    Summary   string    // optional human-readable summary
+}
+
+type ToolNode struct {
+    ID        string         // unique identifier for this tool node
+    Tool      string         // name or identifier of the tool
+    Args      map[string]any // arguments passed to the tool
+    Result    any            // output from the tool
+    Timestamp time.Time
+    DependsOn []string       // IDs of tool nodes this depends on
+}
+```
+
+### Lifecycle
+
+- Default deletion policy: `auto_prune`
+- Default half-life: 86400 seconds (1 day)
+- Immutable — no revision operations are allowed
+
+### Example
+
+```go
+rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "build-agent",
+    EventKind: "tool_call",
+    Ref:       "build#42",
+    Summary:   "Executed go build, failed with linker error",
+    Tags:      []string{"build", "error"},
+})
+fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+```
+
+---
+
+## Working
+
+Working memory holds the current state of an in-progress task. It can be freely edited and discarded when the task ends, making it suitable for tracking resumption across sessions.
+
+### Payload fields
+
+```go
+type WorkingPayload struct {
+    Kind              string       // const "working"
+    ThreadID          string       // identifier for the current thread/session (required)
+    State             TaskState    // planning | executing | blocked | waiting | done
+    ActiveConstraints []Constraint // constraints currently active for the task
+    NextActions       []string     // next planned actions
+    OpenQuestions     []string     // unresolved questions
+    ContextSummary    string       // summary of the current context
+}
+
+type Constraint struct {
+    Type     string // kind of constraint
+    Key      string // constraint name
+    Value    any    // constraint value
+    Required bool
+}
+```
+
+### Task states
+
+| State | Meaning |
+|-------|---------|
+| `planning` | Task is in planning phase |
+| `executing` | Task is actively being executed |
+| `blocked` | Task cannot proceed due to a blocker |
+| `waiting` | Task is waiting for external input |
+| `done` | Task has completed |
+
+### Example
+
+```go
+m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+    Source:      "build-agent",
+    ThreadID:    "session-001",
+    State:       schema.TaskStateExecuting,
+    NextActions: []string{"run tests", "deploy"},
+})
+```
+
+---
+
+## Semantic
+
+Semantic memory stores stable facts as subject-predicate-object triples. Unlike episodic records, semantic records support revision through supersede, fork, contest, retract, and merge operations.
+
+### Payload fields
+
+```go
+type SemanticPayload struct {
+    Kind           string         // const "semantic"
+    Subject        string         // entity the fact is about (required)
+    Predicate      string         // relationship or property (required)
+    Object         any            // value or related entity (required)
+    Validity       Validity       // when this fact is valid
+    Evidence       []ProvenanceRef // provenance supporting this fact
+    RevisionPolicy string         // replace | fork | contest
+    Revision       *RevisionState // tracks revision status
+}
+
+type Validity struct {
+    Mode       ValidityMode   // global | conditional | timeboxed
+    Conditions map[string]any // implementation-defined conditional keys
+    Start      *time.Time     // start of the validity window (timeboxed mode)
+    End        *time.Time     // end of the validity window (timeboxed mode)
+}
+
+type RevisionState struct {
+    Supersedes   string         // ID of the record this supersedes
+    SupersededBy string         // ID of the record that supersedes this
+    Status       RevisionStatus // active | contested | retracted
+}
+```
+
+### Validity modes
+
+| Mode | Meaning |
+|------|---------|
+| `global` | Fact is universally valid |
+| `conditional` | Fact is valid under specific conditions (used for forks) |
+| `timeboxed` | Fact is valid within a start/end time window |
+
+### Example
+
+```go
+m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+    Source:    "build-agent",
+    Subject:   "user",
+    Predicate: "prefers_language",
+    Object:    "go",
+    Tags:      []string{"preferences"},
+})
+```
+
+---
+
+## Competence
+
+Competence memory encodes procedural knowledge — how to achieve goals reliably under specific conditions. Records are extracted automatically from repeated successful episodic traces during consolidation and track a running success rate.
+
+### Payload fields
+
+```go
+type CompetencePayload struct {
+    Kind          string           // const "competence"
+    SkillName     string           // name of the skill or procedure (required)
+    Triggers      []Trigger        // when this competence applies (required)
+    Recipe        []RecipeStep     // ordered steps (required)
+    RequiredTools []string         // tools needed for this competence
+    FailureModes  []string         // known failure cases
+    Fallbacks     []string         // alternative strategies when primary recipe fails
+    Performance   *PerformanceStats // success/failure statistics
+    Version       string
+}
+
+type Trigger struct {
+    Signal     string         // trigger signal (e.g., error signature, intent label)
+    Conditions map[string]any // additional matching conditions
+}
+
+type RecipeStep struct {
+    Step       string         // human-readable step description
+    Tool       string         // tool to use for this step
+    ArgsSchema map[string]any // expected arguments for the tool
+    Validation string         // how to verify step success
+}
+
+type PerformanceStats struct {
+    SuccessCount int64      // number of successful uses
+    FailureCount int64      // number of failed uses
+    SuccessRate  float64    // computed success rate [0, 1]
+    AvgLatencyMs float64    // average execution time in milliseconds
+    LastUsedAt   *time.Time
+}
+```
+
+### Lifecycle
+
+Competence records are created by the consolidation pipeline when the same tool pattern appears in at least 2 successful episodic traces (`minPatternOccurrences = 2`). When the pattern recurs, the existing record is reinforced (+0.1 salience) rather than duplicated.
+
+---
+
+## Plan Graph
+
+Plan graph memory stores reusable solution structures as directed graphs of actions. They are extracted from episodic tool graphs with more than 3 nodes (`minToolGraphNodes = 3`) during consolidation.
+
+### Payload fields
+
+```go
+type PlanGraphPayload struct {
+    Kind          string         // const "plan_graph"
+    PlanID        string         // unique identifier for this plan (required)
+    Version       string         // version identifier (required)
+    Intent        string         // high-level intent label (e.g., setup_project)
+    Constraints   map[string]any // trust requirements, sensitivity limits, etc.
+    InputsSchema  map[string]any // expected inputs for the plan
+    OutputsSchema map[string]any // expected outputs from the plan
+    Nodes         []PlanNode     // action nodes (required)
+    Edges         []PlanEdge     // dependency edges (required)
+    Metrics       *PlanMetrics   // execution statistics
+}
+
+type PlanNode struct {
+    ID     string         // unique identifier within the plan
+    Op     string         // action or tool identifier
+    Params map[string]any // parameters for the operation
+    Guards map[string]any // conditional execution criteria
+}
+
+type PlanEdge struct {
+    From string   // source node ID
+    To   string   // target node ID
+    Kind EdgeKind // data | control
+}
+
+type PlanMetrics struct {
+    AvgLatencyMs   float64    // average execution time in milliseconds
+    FailureRate    float64    // rate of failed executions [0, 1]
+    ExecutionCount int64      // total number of executions
+    LastExecutedAt *time.Time
+}
+```
+
+### Edge kinds
+
+| Kind | Meaning |
+|------|---------|
+| `data` | Data dependency — output of one node feeds into another |
+| `control` | Control flow dependency — execution ordering |
+
+---
+
+## Consolidation flow
+
+<Steps>
+  <Step title="Ingest episodic records">
+    Raw events, tool outputs, observations, and working state are ingested as episodic or working records.
+  </Step>
+  <Step title="Background consolidation (every 6 hours)">
+    The consolidation pipeline scans episodic records with successful outcomes. It extracts semantic facts, groups repeated tool patterns into competence records, and promotes complex tool graphs into plan graphs.
+  </Step>
+  <Step title="Retrieve durable knowledge">
+    Semantic, competence, and plan graph records are returned by retrieval queries, ranked by salience and selector confidence.
+  </Step>
+  <Step title="Revise as knowledge changes">
+    Use supersede, fork, contest, retract, or merge to update durable records with evidence and audit trails.
+  </Step>
+</Steps>

@@ -1,0 +1,225 @@
+---
+title: "Trust and Sensitivity"
+description: "How Membrane gates memory retrieval with sensitivity levels and trust contexts."
+---
+
+Every memory record carries a `sensitivity` field. Every retrieval request carries a `TrustContext` that declares the maximum sensitivity the caller is allowed to access. Records above the threshold are filtered out or returned in redacted form.
+
+---
+
+## Sensitivity levels
+
+Sensitivity is an ordered scale from least to most restricted:
+
+| Level | Value | Numeric rank | Meaning |
+|-------|-------|-------------|--------|
+| Public | `public` | 0 | Freely shareable content |
+| Low | `low` | 1 | Minimal sensitivity |
+| Medium | `medium` | 2 | Moderately sensitive content |
+| High | `high` | 3 | Highly sensitive, elevated trust required |
+| Hyper | `hyper` | 4 | Maximum protection |
+
+The numeric rank is used internally to compare a record's sensitivity against the caller's `MaxSensitivity`:
+
+```go
+// From pkg/retrieval/trust.go
+var sensitivityOrder = map[schema.Sensitivity]int{
+    schema.SensitivityPublic: 0,
+    schema.SensitivityLow:    1,
+    schema.SensitivityMedium: 2,
+    schema.SensitivityHigh:   3,
+    schema.SensitivityHyper:  4,
+}
+```
+
+---
+
+## TrustContext fields
+
+```go
+// From pkg/retrieval/trust.go
+type TrustContext struct {
+    // MaxSensitivity is the maximum sensitivity level the requester may access.
+    MaxSensitivity schema.Sensitivity
+
+    // Authenticated indicates whether the requester has been authenticated.
+    Authenticated bool
+
+    // ActorID identifies who is making the retrieval request.
+    ActorID string
+
+    // Scopes lists the scopes the requester is allowed to access.
+    // An empty slice means all scopes are allowed.
+    Scopes []string
+}
+```
+
+<ParamField path="MaxSensitivity" type="Sensitivity" required>
+  The highest sensitivity level the caller may read in full. Records at this level and below are returned with their payload intact.
+</ParamField>
+
+<ParamField path="Authenticated" type="bool">
+  Whether the requester has been authenticated via API key or other mechanism. Currently recorded in the trust context but does not independently gate access — `MaxSensitivity` is the primary control.
+</ParamField>
+
+<ParamField path="ActorID" type="string">
+  Identifier for the requesting actor (user ID, agent name, service account). Recorded in audit entries for traceability.
+</ParamField>
+
+<ParamField path="Scopes" type="[]string">
+  Optional list of allowed scopes. If non-empty, only records whose `scope` field matches one of these values are returned. Records with an empty scope are unscoped and bypass this check.
+</ParamField>
+
+---
+
+## Retrieval behavior by level
+
+The `FilterByTrust` function in `pkg/retrieval/filter.go` applies two rules per record:
+
+1. **Full access** — record sensitivity ≤ `MaxSensitivity`: returned with full payload.
+2. **Redacted access** — record sensitivity is exactly one level above `MaxSensitivity`: returned with metadata only (no payload, no provenance, no audit log).
+3. **Denied** — record sensitivity is two or more levels above `MaxSensitivity`: not returned at all.
+
+```go
+// From pkg/retrieval/filter.go
+func FilterByTrust(records []*schema.MemoryRecord, trust *TrustContext) []*schema.MemoryRecord {
+    result := make([]*schema.MemoryRecord, 0, len(records))
+    for _, r := range records {
+        if trust.Allows(r) {
+            result = append(result, r)
+        } else if trust.AllowsRedacted(r) {
+            result = append(result, Redact(r))
+        }
+    }
+    return result
+}
+```
+
+### Redacted records
+
+A redacted record retains the following fields:
+
+- `ID`, `Type`, `Sensitivity`, `Confidence`, `Salience`
+- `Scope`, `Tags`, `CreatedAt`, `UpdatedAt`
+
+The following fields are cleared:
+
+- `Payload` (set to `nil`)
+- `Provenance` (empty)
+- `AuditLog` (empty)
+- `Relations` (empty)
+
+This gives callers enough metadata to know a record exists and its classification without exposing sensitive content.
+
+### Example: graduated access
+
+If a caller sets `MaxSensitivity: medium`:
+
+| Record sensitivity | Returned as |
+|-------------------|-------------|
+| `public` | Full record |
+| `low` | Full record |
+| `medium` | Full record |
+| `high` | Redacted (metadata only) |
+| `hyper` | Not returned |
+
+---
+
+## Scope filtering
+
+When a `TrustContext` includes a non-empty `Scopes` list, records with a non-empty `scope` must match at least one value in that list. Records with an empty `scope` are considered unscoped and are always included regardless of the `Scopes` filter.
+
+```go
+// From pkg/retrieval/trust.go
+if len(tc.Scopes) > 0 && record.Scope != "" {
+    found := false
+    for _, s := range tc.Scopes {
+        if s == record.Scope {
+            found = true
+            break
+        }
+    }
+    if !found {
+        return false
+    }
+}
+```
+
+---
+
+## Code examples
+
+<Tabs>
+  <Tab title="Go">
+```go
+resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+        ActorID:        "build-agent",
+        Scopes:         []string{"project-acme"},
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeSemantic,
+    },
+})
+
+for _, r := range resp.Records {
+    fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+}
+```
+  </Tab>
+  <Tab title="TypeScript">
+```typescript
+const results = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: []
+  },
+  memoryTypes: ["semantic", "competence"]
+});
+```
+  </Tab>
+  <Tab title="Python">
+```python
+results = client.retrieve(
+    task_descriptor="database operations",
+    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+    memory_types=["semantic", "competence"],
+)
+```
+  </Tab>
+</Tabs>
+
+---
+
+## Retrieval without a trust context
+
+Passing a `nil` trust context to `Retrieve` or `RetrieveByID` returns `ErrNilTrust`. All retrieval calls must include a trust context.
+
+```go
+// From pkg/retrieval/retrieval.go
+if req.Trust == nil {
+    return nil, ErrNilTrust
+}
+```
+
+<Warning>
+Never omit the trust context in production code. Failing to supply one causes the request to be rejected rather than returning all records.
+</Warning>
+
+---
+
+## Layered retrieval order
+
+When no `MemoryTypes` filter is specified, records are queried in this canonical order before trust filtering is applied:
+
+```
+working → semantic → competence → plan_graph → episodic
+```
+
+This ordering ensures task-critical context (working memory) and high-value knowledge (semantic, competence) are surfaced before raw experience.

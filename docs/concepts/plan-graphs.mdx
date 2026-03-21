@@ -1,0 +1,247 @@
+---
+title: "Plan Graphs"
+description: "Reusable solution structures stored as directed graphs of actions with dependency edges."
+---
+
+Plan graph memory stores solutions to complex multi-step problems as directed graphs. Each node represents an action or tool invocation; edges encode data or control-flow dependencies between them.
+
+---
+
+## Structure
+
+```go
+type PlanGraphPayload struct {
+    Kind          string         // const "plan_graph"
+    PlanID        string         // unique identifier for this plan
+    Version       string         // version identifier
+    Intent        string         // high-level intent label (e.g., "setup_project")
+    Constraints   map[string]any // trust requirements, sensitivity limits, etc.
+    InputsSchema  map[string]any // expected inputs for the plan
+    OutputsSchema map[string]any // expected outputs from the plan
+    Nodes         []PlanNode     // action nodes
+    Edges         []PlanEdge     // dependency edges
+    Metrics       *PlanMetrics   // execution statistics
+}
+```
+
+### Nodes
+
+Each node represents a discrete action:
+
+```go
+type PlanNode struct {
+    ID     string         // unique identifier within the plan
+    Op     string         // action or tool identifier
+    Params map[string]any // parameters for the operation
+    Guards map[string]any // conditional execution criteria
+}
+```
+
+### Edges
+
+Edges connect nodes with typed dependencies:
+
+```go
+type PlanEdge struct {
+    From string   // source node ID
+    To   string   // target node ID
+    Kind EdgeKind // data | control
+}
+```
+
+| Edge kind | Meaning |
+|-----------|--------|
+| `data` | Output of the source node feeds into the target node |
+| `control` | Target node may only execute after the source node completes |
+
+### Metrics
+
+```go
+type PlanMetrics struct {
+    AvgLatencyMs   float64    // average execution time in milliseconds
+    FailureRate    float64    // rate of failed executions [0, 1]
+    ExecutionCount int64      // total number of executions
+    LastExecutedAt *time.Time
+}
+```
+
+---
+
+## Plan extraction during consolidation
+
+Plan graphs are extracted automatically by `PlanGraphConsolidator` during each consolidation run:
+
+<Steps>
+  <Step title="Select eligible episodes">
+    Only episodic records with a `tool_graph` containing **3 or more nodes** are considered (`minToolGraphNodes = 3`). Trivial single-tool invocations are excluded.
+  </Step>
+  <Step title="Avoid duplicates">
+    The consolidator checks existing plan graph records for `derived_from` relations. If a plan graph already exists for a given episodic source, that episode is skipped.
+  </Step>
+  <Step title="Convert tool graph to plan graph">
+    Each `ToolNode` becomes a `PlanNode` (ID → ID, Tool → Op, Args → Params). Each `DependsOn` relationship in the tool graph becomes a `control` edge.
+  </Step>
+  <Step title="Infer intent">
+    The intent label is derived from the first timeline event kind in the source episode. If no timeline events exist, it defaults to `"unknown"`.
+  </Step>
+  <Step title="Store and embed">
+    The plan graph record is stored with `execution_count: 1` and `derived_from` provenance linking back to the source episodic record. If an embedder is configured, an embedding is generated for applicability scoring.
+  </Step>
+</Steps>
+
+```go
+// From pkg/consolidation/plangraph.go
+const minToolGraphNodes = 3
+
+// Tool nodes are converted to plan nodes and control edges
+nodes, edges := convertToolGraphToPlan(ep.ToolGraph)
+
+payload := &schema.PlanGraphPayload{
+    Kind:    "plan_graph",
+    PlanID:  planID,
+    Version: "1",
+    Intent:  inferIntent(ep),
+    Nodes:   nodes,
+    Edges:   edges,
+    Metrics: &schema.PlanMetrics{
+        ExecutionCount: 1,
+        LastExecutedAt: &now,
+    },
+}
+```
+
+---
+
+## Plan reuse and execution tracking
+
+Plan graphs accumulate execution statistics across uses via `PlanMetrics`:
+
+- `ExecutionCount` increments each time the plan is applied.
+- `FailureRate` tracks the proportion of failed executions.
+- `AvgLatencyMs` tracks average wall-clock time.
+
+The `plan_reuse_frequency` observability metric reports the average `execution_count` across all plan graph records:
+
+```json
+{
+  "plan_reuse_frequency": 2.3
+}
+```
+
+---
+
+## Selector applicability scoring
+
+At retrieval time, plan graphs are scored by the `Selector` using three equally weighted signals:
+
+1. **Applicability** — `record.Confidence` field, or vector cosine similarity against the query embedding when pgvector is enabled.
+2. **Success rate** — derived from `1.0 − PlanMetrics.FailureRate`:
+
+```go
+// From pkg/retrieval/selector.go
+case *schema.PlanGraphPayload:
+    if p.Metrics != nil && p.Metrics.ExecutionCount > 0 {
+        return 1.0 - p.Metrics.FailureRate
+    }
+```
+
+3. **Recency** — exponential decay on time since `last_reinforced_at` (30-day half-life).
+
+When selection confidence falls below `SelectionConfidenceThreshold` (default `0.7`), `SelectionResult.NeedsMore` is set to `true`.
+
+---
+
+## Example: multi-step workflow
+
+```go
+// 1. An episodic record with a complex tool graph is ingested automatically
+//    during agent execution. It might look like this in memory:
+episodicPayload := &schema.EpisodicPayload{
+    Kind: "episodic",
+    Timeline: []schema.TimelineEvent{
+        {T: t1, EventKind: "setup_project", Ref: "step#1", Summary: "Init repo"},
+        {T: t2, EventKind: "install_deps",  Ref: "step#2", Summary: "npm install"},
+        {T: t3, EventKind: "build",         Ref: "step#3", Summary: "npm run build"},
+    },
+    ToolGraph: []schema.ToolNode{
+        {ID: "n1", Tool: "git_init",    Args: map[string]any{"path": "./"}},
+        {ID: "n2", Tool: "npm_install", Args: map[string]any{}, DependsOn: []string{"n1"}},
+        {ID: "n3", Tool: "npm_build",   Args: map[string]any{}, DependsOn: []string{"n2"}},
+    },
+    Outcome: schema.OutcomeStatusSuccess,
+}
+
+// 2. The consolidation pipeline extracts a plan graph from this episode.
+//    The resulting plan graph will have:
+//    - Node n1: Op="git_init"
+//    - Node n2: Op="npm_install"
+//    - Node n3: Op="npm_build"
+//    - Edge n1→n2: kind=control
+//    - Edge n2→n3: kind=control
+//    - Intent: "setup_project" (from first timeline event kind)
+
+// 3. Retrieve plan graphs for a task
+resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "set up a new project",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityLow,
+        Authenticated:  true,
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypePlanGraph,
+    },
+})
+
+for _, r := range resp.Records {
+    if p, ok := r.Payload.(*schema.PlanGraphPayload); ok {
+        fmt.Printf("Plan: %s (intent=%s, executions=%d, failure_rate=%.2f)\n",
+            p.PlanID,
+            p.Intent,
+            p.Metrics.ExecutionCount,
+            p.Metrics.FailureRate,
+        )
+        for _, node := range p.Nodes {
+            fmt.Printf("  Node %s: op=%s\n", node.ID, node.Op)
+        }
+        for _, edge := range p.Edges {
+            fmt.Printf("  Edge %s → %s (%s)\n", edge.From, edge.To, edge.Kind)
+        }
+    }
+}
+
+// 4. Reinforce the plan after a successful run
+m.Reinforce(ctx, r.ID, "project-agent", "plan completed successfully")
+```
+
+---
+
+## Plan graph lifecycle
+
+<CardGroup cols={2}>
+  <Card title="Auto-extracted" icon="sparkles">
+    Created by the consolidation pipeline from episodic tool graphs with 3+ nodes. No manual authoring required.
+  </Card>
+  <Card title="Execution-tracked" icon="chart-bar">
+    Tracks `execution_count`, `failure_rate`, and `avg_latency_ms` across uses.
+  </Card>
+  <Card title="Revisable" icon="pencil">
+    Can be superseded, forked, contested, retracted, or merged like any non-episodic record.
+  </Card>
+  <Card title="Vector-scored" icon="vector-square">
+    On Postgres + pgvector, applicability is scored via embedding similarity against the task descriptor.
+  </Card>
+</CardGroup>
+
+---
+
+## Relation to competence records
+
+Plan graphs and competence records are complementary:
+
+| Aspect | Competence | Plan Graph |
+|--------|-----------|------------|
+| Represents | A procedure with triggers and recipe steps | A directed graph of actions with dependencies |
+| Extraction trigger | 2+ successful episodes with the same tool signature | 1+ episode with a tool graph containing 3+ nodes |
+| Success tracking | `PerformanceStats` (success_count / failure_count) | `PlanMetrics` (failure_rate, execution_count) |
+| Applicability matching | Trigger signals and conditions | Intent label and constraint matching |
+| Graph structure | Ordered list of steps | Directed acyclic graph with typed edges |

@@ -1,0 +1,335 @@
+---
+title: "ingestion"
+description: "Service and request types for ingesting raw data into the memory substrate."
+---
+
+Import path: `github.com/GustyCube/membrane/pkg/ingestion`
+
+The `ingestion` package classifies, validates, and persists raw data as `MemoryRecord` instances. It coordinates the `Classifier`, `PolicyEngine`, and `storage.Store`.
+
+<Note>
+  You can call all ingestion methods through the top-level `Membrane` facade without importing this package directly. Import `pkg/ingestion` only when constructing a `Service` independently.
+</Note>
+
+## Service
+
+```go
+type Service struct { ... }
+
+func NewService(store storage.Store, classifier *Classifier, policy *PolicyEngine) *Service
+```
+
+Orchestrates ingestion. In normal usage `Membrane.New` wires this together automatically.
+
+---
+
+## IngestEvent
+
+```go
+func (s *Service) IngestEvent(ctx context.Context, req IngestEventRequest) (*schema.MemoryRecord, error)
+```
+
+Creates an episodic `MemoryRecord` from a discrete event such as a user input, system alert, or error.
+
+### IngestEventRequest
+
+<ParamField path="Source" type="string" required>
+  Identifies the actor or system that produced the event. Used in provenance tracking.
+</ParamField>
+
+<ParamField path="EventKind" type="string" required>
+  Type of event. Examples: `user_input`, `error`, `system`.
+</ParamField>
+
+<ParamField path="Ref" type="string" required>
+  Reference identifier for the source event within the host system.
+</ParamField>
+
+<ParamField path="Summary" type="string">
+  Optional human-readable summary of the event.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When the event occurred. Defaults to `time.Now().UTC()` when zero.
+</ParamField>
+
+<ParamField path="Tags" type="[]string">
+  Optional labels for categorisation and retrieval.
+</ParamField>
+
+<ParamField path="Scope" type="string">
+  Visibility scope (e.g., `user`, `project`).
+</ParamField>
+
+<ParamField path="Sensitivity" type="schema.Sensitivity">
+  Overrides the default sensitivity level when set.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "agent-core",
+    EventKind: "user_input",
+    Ref:       "msg-abc123",
+    Summary:   "User asked about deployment strategy",
+    Tags:      []string{"deployment", "strategy"},
+})
+```
+
+</CodeGroup>
+
+---
+
+## IngestToolOutput
+
+```go
+func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequest) (*schema.MemoryRecord, error)
+```
+
+Creates an episodic `MemoryRecord` with a populated `ToolGraph` from a tool invocation.
+
+### IngestToolOutputRequest
+
+<ParamField path="Source" type="string" required>
+  Identifies the actor or system that invoked the tool.
+</ParamField>
+
+<ParamField path="ToolName" type="string" required>
+  Name or identifier of the invoked tool.
+</ParamField>
+
+<ParamField path="Args" type="map[string]any">
+  Arguments passed to the tool.
+</ParamField>
+
+<ParamField path="Result" type="any">
+  Output produced by the tool.
+</ParamField>
+
+<ParamField path="DependsOn" type="[]string">
+  IDs of tool nodes this output depends on, forming a tool graph.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When the tool was invoked. Defaults to `time.Now().UTC()` when zero.
+</ParamField>
+
+<ParamField path="Tags" type="[]string">
+  Optional labels for categorisation.
+</ParamField>
+
+<ParamField path="Scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="Sensitivity" type="schema.Sensitivity">
+  Overrides the default sensitivity level when set.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+rec, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+    Source:   "agent-core",
+    ToolName: "run_bash",
+    Args:     map[string]any{"command": "ls -la"},
+    Result:   "total 8\ndrwxr-xr-x ...",
+})
+```
+
+</CodeGroup>
+
+---
+
+## IngestObservation
+
+```go
+func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRequest) (*schema.MemoryRecord, error)
+```
+
+Creates a semantic `MemoryRecord` from a structured subject-predicate-object observation. The resulting record has `ValidityMode: global` and `RevisionPolicy: replace` by default.
+
+### IngestObservationRequest
+
+<ParamField path="Source" type="string" required>
+  Identifies the actor or system that made the observation.
+</ParamField>
+
+<ParamField path="Subject" type="string" required>
+  Entity the observation is about.
+</ParamField>
+
+<ParamField path="Predicate" type="string" required>
+  Relationship or property being observed.
+</ParamField>
+
+<ParamField path="Object" type="any" required>
+  Value or related entity being observed.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When the observation was made. Defaults to `time.Now().UTC()` when zero.
+</ParamField>
+
+<ParamField path="Tags" type="[]string">
+  Optional labels.
+</ParamField>
+
+<ParamField path="Scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="Sensitivity" type="schema.Sensitivity">
+  Overrides the default sensitivity level when set.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+    Source:    "agent-core",
+    Subject:   "user:alice",
+    Predicate: "prefers_language",
+    Object:    "Go",
+    Tags:      []string{"preference"},
+})
+```
+
+</CodeGroup>
+
+---
+
+## IngestOutcome
+
+```go
+func (s *Service) IngestOutcome(ctx context.Context, req IngestOutcomeRequest) (*schema.MemoryRecord, error)
+```
+
+Updates an existing episodic record with outcome data. Fetches `TargetRecordID`, sets `EpisodicPayload.Outcome`, appends a provenance source, and persists the update. Returns an error if the target record is not episodic.
+
+### IngestOutcomeRequest
+
+<ParamField path="Source" type="string" required>
+  Identifies the actor or system reporting the outcome.
+</ParamField>
+
+<ParamField path="TargetRecordID" type="string" required>
+  ID of the existing episodic record to update.
+</ParamField>
+
+<ParamField path="OutcomeStatus" type="schema.OutcomeStatus" required>
+  Result of the episode. One of `success`, `failure`, or `partial`.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When the outcome was determined. Defaults to `time.Now().UTC()` when zero.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+updated, err := m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
+    Source:         "agent-core",
+    TargetRecordID: rec.ID,
+    OutcomeStatus:  schema.OutcomeStatusSuccess,
+})
+```
+
+</CodeGroup>
+
+---
+
+## IngestWorkingState
+
+```go
+func (s *Service) IngestWorkingState(ctx context.Context, req IngestWorkingStateRequest) (*schema.MemoryRecord, error)
+```
+
+Creates a working `MemoryRecord` from a snapshot of the current task state. Working records are intended to be replaced (or discarded) when a task ends.
+
+### IngestWorkingStateRequest
+
+<ParamField path="Source" type="string" required>
+  Identifies the actor or system producing the working state.
+</ParamField>
+
+<ParamField path="ThreadID" type="string" required>
+  Identifier for the current thread or session.
+</ParamField>
+
+<ParamField path="State" type="schema.TaskState" required>
+  Current task state. One of `planning`, `executing`, `blocked`, `waiting`, `done`.
+</ParamField>
+
+<ParamField path="NextActions" type="[]string">
+  List of next planned actions.
+</ParamField>
+
+<ParamField path="OpenQuestions" type="[]string">
+  Unresolved questions for the task.
+</ParamField>
+
+<ParamField path="ContextSummary" type="string">
+  Human-readable summary of the current context.
+</ParamField>
+
+<ParamField path="ActiveConstraints" type="[]schema.Constraint">
+  Constraints currently active for the task execution.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When the working state was captured. Defaults to `time.Now().UTC()` when zero.
+</ParamField>
+
+<ParamField path="Tags" type="[]string">
+  Optional labels.
+</ParamField>
+
+<ParamField path="Scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="Sensitivity" type="schema.Sensitivity">
+  Overrides the default sensitivity level when set.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+rec, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+    Source:         "agent-core",
+    ThreadID:       "session-xyz",
+    State:          schema.TaskStateExecuting,
+    NextActions:    []string{"run tests", "review output"},
+    ContextSummary: "Refactoring the auth module",
+})
+```
+
+</CodeGroup>
+
+---
+
+## Default confidence by source type
+
+The `PolicyEngine` assigns an initial `Confidence` value based on source type:
+
+| Source kind | Default confidence |
+|---|---|
+| Event | 0.8 |
+| Tool output | 0.9 |
+| Observation | 0.7 |
+| Outcome | 0.85 |
+| Working state | 1.0 |
+
+## Default half-life by memory type
+
+The `PolicyEngine` assigns a decay half-life based on the classified memory type:
+
+| Memory type | Default half-life |
+|---|---|
+| `episodic` | 1 hour (3 600 s) |
+| `working` | 1 day (86 400 s) |
+| `semantic` | 30 days (2 592 000 s) |
+| `competence` | 30 days (2 592 000 s) |
+| `plan_graph` | 30 days (2 592 000 s) |

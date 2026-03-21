@@ -1,0 +1,312 @@
+---
+title: "schema"
+description: "Core data structures and enumerations for the memory substrate."
+---
+
+Import path: `github.com/GustyCube/membrane/pkg/schema`
+
+The `schema` package defines the atomic unit of storage (`MemoryRecord`), all payload types, lifecycle metadata, provenance, audit, and relation structures, plus the full set of enumerations used throughout the system.
+
+## MemoryRecord
+
+```go
+type MemoryRecord struct { ... }
+```
+
+The atomic unit of storage. Every stored memory item must conform to this shape (RFC 15A.2).
+
+<ParamField path="ID" type="string" required>
+  Globally unique identifier (UUID recommended). Immutable once created.
+</ParamField>
+
+<ParamField path="Type" type="MemoryType" required>
+  Memory category. One of `episodic`, `working`, `semantic`, `competence`, `plan_graph`.
+</ParamField>
+
+<ParamField path="Sensitivity" type="Sensitivity" required>
+  Sensitivity classification. One of `public`, `low`, `medium`, `high`, `hyper`.
+</ParamField>
+
+<ParamField path="Confidence" type="float64" required>
+  Epistemic confidence in this record. Range: `[0, 1]`.
+</ParamField>
+
+<ParamField path="Salience" type="float64" required>
+  Decay-weighted importance score. Range: `[0, +inf)`. Starts at `1.0` by default.
+</ParamField>
+
+<ParamField path="Scope" type="string">
+  Visibility scope. Examples: `user`, `device`, `project`, `workspace`, `global`. Records with an empty scope are visible to all trust contexts.
+</ParamField>
+
+<ParamField path="Tags" type="[]string">
+  Free-form labels for categorisation and retrieval.
+</ParamField>
+
+<ParamField path="CreatedAt" type="time.Time" required>
+  Timestamp when the record was created.
+</ParamField>
+
+<ParamField path="UpdatedAt" type="time.Time" required>
+  Timestamp when the record was last updated.
+</ParamField>
+
+<ParamField path="Lifecycle" type="Lifecycle" required>
+  Decay, reinforcement, and deletion metadata.
+</ParamField>
+
+<ParamField path="Provenance" type="Provenance" required>
+  Links to the source events or artifacts that justify this record.
+</ParamField>
+
+<ParamField path="Relations" type="[]Relation">
+  Graph edges to other `MemoryRecord` instances.
+</ParamField>
+
+<ParamField path="Payload" type="Payload" required>
+  Type-specific structured content. One of `EpisodicPayload`, `WorkingPayload`, `SemanticPayload`, `CompetencePayload`, or `PlanGraphPayload`.
+</ParamField>
+
+<ParamField path="AuditLog" type="[]AuditEntry" required>
+  Append-only log of every action performed on this record.
+</ParamField>
+
+### Constructor
+
+```go
+func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, payload Payload) *MemoryRecord
+```
+
+Convenience constructor. Sets `Confidence` and `Salience` to `1.0`, initialises `Lifecycle` with exponential decay (half-life 86 400 s), and appends a `create` audit entry.
+
+---
+
+## Lifecycle
+
+```go
+type Lifecycle struct { ... }
+```
+
+<ParamField path="Decay" type="DecayProfile" required>
+  Decay curve and half-life configuration.
+</ParamField>
+
+<ParamField path="LastReinforcedAt" type="time.Time" required>
+  Timestamp of the last reinforcement event. Used by the decay function.
+</ParamField>
+
+<ParamField path="Pinned" type="bool" default="false">
+  When `true`, the record is exempt from automatic decay.
+</ParamField>
+
+<ParamField path="DeletionPolicy" type="DeletionPolicy">
+  Controls how the record may be deleted. See the `DeletionPolicy` enum below.
+</ParamField>
+
+### DecayProfile
+
+```go
+type DecayProfile struct { ... }
+```
+
+<ParamField path="Curve" type="DecayCurve" required>
+  Mathematical function for decay. Currently only `exponential` is supported.
+</ParamField>
+
+<ParamField path="HalfLifeSeconds" type="int64" required>
+  Time in seconds for salience to decay by half. Minimum value: `1`.
+</ParamField>
+
+<ParamField path="MinSalience" type="float64">
+  Floor value below which salience will not decay. Range: `[0, 1]`.
+</ParamField>
+
+<ParamField path="MaxAgeSeconds" type="int64">
+  Maximum age in seconds before the record is eligible for deletion, regardless of salience.
+</ParamField>
+
+<ParamField path="ReinforcementGain" type="float64">
+  Amount by which salience increases on each `Reinforce` call.
+</ParamField>
+
+---
+
+## Provenance
+
+```go
+type Provenance struct {
+    Sources   []ProvenanceSource `json:"sources"`
+    CreatedBy string             `json:"created_by,omitempty"`
+}
+```
+
+### ProvenanceSource
+
+<ParamField path="Kind" type="ProvenanceKind" required>
+  Type of source: `event`, `artifact`, `tool_call`, `observation`, or `outcome`.
+</ParamField>
+
+<ParamField path="Ref" type="string" required>
+  Opaque reference into the host system.
+</ParamField>
+
+<ParamField path="Hash" type="string">
+  Optional content hash for immutability verification.
+</ParamField>
+
+<ParamField path="CreatedBy" type="string">
+  Actor or system that created this source.
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time">
+  When this source was created or observed.
+</ParamField>
+
+---
+
+## Relation
+
+```go
+type Relation struct { ... }
+```
+
+<ParamField path="Predicate" type="string" required>
+  Relationship type. Common values: `supports`, `contradicts`, `derived_from`, `supersedes`, `contested_by`.
+</ParamField>
+
+<ParamField path="TargetID" type="string" required>
+  ID of the related `MemoryRecord`.
+</ParamField>
+
+<ParamField path="Weight" type="float64">
+  Strength of the relationship. Range: `[0, 1]`.
+</ParamField>
+
+<ParamField path="CreatedAt" type="time.Time">
+  When this relation was established.
+</ParamField>
+
+---
+
+## AuditEntry
+
+```go
+type AuditEntry struct { ... }
+```
+
+<ParamField path="Action" type="AuditAction" required>
+  Type of action. See the `AuditAction` enum.
+</ParamField>
+
+<ParamField path="Actor" type="string" required>
+  Who or what performed the action (e.g., a user ID or system component name).
+</ParamField>
+
+<ParamField path="Timestamp" type="time.Time" required>
+  When the action occurred.
+</ParamField>
+
+<ParamField path="Rationale" type="string" required>
+  Explanation of why the action was taken.
+</ParamField>
+
+---
+
+## Enumerations
+
+### MemoryType
+
+| Value | Constant | Description |
+|---|---|---|
+| `episodic` | `MemoryTypeEpisodic` | Raw experience: user inputs, tool calls, errors, and observations. Intentionally short-lived. |
+| `working` | `MemoryTypeWorking` | Current state of an ongoing task. Enables resumption across sessions. |
+| `semantic` | `MemoryTypeSemantic` | Stable knowledge: preferences, environment facts, and relationships. Supports revisability. |
+| `competence` | `MemoryTypeCompetence` | Procedural knowledge: how to achieve goals reliably under specific conditions. |
+| `plan_graph` | `MemoryTypePlanGraph` | Reusable solution structures stored as directed graphs of actions. |
+
+### Sensitivity
+
+| Value | Constant | Description |
+|---|---|---|
+| `public` | `SensitivityPublic` | Freely shareable content. |
+| `low` | `SensitivityLow` | Minimal sensitivity (default). |
+| `medium` | `SensitivityMedium` | Moderately sensitive content. |
+| `high` | `SensitivityHigh` | Highly sensitive; requires elevated trust. |
+| `hyper` | `SensitivityHyper` | Extremely sensitive; maximum protection. |
+
+### RevisionStatus
+
+| Value | Constant | Description |
+|---|---|---|
+| `active` | `RevisionStatusActive` | The record is currently valid. |
+| `contested` | `RevisionStatusContested` | Validity is uncertain pending resolution. |
+| `retracted` | `RevisionStatusRetracted` | The record has been withdrawn. |
+
+### DecayCurve
+
+| Value | Constant | Description |
+|---|---|---|
+| `exponential` | `DecayCurveExponential` | Exponential decay controlled by `HalfLifeSeconds`. |
+
+### DeletionPolicy
+
+| Value | Constant | Description |
+|---|---|---|
+| `auto_prune` | `DeletionPolicyAutoPrune` | Automatically deleted when salience reaches the floor. |
+| `manual_only` | `DeletionPolicyManualOnly` | Requires explicit user action to delete. |
+| `never` | `DeletionPolicyNever` | Deletion is prevented entirely. |
+
+### ValidityMode
+
+| Value | Constant | Description |
+|---|---|---|
+| `global` | `ValidityModeGlobal` | The fact is universally valid. |
+| `conditional` | `ValidityModeConditional` | The fact is valid under specific conditions. |
+| `timeboxed` | `ValidityModeTimeboxed` | The fact is valid within a time window. |
+
+### TaskState
+
+| Value | Constant | Description |
+|---|---|---|
+| `planning` | `TaskStatePlanning` | Task is in the planning phase. |
+| `executing` | `TaskStateExecuting` | Task is actively being executed. |
+| `blocked` | `TaskStateBlocked` | Task cannot proceed due to a blocker. |
+| `waiting` | `TaskStateWaiting` | Task is waiting for external input. |
+| `done` | `TaskStateDone` | Task has completed. |
+
+### OutcomeStatus
+
+| Value | Constant | Description |
+|---|---|---|
+| `success` | `OutcomeStatusSuccess` | Experience completed successfully. |
+| `failure` | `OutcomeStatusFailure` | Experience ended in failure. |
+| `partial` | `OutcomeStatusPartial` | Partial success or incomplete outcome. |
+
+### AuditAction
+
+| Value | Constant | Description |
+|---|---|---|
+| `create` | `AuditActionCreate` | A new record was created. |
+| `revise` | `AuditActionRevise` | An existing record was revised. |
+| `fork` | `AuditActionFork` | A record was forked into conditional variants. |
+| `merge` | `AuditActionMerge` | Records were merged together. |
+| `delete` | `AuditActionDelete` | A record was deleted or retracted. |
+| `reinforce` | `AuditActionReinforce` | A record's salience was reinforced. |
+| `decay` | `AuditActionDecay` | A record's salience was decayed or penalised. |
+
+### ProvenanceKind
+
+| Value | Constant | Description |
+|---|---|---|
+| `event` | `ProvenanceKindEvent` | Source is an event. |
+| `artifact` | `ProvenanceKindArtifact` | Source is an artifact (log, file, etc.). |
+| `tool_call` | `ProvenanceKindToolCall` | Source is a tool invocation. |
+| `observation` | `ProvenanceKindObservation` | Source is an observation. |
+| `outcome` | `ProvenanceKindOutcome` | Source is a task outcome. |
+
+### EdgeKind
+
+| Value | Constant | Description |
+|---|---|---|
+| `data` | `EdgeKindData` | Data dependency edge in a plan graph. |
+| `control` | `EdgeKindControl` | Control flow edge in a plan graph. |
