@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,27 +9,61 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/GustyCube/membrane/pkg/embedding"
 	"github.com/GustyCube/membrane/pkg/ingestion"
 	"github.com/GustyCube/membrane/pkg/membrane"
 	"github.com/GustyCube/membrane/pkg/retrieval"
 	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/GustyCube/membrane/pkg/storage/postgres"
 )
 
+// ---------------------------------------------------------------------------
+// Dataset types
+// ---------------------------------------------------------------------------
+
+type planNodeEntry struct {
+	ID string `json:"id"`
+	Op string `json:"op"`
+}
+
+type planEdgeEntry struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 type recordEntry struct {
-	Type        string   `json:"type"`
-	Key         string   `json:"key"`
-	Text        string   `json:"text"`
-	Subject     string   `json:"subject"`
-	Predicate   string   `json:"predicate"`
-	Object      string   `json:"object"`
-	Scope       string   `json:"scope"`
-	Sensitivity string   `json:"sensitivity"`
-	Tags        []string `json:"tags"`
+	Type       string   `json:"type"`
+	MemoryType string   `json:"memory_type"`
+	Key        string   `json:"key"`
+	Text       string   `json:"text"` // used for embedding
+	Sensitivity string  `json:"sensitivity"`
+	Scope      string   `json:"scope"`
+	Tags       []string `json:"tags"`
+	// Semantic
+	Subject   string `json:"subject"`
+	Predicate string `json:"predicate"`
+	Object    string `json:"object"`
+	// Episodic
+	EventKind string `json:"event_kind"`
+	Ref       string `json:"ref"`
+	Summary   string `json:"summary"`
+	// Working
+	ThreadID    string   `json:"thread_id"`
+	State       string   `json:"state"`
+	NextActions []string `json:"next_actions"`
+	// Competence
+	SkillName string   `json:"skill_name"`
+	Triggers  []string `json:"triggers"`
+	Steps     []string `json:"steps"`
+	// Plan graph
+	Intent string          `json:"intent"`
+	Nodes  []planNodeEntry `json:"nodes"`
+	Edges  []planEdgeEntry `json:"edges"`
 }
 
 type trustEntry struct {
@@ -48,6 +81,7 @@ type queryEntry struct {
 	K           int        `json:"k"`
 	Trust       trustEntry `json:"trust"`
 	MinSalience float64    `json:"min_salience"`
+	MemoryTypes []string   `json:"memory_types"`
 }
 
 type dataset struct {
@@ -55,24 +89,41 @@ type dataset struct {
 	queries []queryEntry
 }
 
-type candidate struct {
-	id    string
-	score float64
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+type evalMetrics struct {
+	recall    float64
+	precision float64
+	mrr       float64
+	ndcg      float64
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 func main() {
 	var (
-		datasetPath = flag.String("dataset", "tests/data/recall_dataset.jsonl", "Path to JSONL dataset")
-		postgresDSN = flag.String("postgres-dsn", "", "Optional PostgreSQL DSN for the evaluation database")
-		model       = flag.String("model", "all-MiniLM-L6-v2", "Sentence-transformers model name")
-		defaultK    = flag.Int("k", 5, "Default K when query does not specify one")
-		minRecall   = flag.Float64("min-recall", -1, "Fail if mean recall@k is below this threshold")
-		minPrec     = flag.Float64("min-precision", -1, "Fail if mean precision@k is below this threshold")
-		minMRR      = flag.Float64("min-mrr", -1, "Fail if mean MRR@k is below this threshold")
-		minNDCG     = flag.Float64("min-ndcg", -1, "Fail if mean NDCG@k is below this threshold")
-		verbose     = flag.Bool("verbose", false, "Print per-query results")
+		datasetPath       = flag.String("dataset", "tests/data/recall_dataset.jsonl", "Path to JSONL dataset")
+		postgresDSN       = flag.String("postgres-dsn", "", "PostgreSQL DSN (required)")
+		embeddingEndpoint = flag.String("embedding-endpoint", "https://openrouter.ai/api/v1/embeddings", "Embedding API endpoint")
+		embeddingModel    = flag.String("embedding-model", "openai/text-embedding-3-small", "Embedding model")
+		embeddingAPIKey   = flag.String("embedding-api-key", "", "Embedding API key (or MEMBRANE_EMBEDDING_API_KEY)")
+		embeddingDims     = flag.Int("embedding-dimensions", 1536, "Embedding dimensions")
+		defaultK          = flag.Int("k", 5, "Default top-K")
+		verbose           = flag.Bool("verbose", false, "Per-query results")
 	)
 	flag.Parse()
+
+	apiKey := *embeddingAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("MEMBRANE_EMBEDDING_API_KEY")
+	}
+	if *postgresDSN == "" || apiKey == "" {
+		fatal("config", errors.New("--postgres-dsn and embedding API key are required"))
+	}
 
 	data, err := loadDataset(*datasetPath, *defaultK)
 	if err != nil {
@@ -80,18 +131,17 @@ func main() {
 	}
 
 	ctx := context.Background()
-	tmpDir, err := os.MkdirTemp("", "membrane-eval-")
-	if err != nil {
-		fatal("create temp dir", err)
-	}
-	defer os.RemoveAll(tmpDir)
 
+	// --- Create Membrane instance (fully equipped) ---
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(tmpDir, "membrane-eval.db")
-	if *postgresDSN != "" {
-		cfg.Backend = "postgres"
-		cfg.PostgresDSN = *postgresDSN
-	}
+	cfg.Backend = "postgres"
+	cfg.PostgresDSN = *postgresDSN
+	cfg.EmbeddingEndpoint = *embeddingEndpoint
+	cfg.EmbeddingModel = *embeddingModel
+	cfg.EmbeddingAPIKey = apiKey
+	cfg.EmbeddingDimensions = *embeddingDims
+	cfg.SelectionConfidenceThreshold = 0.3
+
 	m, err := membrane.New(cfg)
 	if err != nil {
 		fatal("create membrane", err)
@@ -99,172 +149,354 @@ func main() {
 	if err := m.Start(ctx); err != nil {
 		fatal("start membrane", err)
 	}
-	defer func() {
-		if stopErr := m.Stop(); stopErr != nil {
-			fmt.Fprintf(os.Stderr, "membrane stop error: %v\n", stopErr)
-		}
-	}()
+	defer func() { _ = m.Stop() }()
 
+	// --- Direct pgvector handle for RAG ---
+	pgStore, err := postgres.Open(*postgresDSN, postgres.EmbeddingConfig{
+		Dimensions: *embeddingDims,
+		Model:      *embeddingModel,
+	})
+	if err != nil {
+		fatal("open pgstore", err)
+	}
+	defer pgStore.Close()
+
+	embClient := embedding.NewHTTPClient(*embeddingEndpoint, *embeddingModel, apiKey, *embeddingDims)
+
+	// --- Ingest records ---
+	fmt.Printf("Ingesting %d records...\n", len(data.records))
 	idByKey := make(map[string]string, len(data.records))
-	recordTexts := make([]string, 0, len(data.records))
-	recordIDs := make([]string, 0, len(data.records))
 
 	for _, rec := range data.records {
-		if rec.Key == "" {
-			fatal("dataset", errors.New("record key is required"))
+		id, err := ingestRecord(ctx, m, pgStore, rec)
+		if err != nil {
+			fatal("ingest "+rec.Key, err)
 		}
-		stored, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+		idByKey[rec.Key] = id
+	}
+
+	// --- Embed all records for RAG ---
+	fmt.Printf("Embedding %d records via %s...\n", len(data.records), *embeddingModel)
+	for _, rec := range data.records {
+		id := idByKey[rec.Key]
+		vec, err := embClient.Embed(ctx, rec.Text)
+		if err != nil {
+			fatal("embed "+rec.Key, err)
+		}
+		if err := pgStore.StoreTriggerEmbedding(ctx, id, vec, *embeddingModel); err != nil {
+			fatal("store embedding "+rec.Key, err)
+		}
+	}
+	fmt.Println("Embeddings stored.")
+
+	// --- Pre-compute all query embeddings once to avoid rate-limit issues ---
+	fmt.Printf("Embedding %d queries...\n", len(data.queries))
+	queryEmbeddings := make(map[string][]float32, len(data.queries))
+	for _, q := range data.queries {
+		vec, err := embClient.Embed(ctx, q.Text)
+		if err != nil {
+			fatal("embed query "+q.Key, err)
+		}
+		queryEmbeddings[q.Key] = vec
+	}
+
+	// --- Run both evals ---
+	fmt.Println("\n=== RAG (pure vector similarity + trust filter) ===")
+	ragMetrics := runRAGEval(ctx, m, pgStore, data, idByKey, queryEmbeddings, *defaultK, *verbose, len(data.records))
+
+	fmt.Println("\n=== Membrane (full pipeline: salience + trust + vector ranking) ===")
+	memMetrics := runMembraneEval(ctx, m, data, idByKey, queryEmbeddings, *defaultK, *verbose)
+
+	// --- Summary ---
+	fmt.Println("\n==================== COMPARISON ====================")
+	fmt.Printf("%-20s %10s %10s %10s\n", "Metric", "RAG", "Membrane", "Delta")
+	fmt.Printf("%-20s %10s %10s %10s\n", "------", "---", "--------", "-----")
+	printRow("recall@k", ragMetrics.recall, memMetrics.recall)
+	printRow("precision@k", ragMetrics.precision, memMetrics.precision)
+	printRow("MRR@k", ragMetrics.mrr, memMetrics.mrr)
+	printRow("NDCG@k", ragMetrics.ndcg, memMetrics.ndcg)
+	fmt.Println("====================================================")
+}
+
+func printRow(name string, rag, mem float64) {
+	delta := mem - rag
+	sign := "+"
+	if delta < 0 {
+		sign = ""
+	}
+	fmt.Printf("%-20s %10.3f %10.3f %9s%.3f\n", name, rag, mem, sign, delta)
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion — typed records into Membrane + raw store
+// ---------------------------------------------------------------------------
+
+func ingestRecord(ctx context.Context, m *membrane.Membrane, store *postgres.PostgresStore, rec recordEntry) (string, error) {
+	sens := parseSensitivity(rec.Sensitivity)
+
+	switch rec.MemoryType {
+	case "semantic":
+		r, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
 			Source:      "eval",
 			Subject:     rec.Subject,
 			Predicate:   rec.Predicate,
 			Object:      rec.Object,
 			Tags:        rec.Tags,
 			Scope:       rec.Scope,
-			Sensitivity: parseSensitivity(rec.Sensitivity),
+			Sensitivity: sens,
 		})
 		if err != nil {
-			fatal("ingest record", err)
+			return "", err
 		}
-		idByKey[rec.Key] = stored.ID
-		recordIDs = append(recordIDs, stored.ID)
-		recordTexts = append(recordTexts, rec.Text)
-	}
+		return r.ID, nil
 
-	recordEmbeds, err := embedTexts(ctx, *model, recordTexts)
-	if err != nil {
-		fatal("embed records", err)
-	}
-	if len(recordEmbeds) != len(recordTexts) {
-		fatal("embed records", fmt.Errorf("expected %d embeddings, got %d", len(recordTexts), len(recordEmbeds)))
-	}
+	case "episodic":
+		r, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+			Source:    "eval",
+			EventKind: rec.EventKind,
+			Ref:       rec.Ref,
+			Summary:   rec.Summary,
+			Tags:      rec.Tags,
+			Scope:     rec.Scope,
+			Sensitivity: sens,
+		})
+		if err != nil {
+			return "", err
+		}
+		return r.ID, nil
 
-	embeddingByID := make(map[string][]float64, len(recordEmbeds))
-	for i, id := range recordIDs {
-		embeddingByID[id] = normalizeVec(recordEmbeds[i])
-	}
+	case "working":
+		r, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+			Source:      "eval",
+			ThreadID:    rec.ThreadID,
+			State:       schema.TaskState(rec.State),
+			NextActions: rec.NextActions,
+			Tags:        rec.Tags,
+			Scope:       rec.Scope,
+			Sensitivity: sens,
+		})
+		if err != nil {
+			return "", err
+		}
+		return r.ID, nil
 
-	queryTexts := make([]string, 0, len(data.queries))
+	case "competence":
+		triggers := make([]schema.Trigger, len(rec.Triggers))
+		for i, t := range rec.Triggers {
+			triggers[i] = schema.Trigger{Signal: t}
+		}
+		steps := make([]schema.RecipeStep, len(rec.Steps))
+		for i, s := range rec.Steps {
+			steps[i] = schema.RecipeStep{Step: s}
+		}
+		record := schema.NewMemoryRecord(uuid.New().String(), schema.MemoryTypeCompetence, sens, &schema.CompetencePayload{
+			Kind:      "competence",
+			SkillName: rec.SkillName,
+			Triggers:  triggers,
+			Recipe:    steps,
+			Performance: &schema.PerformanceStats{
+				SuccessCount: 8,
+				FailureCount: 2,
+			},
+		})
+		record.Scope = rec.Scope
+		record.Tags = rec.Tags
+		record.Confidence = 0.85
+		if err := store.Create(ctx, record); err != nil {
+			return "", err
+		}
+		return record.ID, nil
+
+	case "plan_graph":
+		nodes := make([]schema.PlanNode, len(rec.Nodes))
+		for i, n := range rec.Nodes {
+			nodes[i] = schema.PlanNode{ID: n.ID, Op: n.Op}
+		}
+		edges := make([]schema.PlanEdge, len(rec.Edges))
+		for i, e := range rec.Edges {
+			edges[i] = schema.PlanEdge{From: e.From, To: e.To, Kind: schema.EdgeKindControl}
+		}
+		record := schema.NewMemoryRecord(uuid.New().String(), schema.MemoryTypePlanGraph, sens, &schema.PlanGraphPayload{
+			Kind:    "plan_graph",
+			PlanID:  rec.Key,
+			Version: "1.0",
+			Intent:  rec.Intent,
+			Nodes:   nodes,
+			Edges:   edges,
+			Metrics: &schema.PlanMetrics{ExecutionCount: 3, FailureRate: 0.1},
+		})
+		record.Scope = rec.Scope
+		record.Tags = rec.Tags
+		record.Confidence = 0.9
+		if err := store.Create(ctx, record); err != nil {
+			return "", err
+		}
+		return record.ID, nil
+
+	default:
+		return "", fmt.Errorf("unknown memory_type %q", rec.MemoryType)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RAG eval: embed query → pgvector search → trust filter → top-k
+// ---------------------------------------------------------------------------
+
+func runRAGEval(ctx context.Context, m *membrane.Membrane, pgStore *postgres.PostgresStore, data *dataset, idByKey map[string]string, queryEmbeddings map[string][]float32, defaultK int, verbose bool, totalRecords int) evalMetrics {
+	var recallSum, precisionSum, mrrSum, ndcgSum float64
+
 	for _, q := range data.queries {
-		queryTexts = append(queryTexts, q.Text)
-	}
-	queryEmbeds, err := embedTexts(ctx, *model, queryTexts)
-	if err != nil {
-		fatal("embed queries", err)
-	}
-	if len(queryEmbeds) != len(queryTexts) {
-		fatal("embed queries", fmt.Errorf("expected %d embeddings, got %d", len(queryTexts), len(queryEmbeds)))
-	}
+		k := q.K
+		if k <= 0 {
+			k = defaultK
+		}
 
-	var (
-		recallSum    float64
-		precisionSum float64
-		mrrSum       float64
-		ndcgSum      float64
-	)
-
-	for idx, q := range data.queries {
+		// Trust-filtered set from Membrane (RAG still respects access control).
+		memTypes := allMemoryTypes()
+		if len(q.MemoryTypes) > 0 {
+			memTypes = parseMemoryTypes(q.MemoryTypes)
+		}
 		trust := toTrustContext(q.Trust)
 		resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
 			Trust:       trust,
-			MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
+			MemoryTypes: memTypes,
 			MinSalience: q.MinSalience,
 			Limit:       0,
 		})
 		if err != nil {
-			fatal("retrieve candidates", err)
+			fatal("rag retrieve "+q.Key, err)
 		}
-
 		allowed := make(map[string]struct{}, len(resp.Records))
 		for _, rec := range resp.Records {
 			allowed[rec.ID] = struct{}{}
 		}
 
-		candidates := make([]candidate, 0, len(allowed))
-		qVec := normalizeVec(queryEmbeds[idx])
-		for id, vec := range embeddingByID {
-			if _, ok := allowed[id]; !ok {
-				continue
+		// Use pre-computed query embedding → pgvector cosine search.
+		qVec := queryEmbeddings[q.Key]
+		ranked, err := pgStore.SearchByEmbedding(ctx, qVec, totalRecords)
+		if err != nil {
+			fatal("rag search "+q.Key, err)
+		}
+
+		// Intersect with trust-filtered set.
+		topIDs := make([]string, 0, k)
+		for _, id := range ranked {
+			if len(topIDs) >= k {
+				break
 			}
-			candidates = append(candidates, candidate{id: id, score: dot(qVec, vec)})
-		}
-
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].score > candidates[j].score
-		})
-
-		k := q.K
-		if k <= 0 {
-			k = *defaultK
-		}
-
-		topCount := k
-		if topCount > len(candidates) {
-			topCount = len(candidates)
-		}
-
-		topIDs := make([]string, 0, topCount)
-		for i := 0; i < topCount; i++ {
-			topIDs = append(topIDs, candidates[i].id)
-		}
-
-		expectedIDs := make([]string, 0, len(q.Expected))
-		for _, key := range q.Expected {
-			id, ok := idByKey[key]
-			if !ok {
-				fatal("expected id", fmt.Errorf("unknown record key %q for query %q", key, q.Key))
+			if _, ok := allowed[id]; ok {
+				topIDs = append(topIDs, id)
 			}
-			expectedIDs = append(expectedIDs, id)
 		}
 
-		recall := recallAtK(topIDs, expectedIDs, k)
-		precision := precisionAtK(topIDs, expectedIDs, k)
-		mrr := mrrAtK(topIDs, expectedIDs, k)
-		ndcg := ndcgAtK(topIDs, expectedIDs, k)
-
-		recallSum += recall
-		precisionSum += precision
+		expectedIDs := resolveExpected(q, idByKey)
+		r, p, mrr, ndcg := computeMetrics(topIDs, expectedIDs, k)
+		recallSum += r
+		precisionSum += p
 		mrrSum += mrr
 		ndcgSum += ndcg
 
-		if *verbose {
-			fmt.Printf("%s: recall@%d=%.2f precision@%d=%.2f mrr@%d=%.2f ndcg@%d=%.2f top=%v expected=%v\n",
-				q.Key, k, recall, k, precision, k, mrr, k, ndcg, shorten(topIDs, 5), shorten(expectedIDs, 5))
+		if verbose {
+			fmt.Printf("  %s: recall@%d=%.2f prec=%.2f mrr=%.2f ndcg=%.2f\n", q.Key, k, r, p, mrr, ndcg)
 		}
 	}
 
 	count := float64(len(data.queries))
-	if count == 0 {
-		fatal("dataset", errors.New("no queries found"))
+	met := evalMetrics{recallSum / count, precisionSum / count, mrrSum / count, ndcgSum / count}
+	fmt.Printf("  Mean: recall=%.3f precision=%.3f MRR=%.3f NDCG=%.3f\n", met.recall, met.precision, met.mrr, met.ndcg)
+	return met
+}
+
+// ---------------------------------------------------------------------------
+// Membrane eval: full pipeline via Retrieve with TaskDescriptor
+// ---------------------------------------------------------------------------
+
+func runMembraneEval(ctx context.Context, m *membrane.Membrane, data *dataset, idByKey map[string]string, queryEmbeddings map[string][]float32, defaultK int, verbose bool) evalMetrics {
+	var recallSum, precisionSum, mrrSum, ndcgSum float64
+
+	for _, q := range data.queries {
+		k := q.K
+		if k <= 0 {
+			k = defaultK
+		}
+
+		memTypes := allMemoryTypes()
+		if len(q.MemoryTypes) > 0 {
+			memTypes = parseMemoryTypes(q.MemoryTypes)
+		}
+		trust := toTrustContext(q.Trust)
+
+		resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+			TaskDescriptor: q.Text,
+			QueryEmbedding: queryEmbeddings[q.Key],
+			Trust:          trust,
+			MemoryTypes:    memTypes,
+			MinSalience:    q.MinSalience,
+			Limit:          k,
+		})
+		if err != nil {
+			fatal("membrane retrieve "+q.Key, err)
+		}
+
+		topIDs := make([]string, 0, len(resp.Records))
+		for _, rec := range resp.Records {
+			topIDs = append(topIDs, rec.ID)
+		}
+
+		expectedIDs := resolveExpected(q, idByKey)
+		r, p, mrr, ndcg := computeMetrics(topIDs, expectedIDs, k)
+		recallSum += r
+		precisionSum += p
+		mrrSum += mrr
+		ndcgSum += ndcg
+
+		if verbose {
+			fmt.Printf("  %s: recall@%d=%.2f prec=%.2f mrr=%.2f ndcg=%.2f\n", q.Key, k, r, p, mrr, ndcg)
+		}
 	}
 
-	meanRecall := recallSum / count
-	meanPrecision := precisionSum / count
-	meanMRR := mrrSum / count
-	meanNDCG := ndcgSum / count
+	count := float64(len(data.queries))
+	met := evalMetrics{recallSum / count, precisionSum / count, mrrSum / count, ndcgSum / count}
+	fmt.Printf("  Mean: recall=%.3f precision=%.3f MRR=%.3f NDCG=%.3f\n", met.recall, met.precision, met.mrr, met.ndcg)
+	return met
+}
 
-	fmt.Printf("Vector eval complete (model=%s)\n", *model)
-	fmt.Printf("Records: %d, Queries: %d\n", len(data.records), len(data.queries))
-	fmt.Printf("Mean recall@k: %.3f\n", meanRecall)
-	fmt.Printf("Mean precision@k: %.3f\n", meanPrecision)
-	fmt.Printf("Mean mrr@k: %.3f\n", meanMRR)
-	fmt.Printf("Mean ndcg@k: %.3f\n", meanNDCG)
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-	thresholdFailures := make([]string, 0, 4)
-	if *minRecall >= 0 && meanRecall < *minRecall {
-		thresholdFailures = append(thresholdFailures, fmt.Sprintf("recall@k %.3f < %.3f", meanRecall, *minRecall))
+func resolveExpected(q queryEntry, idByKey map[string]string) []string {
+	ids := make([]string, 0, len(q.Expected))
+	for _, key := range q.Expected {
+		id, ok := idByKey[key]
+		if !ok {
+			fatal("expected id", fmt.Errorf("unknown key %q in query %q", key, q.Key))
+		}
+		ids = append(ids, id)
 	}
-	if *minPrec >= 0 && meanPrecision < *minPrec {
-		thresholdFailures = append(thresholdFailures, fmt.Sprintf("precision@k %.3f < %.3f", meanPrecision, *minPrec))
+	return ids
+}
+
+func allMemoryTypes() []schema.MemoryType {
+	return []schema.MemoryType{
+		schema.MemoryTypeEpisodic,
+		schema.MemoryTypeWorking,
+		schema.MemoryTypeSemantic,
+		schema.MemoryTypeCompetence,
+		schema.MemoryTypePlanGraph,
 	}
-	if *minMRR >= 0 && meanMRR < *minMRR {
-		thresholdFailures = append(thresholdFailures, fmt.Sprintf("mrr@k %.3f < %.3f", meanMRR, *minMRR))
+}
+
+func parseMemoryTypes(raw []string) []schema.MemoryType {
+	out := make([]schema.MemoryType, len(raw))
+	for i, s := range raw {
+		out[i] = schema.MemoryType(s)
 	}
-	if *minNDCG >= 0 && meanNDCG < *minNDCG {
-		thresholdFailures = append(thresholdFailures, fmt.Sprintf("ndcg@k %.3f < %.3f", meanNDCG, *minNDCG))
-	}
-	if len(thresholdFailures) > 0 {
-		fatal("thresholds", fmt.Errorf("failed: %s", strings.Join(thresholdFailures, "; ")))
-	}
+	return out
+}
+
+func computeMetrics(got, expected []string, k int) (recall, precision, mrr, ndcg float64) {
+	return recallAtK(got, expected, k), precisionAtK(got, expected, k), mrrAtK(got, expected, k), ndcgAtK(got, expected, k)
 }
 
 func loadDataset(path string, defaultK int) (*dataset, error) {
@@ -295,17 +527,11 @@ func loadDataset(path string, defaultK int) (*dataset, error) {
 			if err := json.Unmarshal([]byte(line), &rec); err != nil {
 				return nil, fmt.Errorf("parse record: %w", err)
 			}
-			if rec.Text == "" {
-				return nil, fmt.Errorf("record %q missing text", rec.Key)
-			}
 			data.records = append(data.records, rec)
 		case "query":
 			var q queryEntry
 			if err := json.Unmarshal([]byte(line), &q); err != nil {
 				return nil, fmt.Errorf("parse query: %w", err)
-			}
-			if q.Text == "" {
-				return nil, fmt.Errorf("query %q missing text", q.Key)
 			}
 			if q.K == 0 {
 				q.K = defaultK
@@ -315,46 +541,7 @@ func loadDataset(path string, defaultK int) (*dataset, error) {
 			return nil, fmt.Errorf("unknown entry type %q", base.Type)
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
-
-func embedTexts(ctx context.Context, model string, texts []string) ([][]float64, error) {
-	if len(texts) == 0 {
-		return nil, nil
-	}
-
-	payload := map[string]any{
-		"model": model,
-		"texts": texts,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	cmd := exec.CommandContext(ctx, "python3", "tools/eval/embed.py")
-	cmd.Stdin = bytes.NewReader(data)
-	var out bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("embed failed: %w: %s", err, strings.TrimSpace(errBuf.String()))
-	}
-
-	var resp struct {
-		Embeddings [][]float64 `json:"embeddings"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
-		return nil, fmt.Errorf("parse embed response: %w", err)
-	}
-	return resp.Embeddings, nil
+	return data, scanner.Err()
 }
 
 func toTrustContext(trust trustEntry) *retrieval.TrustContext {
@@ -362,20 +549,13 @@ func toTrustContext(trust trustEntry) *retrieval.TrustContext {
 	if actor == "" {
 		actor = "eval"
 	}
-	max := parseSensitivity(trust.MaxSensitivity)
-	scopes := trust.Scopes
-	if len(scopes) == 0 {
-		scopes = nil
-	}
-	return retrieval.NewTrustContext(max, trust.Authenticated, actor, scopes)
+	return retrieval.NewTrustContext(parseSensitivity(trust.MaxSensitivity), trust.Authenticated, actor, trust.Scopes)
 }
 
 func parseSensitivity(raw string) schema.Sensitivity {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "public":
 		return schema.SensitivityPublic
-	case "low", "":
-		return schema.SensitivityLow
 	case "medium":
 		return schema.SensitivityMedium
 	case "high":
@@ -387,47 +567,16 @@ func parseSensitivity(raw string) schema.Sensitivity {
 	}
 }
 
-func normalizeVec(vec []float64) []float64 {
-	var sum float64
-	for _, v := range vec {
-		sum += v * v
-	}
-	if sum == 0 {
-		return vec
-	}
-	inv := 1.0 / math.Sqrt(sum)
-	out := make([]float64, len(vec))
-	for i, v := range vec {
-		out[i] = v * inv
-	}
-	return out
-}
-
-func dot(a, b []float64) float64 {
-	if len(a) != len(b) {
-		return 0
-	}
-	var sum float64
-	for i := range a {
-		sum += a[i] * b[i]
-	}
-	return sum
-}
+// Silence the import.
+var _ = time.Now
 
 func recallAtK(got, expected []string, k int) float64 {
 	if len(expected) == 0 {
 		return 1
 	}
-	relevant := make(map[string]struct{}, len(expected))
-	for _, id := range expected {
-		relevant[id] = struct{}{}
-	}
-
+	relevant := toSet(expected)
 	found := 0
-	limit := k
-	if limit > len(got) {
-		limit = len(got)
-	}
+	limit := min(k, len(got))
 	for i := 0; i < limit; i++ {
 		if _, ok := relevant[got[i]]; ok {
 			found++
@@ -438,21 +587,11 @@ func recallAtK(got, expected []string, k int) float64 {
 
 func precisionAtK(got, expected []string, k int) float64 {
 	if k == 0 {
-		if len(expected) == 0 {
-			return 1
-		}
 		return 0
 	}
-	relevant := make(map[string]struct{}, len(expected))
-	for _, id := range expected {
-		relevant[id] = struct{}{}
-	}
-
+	relevant := toSet(expected)
 	found := 0
-	limit := k
-	if limit > len(got) {
-		limit = len(got)
-	}
+	limit := min(k, len(got))
 	for i := 0; i < limit; i++ {
 		if _, ok := relevant[got[i]]; ok {
 			found++
@@ -462,15 +601,8 @@ func precisionAtK(got, expected []string, k int) float64 {
 }
 
 func mrrAtK(got, expected []string, k int) float64 {
-	relevant := make(map[string]struct{}, len(expected))
-	for _, id := range expected {
-		relevant[id] = struct{}{}
-	}
-
-	limit := k
-	if limit > len(got) {
-		limit = len(got)
-	}
+	relevant := toSet(expected)
+	limit := min(k, len(got))
 	for i := 0; i < limit; i++ {
 		if _, ok := relevant[got[i]]; ok {
 			return 1.0 / float64(i+1)
@@ -483,27 +615,15 @@ func ndcgAtK(got, expected []string, k int) float64 {
 	if len(expected) == 0 {
 		return 1
 	}
-	relevant := make(map[string]struct{}, len(expected))
-	for _, id := range expected {
-		relevant[id] = struct{}{}
-	}
-
-	limit := k
-	if limit > len(got) {
-		limit = len(got)
-	}
-
+	relevant := toSet(expected)
+	limit := min(k, len(got))
 	var dcg float64
 	for i := 0; i < limit; i++ {
 		if _, ok := relevant[got[i]]; ok {
 			dcg += 1.0 / math.Log2(float64(i)+2.0)
 		}
 	}
-
-	idealCount := len(expected)
-	if idealCount > k {
-		idealCount = k
-	}
+	idealCount := min(len(expected), k)
 	var idcg float64
 	for i := 0; i < idealCount; i++ {
 		idcg += 1.0 / math.Log2(float64(i)+2.0)
@@ -514,14 +634,12 @@ func ndcgAtK(got, expected []string, k int) float64 {
 	return dcg / idcg
 }
 
-func shorten(ids []string, max int) []string {
-	if len(ids) <= max {
-		return ids
+func toSet(ss []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(ss))
+	for _, s := range ss {
+		m[s] = struct{}{}
 	}
-	out := make([]string, 0, max+1)
-	out = append(out, ids[:max]...)
-	out = append(out, "...")
-	return out
+	return m
 }
 
 func fatal(action string, err error) {
