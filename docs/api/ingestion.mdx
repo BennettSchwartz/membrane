@@ -1,0 +1,385 @@
+---
+title: "Ingestion"
+description: "Five gRPC methods for writing events, tool outputs, observations, outcomes, and working state into Membrane."
+---
+
+Ingestion methods create new memory records or update existing ones. All five methods return an `IngestResponse` containing the JSON-encoded `MemoryRecord` that was written to the store.
+
+<ResponseField name="record" type="bytes">
+  JSON-encoded `MemoryRecord`. Decode the bytes field to access the record's `id`, `type`, `sensitivity`, `salience`, and payload.
+</ResponseField>
+
+---
+
+## IngestEvent
+
+Creates an **episodic** memory record from a raw event. Use this to capture user inputs, errors, agent actions, or any discrete occurrence that should be preserved for later consolidation.
+
+### Request fields
+
+<ParamField path="source" type="string" required>
+  Identifies the actor or system that produced the event (e.g., `"build-agent"`).
+</ParamField>
+
+<ParamField path="event_kind" type="string" required>
+  Categorises the event (e.g., `"tool_call"`, `"user_input"`, `"error"`).
+</ParamField>
+
+<ParamField path="ref" type="string" required>
+  Reference identifier for the source event, used in provenance tracking (e.g., `"build#42"`).
+</ParamField>
+
+<ParamField path="summary" type="string">
+  Human-readable summary stored in the episodic timeline. Maximum 100 000 characters.
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  RFC 3339 timestamp. Defaults to the server's current UTC time when omitted.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Free-form labels for categorisation. Maximum 100 tags, each up to 256 characters.
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope (e.g., `"project-acme"`, `"user"`, `"global"`).
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`. Defaults to the server's configured `default_sensitivity`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "build-agent",
+    EventKind: "tool_call",
+    Ref:       "build#42",
+    Summary:   "Executed go build, failed with linker error",
+    Tags:      []string{"build", "error"},
+})
+fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+```
+
+```typescript TypeScript
+const record = await client.ingestEvent("tool_call", "task#1", {
+  source: "build-agent",
+  summary: "Executed go build, failed with linker error",
+  tags: ["build", "error"],
+});
+```
+
+```python Python
+record = client.ingest_event(
+    source="build-agent",
+    event_kind="tool_call",
+    ref="build#42",
+    summary="Executed go build, failed with linker error",
+    tags=["build", "error"],
+)
+```
+
+</CodeGroup>
+
+---
+
+## IngestToolOutput
+
+Creates an **episodic** memory record that captures a tool invocation with its arguments and result. The tool data is stored in the episodic payload's `tool_graph` field alongside a timeline entry.
+
+### Request fields
+
+<ParamField path="source" type="string" required>
+  Identifies the actor or system that invoked the tool.
+</ParamField>
+
+<ParamField path="tool_name" type="string" required>
+  Name of the tool that was called (e.g., `"bash"`, `"read_file"`).
+</ParamField>
+
+<ParamField path="args" type="bytes">
+  JSON-encoded `map[string]any` of arguments passed to the tool. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="result" type="bytes">
+  JSON-encoded value returned by the tool. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="depends_on" type="string[]">
+  IDs of tool nodes this output depends on, used to build the tool dependency graph.
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  RFC 3339 timestamp. Defaults to the server's current UTC time when omitted.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Free-form labels for categorisation.
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+rec, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+    Source:   "build-agent",
+    ToolName: "bash",
+    Args:     map[string]any{"command": "go build ./..."},
+    Result:   map[string]any{"exit_code": 1, "stderr": "linker error: cannot find -lfoo"},
+    Tags:     []string{"build", "error"},
+})
+```
+
+```typescript TypeScript
+const record = await client.ingestToolOutput("bash", {
+  source: "build-agent",
+  args: { command: "go build ./..." },
+  result: { exit_code: 1, stderr: "linker error: cannot find -lfoo" },
+  tags: ["build", "error"],
+});
+```
+
+```python Python
+record = client.ingest_tool_output(
+    source="build-agent",
+    tool_name="bash",
+    args={"command": "go build ./..."},
+    result={"exit_code": 1, "stderr": "linker error: cannot find -lfoo"},
+    tags=["build", "error"],
+)
+```
+
+</CodeGroup>
+
+---
+
+## IngestObservation
+
+Creates a **semantic** memory record from a subject-predicate-object triple. Use this to record stable facts and preferences that should persist and be retrievable across sessions.
+
+### Request fields
+
+<ParamField path="source" type="string" required>
+  Identifies the actor or system making the observation.
+</ParamField>
+
+<ParamField path="subject" type="string" required>
+  The entity the observation is about (e.g., `"user"`, `"project"`).
+</ParamField>
+
+<ParamField path="predicate" type="string" required>
+  The relationship or property observed (e.g., `"prefers_language"`, `"has_deadline"`).
+</ParamField>
+
+<ParamField path="object" type="bytes" required>
+  JSON-encoded value or related entity (e.g., `"\"go\""`). Maximum 10 MB.
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  RFC 3339 timestamp. Defaults to the server's current UTC time when omitted.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Free-form labels for categorisation.
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+    Source:    "build-agent",
+    Subject:   "user",
+    Predicate: "prefers_language",
+    Object:    "go",
+    Tags:      []string{"preferences"},
+})
+```
+
+```typescript TypeScript
+const record = await client.ingestObservation({
+  source: "build-agent",
+  subject: "user",
+  predicate: "prefers_language",
+  object: "go",
+  tags: ["preferences"],
+});
+```
+
+```python Python
+record = client.ingest_observation(
+    source="build-agent",
+    subject="user",
+    predicate="prefers_language",
+    object="go",
+    tags=["preferences"],
+)
+```
+
+</CodeGroup>
+
+---
+
+## IngestOutcome
+
+Updates an existing **episodic** record with an outcome status. The target record must be episodic — attempting to attach an outcome to a non-episodic record returns `FailedPrecondition`.
+
+The update appends a provenance source and an audit entry to the target record without changing its type or payload structure.
+
+<Warning>
+`IngestOutcome` modifies an existing record. It does not create a new one. The response contains the updated record.
+</Warning>
+
+### Request fields
+
+<ParamField path="source" type="string" required>
+  Identifies the actor or system reporting the outcome.
+</ParamField>
+
+<ParamField path="target_record_id" type="string" required>
+  ID of the existing episodic record to update.
+</ParamField>
+
+<ParamField path="outcome_status" type="string" required>
+  Result of the experience: `success`, `failure`, or `partial`.
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  RFC 3339 timestamp. Defaults to the server's current UTC time when omitted.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+updatedRec, err := m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
+    Source:         "build-agent",
+    TargetRecordID: rec.ID,
+    OutcomeStatus:  schema.OutcomeStatusSuccess,
+})
+```
+
+```typescript TypeScript
+const updated = await client.ingestOutcome({
+  source: "build-agent",
+  target_record_id: record.id,
+  outcome_status: "success",
+});
+```
+
+```python Python
+updated = client.ingest_outcome(
+    source="build-agent",
+    target_record_id=record.id,
+    outcome_status="success",
+)
+```
+
+</CodeGroup>
+
+---
+
+## IngestWorkingState
+
+Creates a **working** memory record that captures in-flight task state. Working memory records enable task resumption across sessions or devices.
+
+### Request fields
+
+<ParamField path="source" type="string" required>
+  Identifies the actor or system that produced the working state.
+</ParamField>
+
+<ParamField path="thread_id" type="string" required>
+  Identifier for the current thread or session (e.g., `"session-001"`).
+</ParamField>
+
+<ParamField path="state" type="string" required>
+  Current task state: `planning`, `executing`, `blocked`, `waiting`, or `done`.
+</ParamField>
+
+<ParamField path="next_actions" type="string[]">
+  Ordered list of planned next actions.
+</ParamField>
+
+<ParamField path="open_questions" type="string[]">
+  Unresolved questions blocking or affecting the task.
+</ParamField>
+
+<ParamField path="context_summary" type="string">
+  Human-readable summary of the current context. Maximum 100 000 characters.
+</ParamField>
+
+<ParamField path="active_constraints" type="bytes">
+  JSON-encoded array of `Constraint` objects currently active for the task. Maximum 10 MB.
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  RFC 3339 timestamp. Defaults to the server's current UTC time when omitted.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Free-form labels for categorisation.
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+rec, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+    Source:     "build-agent",
+    ThreadID:   "session-001",
+    State:      schema.TaskStateExecuting,
+    NextActions: []string{"run tests", "deploy"},
+})
+```
+
+```typescript TypeScript
+const record = await client.ingestWorkingState({
+  source: "build-agent",
+  thread_id: "session-001",
+  state: "executing",
+  next_actions: ["run tests", "deploy"],
+});
+```
+
+```python Python
+record = client.ingest_working_state(
+    source="build-agent",
+    thread_id="session-001",
+    state="executing",
+    next_actions=["run tests", "deploy"],
+)
+```
+
+</CodeGroup>

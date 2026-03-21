@@ -1,0 +1,236 @@
+---
+title: "Competence Learning"
+description: "How Membrane extracts procedural knowledge from episodic traces and tracks success rates over time."
+---
+
+Competence memory encodes *how* to accomplish goals, not just *what* happened. A competence record describes a procedure — its triggers, recipe steps, required tools, and a running track record of successes and failures.
+
+---
+
+## What a competence record stores
+
+```go
+type CompetencePayload struct {
+    Kind          string           // const "competence"
+    SkillName     string           // name of the skill or procedure
+    Triggers      []Trigger        // conditions under which this competence applies
+    Recipe        []RecipeStep     // ordered steps to execute
+    RequiredTools []string         // tools needed
+    FailureModes  []string         // documented failure cases
+    Fallbacks     []string         // alternative strategies when primary recipe fails
+    Performance   *PerformanceStats // success/failure statistics
+    Version       string
+}
+```
+
+A `Trigger` declares a signal (for example, an error signature or intent label) and optional matching conditions:
+
+```go
+type Trigger struct {
+    Signal     string         // trigger signal
+    Conditions map[string]any // additional matching conditions
+}
+```
+
+Each `RecipeStep` describes a single action in the procedure:
+
+```go
+type RecipeStep struct {
+    Step       string         // human-readable description
+    Tool       string         // tool to invoke
+    ArgsSchema map[string]any // expected arguments
+    Validation string         // how to verify success
+}
+```
+
+---
+
+## Extraction from episodic traces
+
+Competence records are created automatically by the consolidation pipeline (`pkg/consolidation/competence.go`). The pipeline:
+
+<Steps>
+  <Step title="Collect successful episodes with tool graphs">
+    The consolidator scans all episodic records. It selects only those with `outcome: success` and a non-empty `tool_graph`.
+  </Step>
+  <Step title="Group by tool signature">
+    Each episode is assigned a signature derived from its sorted tool names (e.g., `go_build+go_test+lint`). Episodes sharing the same signature are grouped together.
+  </Step>
+  <Step title="Check minimum occurrences">
+    A competence record is only created when a pattern appears in at least **2** successful episodes (`minPatternOccurrences = 2`). Single occurrences are ignored.
+  </Step>
+  <Step title="Create or reinforce">
+    If no competence record exists for this skill name, a new one is created with `SuccessCount` set to the number of matching episodes and `SuccessRate = 1.0`. If a record already exists, its salience is reinforced by `+0.1` instead of creating a duplicate.
+  </Step>
+</Steps>
+
+```go
+// From pkg/consolidation/competence.go
+const minPatternOccurrences = 2
+
+// Skill name is derived from the sorted tool signature
+skillName := "skill:" + g.signature  // e.g., "skill:go_build+go_test+lint"
+
+// New record initial performance
+Performance: &schema.PerformanceStats{
+    SuccessCount: int64(len(g.records)),
+    SuccessRate:  1.0,
+    LastUsedAt:   &now,
+},
+```
+
+The extracted competence record inherits the maximum sensitivity of its source episodes and a consolidated provenance linking back to each contributing episode via `derived_from` relations.
+
+---
+
+## Success rate tracking
+
+The `PerformanceStats` struct tracks success and failure counts:
+
+```go
+type PerformanceStats struct {
+    SuccessCount int64      // number of successful uses
+    FailureCount int64      // number of failed uses
+    SuccessRate  float64    // computed success rate [0, 1]
+    AvgLatencyMs float64    // average execution time in milliseconds
+    LastUsedAt   *time.Time
+}
+```
+
+Success rate is computed as:
+
+```
+success_rate = success_count / (success_count + failure_count)
+```
+
+### How Reinforce and Penalize affect success rate
+
+| Operation | Effect on salience | Effect on success rate |
+|-----------|-------------------|-----------------------|
+| `Reinforce` | +`ReinforcementGain` (capped at 1.0) | Not directly modified; success rate is updated by the application when recording outcomes |
+| `Penalize` | −`amount` (floored at `MinSalience`) | Not directly modified |
+
+The `success_rate` field is intended to be updated by the application layer when outcomes are recorded. The consolidation pipeline initializes it to `1.0` when first creating a competence record from only successful episodes.
+
+---
+
+## Selector and confidence threshold
+
+When a retrieval query includes competence records as candidates, the `Selector` ranks them using three equally weighted signals:
+
+1. **Applicability** — the record's `Confidence` field, or a vector similarity score if pgvector is enabled.
+2. **Observed success rate** — from `PerformanceStats.SuccessRate`.
+3. **Recency of reinforcement** — exponential decay on the time since `last_reinforced_at` (30-day half-life).
+
+```go
+// From pkg/retrieval/selector.go
+func (s *Selector) scoreRecord(ctx context.Context, record *schema.MemoryRecord, queryEmbedding []float32) float64 {
+    applicability := record.Confidence
+    if s.embedding != nil && len(queryEmbedding) > 0 {
+        if sim, ok := s.embedding.Similarity(ctx, record.ID, queryEmbedding); ok {
+            applicability = sim
+        }
+    }
+    successRate := s.extractSuccessRate(record)
+    recency := s.computeRecency(record)
+    return (applicability + successRate + recency) / 3.0
+}
+```
+
+The **confidence threshold** (`SelectionConfidenceThreshold`, default `0.7`) determines whether the selector has enough certainty to recommend the top candidate. If the normalized score gap between the best and second-best candidate falls below this threshold, `SelectionResult.NeedsMore` is set to `true`, signaling that user disambiguation or additional context may help.
+
+```yaml
+# config.yaml
+selection_confidence_threshold: 0.7
+```
+
+---
+
+## Vector-based applicability scoring
+
+On the Postgres + pgvector tier (Tier 3 and above), the selector can replace the `record.Confidence` proxy with actual embedding similarity:
+
+```go
+// From pkg/retrieval/selector.go
+if s.embedding != nil && len(queryEmbedding) > 0 {
+    if sim, ok := s.embedding.Similarity(ctx, record.ID, queryEmbedding); ok {
+        applicability = sim  // vector cosine similarity replaces confidence proxy
+    }
+}
+```
+
+Embeddings are stored for competence and plan graph records when `embedding_endpoint` is configured. Configure it in `config.yaml`:
+
+```yaml
+embedding_endpoint: "https://api.openai.com/v1/embeddings"
+embedding_model: "text-embedding-3-small"
+embedding_dimensions: 1536
+# embedding_api_key: set via MEMBRANE_EMBEDDING_API_KEY
+```
+
+---
+
+## Example: storing and retrieving a procedure
+
+```go
+// 1. Ingest a successful episodic record with a tool graph
+rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "build-agent",
+    EventKind: "tool_call",
+    Ref:       "build#42",
+    Summary:   "Executed go build, failed with linker error",
+    Tags:      []string{"build", "error"},
+})
+
+// 2. After at least 2 successful episodes with the same tool pattern,
+//    the next consolidation run creates a competence record automatically.
+//    You can also trigger consolidation manually:
+result, err := consolidationSvc.RunAll(ctx)
+fmt.Printf("Competence records created: %d\n", result.CompetenceExtracted)
+
+// 3. Retrieve competence records for a task
+resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+    },
+})
+
+for _, r := range resp.Records {
+    if p, ok := r.Payload.(*schema.CompetencePayload); ok {
+        fmt.Printf("Skill: %s (success_rate=%.2f)\n",
+            p.SkillName,
+            p.Performance.SuccessRate,
+        )
+        for _, step := range p.Recipe {
+            fmt.Printf("  - %s (tool: %s)\n", step.Step, step.Tool)
+        }
+    }
+}
+
+// 4. Reinforce after a successful use
+m.Reinforce(ctx, r.ID, "build-agent", "procedure applied successfully")
+```
+
+---
+
+## Competence record lifecycle
+
+<CardGroup cols={2}>
+  <Card title="Auto-created" icon="sparkles">
+    Created by the consolidation pipeline from repeated successful tool patterns. Requires no manual authoring.
+  </Card>
+  <Card title="Success-tracked" icon="chart-line">
+    Tracks `success_count`, `failure_count`, and `success_rate` across uses.
+  </Card>
+  <Card title="Revisable" icon="pencil">
+    Can be superseded, forked, contested, retracted, or merged like any non-episodic record.
+  </Card>
+  <Card title="Selector-ranked" icon="list-ordered">
+    Ranked by applicability, success rate, and recency during retrieval.
+  </Card>
+</CardGroup>

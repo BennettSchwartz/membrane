@@ -1,0 +1,189 @@
+---
+title: "Observability"
+description: "Metrics, evaluation suites, recall regression tests, and benchmark results for Membrane."
+---
+
+Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive evaluation suite covering retrieval quality, revision semantics, decay curves, trust gating, and vector-aware recall.
+
+## GetMetrics
+
+`GetMetrics` returns a point-in-time `*metrics.Snapshot` collected by scanning all records in the store.
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    snap, err := m.GetMetrics(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Total: %d, Usefulness: %.2f\n", snap.TotalRecords, snap.RetrievalUsefulness)
+    ```
+  </Tab>
+  <Tab title="gRPC">
+    Call the `GetMetrics` gRPC method (no request body required). Returns the same JSON-encoded snapshot.
+  </Tab>
+</Tabs>
+
+### Example snapshot
+
+```json
+{
+  "collected_at": "2026-02-05T14:23:10Z",
+  "total_records": 142,
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
+  "avg_salience": 0.62,
+  "avg_confidence": 0.78,
+  "salience_distribution": {
+    "0.0-0.2": 12,
+    "0.2-0.4": 18,
+    "0.4-0.6": 30,
+    "0.6-0.8": 45,
+    "0.8-1.0": 37
+  },
+  "active_records": 130,
+  "pinned_records": 3,
+  "total_audit_entries": 890,
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+---
+
+## Metrics reference
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `collected_at` | `string` | RFC 3339 timestamp when the snapshot was collected |
+| `total_records` | `int` | Total number of records in the store |
+| `records_by_type` | `map[string]int` | Count of records per memory type |
+| `avg_salience` | `float64` | Mean salience across all records |
+| `avg_confidence` | `float64` | Mean confidence across all records |
+| `salience_distribution` | `map[string]int` | Record counts in 0.2-wide salience buckets |
+| `active_records` | `int` | Records with `salience > 0` |
+| `pinned_records` | `int` | Records with `lifecycle.pinned = true` |
+| `total_audit_entries` | `int` | Total audit log entries across all records |
+| `memory_growth_rate` | `float64` | Fraction of records created in the last 24 hours |
+| `retrieval_usefulness` | `float64` | Ratio of reinforce audit actions to total audit entries |
+| `competence_success_rate` | `float64` | Average `SuccessRate` across all competence records |
+| `plan_reuse_frequency` | `float64` | Average `ExecutionCount` across all plan_graph records |
+| `revision_rate` | `float64` | Fraction of audit entries that are supersede, fork, or merge operations |
+
+### Interpreting key metrics
+
+**`retrieval_usefulness`** — A high value (near 1.0) means retrieved records are frequently reinforced after use, indicating good retrieval quality. A low value may indicate the retrieval is surfacing records that aren't actually useful.
+
+**`memory_growth_rate`** — Tracks how fast the substrate is growing. A rate near 1.0 means almost all records were created in the last 24 hours, which may indicate runaway ingestion or a new agent start.
+
+**`revision_rate`** — Measures how often the knowledge base is being revised. A very low rate may indicate the agent isn't learning from feedback; a very high rate may indicate instability in the knowledge base.
+
+---
+
+## Evaluation suite
+
+The eval suite covers functional correctness across all major subsystems.
+
+### Run everything
+
+```bash
+make eval-all
+```
+
+This runs all Go-based eval tests and the vector end-to-end evaluation script.
+
+### Targeted capability evals
+
+```bash
+make eval-typed          # Memory type handling
+make eval-revision       # Revision semantics
+make eval-decay          # Decay curves and pruning
+make eval-trust          # Trust-gated retrieval
+make eval-competence     # Competence learning
+make eval-plan           # Plan graph operations
+make eval-consolidation  # Episodic consolidation
+make eval-metrics        # Observability metrics
+make eval-invariants     # System invariants
+make eval-grpc           # gRPC endpoint coverage
+```
+
+Each target maps to a `go test` run against the `./tests` package with a specific `-run` filter.
+
+---
+
+## Recall regression tests
+
+The recall regression test validates that the retrieval layer returns expected records given a known corpus:
+
+```bash
+go test ./tests -run TestRetrievalRecallAtK
+```
+
+This test checks recall@k for a fixed set of records and queries, failing if recall drops below the configured threshold. Use it as a canary to detect regressions in retrieval ordering or trust filtering.
+
+---
+
+## Vector end-to-end metrics
+
+The vector E2E evaluation requires Python and measures recall, precision, MRR, and NDCG over a synthetic corpus with pgvector-backed retrieval.
+
+<Steps>
+  <Step title="Install Python dependencies">
+    ```bash
+    python3 -m pip install -r tools/eval/requirements.txt
+    ```
+  </Step>
+  <Step title="Run the eval">
+    ```bash
+    make eval
+    ```
+
+    This invokes `tools/eval/run.sh`, which spins up the eval corpus and measures retrieval metrics at multiple k values.
+  </Step>
+  <Step title="Check the results">
+    The script reports `recall@k`, `precision@k`, `MRR@k`, and `NDCG@k` and fails with a non-zero exit code if any metric falls below its threshold.
+  </Step>
+</Steps>
+
+### Metric definitions
+
+| Metric | Description |
+|--------|-------------|
+| `recall@k` | Fraction of relevant records found in the top-k results |
+| `precision@k` | Fraction of top-k results that are relevant |
+| `MRR@k` | Mean reciprocal rank of the first relevant result in top-k |
+| `NDCG@k` | Normalized discounted cumulative gain; measures ranking quality |
+
+### Environment variable overrides
+
+Thresholds can be overridden via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMBRANE_EVAL_MIN_RECALL` | `0.90` | Minimum acceptable recall@k |
+| `MEMBRANE_EVAL_MIN_PRECISION` | `0.20` | Minimum acceptable precision@k |
+| `MEMBRANE_EVAL_MIN_MRR` | `0.90` | Minimum acceptable MRR@k |
+| `MEMBRANE_EVAL_MIN_NDCG` | `0.90` | Minimum acceptable NDCG@k |
+
+---
+
+## Latest benchmark results
+
+Local run (Feb 5, 2026):
+
+| Suite | Result |
+|-------|--------|
+| Unit/Integration | 22 top-level eval tests + 7 subtests = 29 test cases, 0 failures (~0.40s) |
+| Vector E2E | 35 records, 18 queries — recall@k **1.000**, precision@k **0.267**, MRR@k **0.956**, NDCG@k **0.955** |
+
+<Note>
+End-to-end recall depends on ingestion quality, trust filters, and reinforcement behavior. Treat recall tests as scenario-level regression guards rather than universal benchmarks.
+</Note>

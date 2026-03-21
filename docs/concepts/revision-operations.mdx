@@ -1,0 +1,257 @@
+---
+title: "Revision Operations"
+description: "The five atomic revision operations for updating durable memory records with full provenance tracking."
+---
+
+Membrane provides five revision operations for modifying semantic, competence, and plan graph records. Each operation is:
+
+- **Atomic** — partial revisions are never externally visible (RFC 15.7).
+- **Auditable** — every change is recorded in the record's `audit_log`.
+- **Provenance-tracked** — new records include source references to the records they replace or derive from.
+
+<Warning>
+Episodic records are **immutable** and cannot be revised. Attempting to revise an episodic record returns `ErrEpisodicImmutable`.
+</Warning>
+
+---
+
+## RevisionStatus
+
+Semantic records track their current state via `RevisionState.Status`:
+
+| Status | Value | Meaning |
+|--------|-------|--------|
+| Active | `active` | Record is currently valid |
+| Contested | `contested` | Conflicting evidence exists; status is uncertain |
+| Retracted | `retracted` | Record has been withdrawn |
+
+---
+
+## AuditAction values
+
+Every change appends an `AuditEntry` to the record's `audit_log`:
+
+| Action | Value | When recorded |
+|--------|-------|---------------|
+| Create | `create` | New record is created |
+| Revise | `revise` | Record is superseded or contested |
+| Fork | `fork` | Record is forked into a conditional variant |
+| Merge | `merge` | Record is merged into a consolidated record |
+| Delete | `delete` | Record is retracted or auto-pruned |
+| Reinforce | `reinforce` | Record's salience is boosted |
+| Decay | `decay` | Record's salience is decayed or penalized |
+
+```go
+type AuditEntry struct {
+    Action    AuditAction // type of action
+    Actor     string      // who or what performed the action
+    Timestamp time.Time
+    Rationale string      // why the action was taken
+}
+```
+
+---
+
+## Supersede
+
+Atomically replaces an old record with a new version. The old record is retracted (salience set to 0, semantic status set to `retracted`). The new record is linked to the old via a `supersedes` relation and provenance source.
+
+```go
+// From README.md
+superseded, _ := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
+```
+
+**What happens internally:**
+
+1. Old record is fetched and checked as revisable.
+2. Old record's salience is set to 0; semantic status set to `retracted`; `SupersededBy` set to the new record's ID.
+3. New record gets a `supersedes` relation pointing to the old record ID.
+4. New record's provenance includes the old record as a source.
+5. Audit entry (`revise`) is added to the old record; audit entry (`create`) is added to the new record.
+6. Both updates are committed in a single transaction.
+
+```go
+// From pkg/revision/supersede.go
+func (s *Service) Supersede(
+    ctx context.Context,
+    oldID string,
+    newRecord *schema.MemoryRecord,
+    actor, rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+<Note>
+The new record must include at least one evidence reference or provenance source if it is a semantic record.
+</Note>
+
+---
+
+## Fork
+
+Creates a new record derived from an existing source record. Unlike Supersede, both the source and the forked record remain active. Fork is used for conditional variants — facts that are true under specific conditions (`ValidityModeConditional`).
+
+```go
+// From README.md
+forked, _ := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev environment")
+```
+
+**What happens internally:**
+
+1. Source record is fetched and checked as revisable.
+2. Forked record gets a `derived_from` relation pointing to the source.
+3. Audit entry (`fork`) is added to the source record; audit entry (`create`) is added to the forked record.
+4. Both records remain active with their original salience.
+
+```go
+// From pkg/revision/fork.go
+func (s *Service) Fork(
+    ctx context.Context,
+    sourceID string,
+    forkedRecord *schema.MemoryRecord,
+    actor, rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+A typical fork sets `ValidityModeConditional` on the new record:
+
+```go
+forkedRec := &schema.MemoryRecord{
+    Type:        schema.MemoryTypeSemantic,
+    Sensitivity: schema.SensitivityLow,
+    Payload: &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "build",
+        Predicate: "uses_flags",
+        Object:    "-race -cover",
+        Validity: schema.Validity{
+            Mode:       schema.ValidityModeConditional,
+            Conditions: map[string]any{"environment": "dev"},
+        },
+    },
+}
+```
+
+---
+
+## Contest
+
+Marks a record as contested, indicating that conflicting evidence exists. The record remains visible but its semantic status is set to `contested`. A `contested_by` relation is added pointing to the conflicting record or evidence reference.
+
+```go
+// From README.md
+m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts this")
+```
+
+**What happens internally:**
+
+1. Target record is fetched and checked as revisable.
+2. Semantic revision status is set to `contested`.
+3. A `contested_by` relation is added from the target to `contestingRef`.
+4. Audit entry (`revise`) is added to the target record.
+
+```go
+// From pkg/revision/contest.go
+func (s *Service) Contest(
+    ctx context.Context,
+    id string,
+    contestingRef string,
+    actor, rationale string,
+) error
+```
+
+<Info>
+Contested records are still returned by retrieval queries. Callers can inspect `Revision.Status` to determine whether a record is actively contested before acting on it.
+</Info>
+
+---
+
+## Retract
+
+Marks a record as no longer valid without deleting it. Salience is set to 0 and the semantic revision status is set to `retracted`. The record is preserved for auditability.
+
+```go
+// From README.md
+m.Retract(ctx, recordID, "agent", "no longer accurate")
+```
+
+**What happens internally:**
+
+1. Target record is fetched and checked as revisable.
+2. Salience is set to 0; semantic status set to `retracted`.
+3. Audit entry (`delete`) is added to the target record.
+
+```go
+// From pkg/revision/retract.go
+func (s *Service) Retract(
+    ctx context.Context,
+    id, actor, rationale string,
+) error
+```
+
+<Note>
+Retracted records are not deleted. They remain in the store with salience 0 and `status: retracted`. Their audit trail is preserved. Salience-filtered retrieval (`MinSalience > 0`) will exclude them from results.
+</Note>
+
+---
+
+## Merge
+
+Combines multiple source records into a single consolidated record. All source records are retracted, and the merged record receives `derived_from` relations to each source.
+
+```go
+// From README.md
+merged, _ := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolidating duplicates")
+```
+
+**What happens internally:**
+
+1. All source records are fetched and checked as revisable.
+2. Each source record's salience is set to 0; semantic status set to `retracted`.
+3. Merged record gets `derived_from` relations to each source.
+4. Audit entry (`merge`) is added to each source; audit entry (`create`) is added to the merged record.
+5. All changes are committed in a single transaction.
+
+```go
+// From pkg/revision/merge.go
+func (s *Service) Merge(
+    ctx context.Context,
+    recordIDs []string,
+    mergedRecord *schema.MemoryRecord,
+    actor, rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+---
+
+## Provenance tracking
+
+Every revision operation updates the `Provenance` field of the new or modified record to link back to its source:
+
+```go
+type Provenance struct {
+    Sources   []ProvenanceSource // source events or artifacts that justify this record
+    CreatedBy string             // classifier, policy, or consolidator version
+}
+
+type ProvenanceSource struct {
+    Kind      ProvenanceKind // event | artifact | tool_call | observation | outcome
+    Ref       string         // opaque reference into the host system
+    Hash      string         // optional content hash for immutability verification
+    CreatedBy string         // actor or system that created this source
+    Timestamp time.Time
+}
+```
+
+Supersede and merge operations automatically append the old record's ID as a `ProvenanceSource` with `Kind: event`. This creates a complete chain from any current record back to its origins.
+
+---
+
+## Operation summary
+
+| Operation | Source fate | Target status | Relation created |
+|-----------|------------|---------------|------------------|
+| Supersede | Retracted | `active` | `supersedes` (new → old) |
+| Fork | Stays active | `active` | `derived_from` (fork → source) |
+| Contest | Status → `contested` | — | `contested_by` (target → evidence) |
+| Retract | Retracted | — | none |
+| Merge | All retracted | `active` | `derived_from` (merged → each source) |

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Membrane",
+  "theme": "palm",
+  "colors": {
+    "primary": "#6366F1",
+    "light": "#EEF2FF",
+    "dark": "#312E81"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/gustycube/membrane"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/gustycube/membrane"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/memory-types",
+              "concepts/trust-and-sensitivity",
+              "concepts/decay-and-consolidation",
+              "concepts/revision-operations",
+              "concepts/competence-learning",
+              "concepts/plan-graphs"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/go-library",
+              "guides/llm-integration",
+              "guides/deployment",
+              "guides/configuration",
+              "guides/security",
+              "guides/observability"
+            ]
+          },
+          {
+            "group": "Client SDKs",
+            "pages": [
+              "sdks/typescript",
+              "sdks/python",
+              "sdks/openclaw-plugin"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "gRPC API",
+            "pages": [
+              "api/overview",
+              "api/ingestion",
+              "api/retrieval",
+              "api/revision",
+              "api/metrics"
+            ]
+          },
+          {
+            "group": "Go Library",
+            "pages": [
+              "api/go/membrane",
+              "api/go/schema",
+              "api/go/ingestion",
+              "api/go/retrieval",
+              "api/go/revision"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

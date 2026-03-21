@@ -1,0 +1,288 @@
+---
+title: "retrieval"
+description: "Layered memory retrieval service with trust-context gating and multi-solution selection."
+---
+
+Import path: `github.com/GustyCube/membrane/pkg/retrieval`
+
+The `retrieval` package implements layered memory retrieval per RFC 15.8. Records are queried in canonical layer order (`working → semantic → competence → plan_graph → episodic`), filtered by trust context and salience. With Postgres + pgvector configured (recommended), results are ranked using hybrid vector+salience scoring. Competence and plan-graph candidates go through an additional multi-solution selector. Without embeddings, results fall back to salience-only ranking.
+
+<Note>
+  All retrieval operations require a non-nil `TrustContext`. Passing `nil` returns `ErrNilTrust`.
+</Note>
+
+## Service
+
+```go
+type Service struct { ... }
+
+func NewService(store storage.Store, selector *Selector) *Service
+func NewServiceWithEmbedding(store storage.Store, selector *Selector, embedding EmbeddingService) *Service
+func NewServiceWithVectorRanker(store storage.Store, selector *Selector, embedding EmbeddingService, ranker VectorRanker) *Service
+```
+
+`Membrane.New` wires the correct constructor automatically based on the `Config`. With Postgres + pgvector + an embedding endpoint configured, it uses `NewServiceWithVectorRanker` for hybrid vector+salience ranking across all record types.
+
+### EmbeddingService interface
+
+```go
+type EmbeddingService interface {
+    EmbedQuery(ctx context.Context, taskDescriptor string) ([]float32, error)
+}
+```
+
+### VectorRanker interface
+
+```go
+type VectorRanker interface {
+    SearchByEmbedding(ctx context.Context, query []float32, limit int) ([]string, error)
+}
+```
+
+When a `VectorRanker` is configured, `Retrieve` ranks all record types using a hybrid score: 70% vector similarity, 30% salience. This replaces the salience-only fallback for semantic, episodic, and working records.
+
+---
+
+## Retrieve
+
+```go
+func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error)
+```
+
+Performs layered retrieval. Queries each memory type in canonical order, applies trust and salience filters, runs `competence` and `plan_graph` candidates through the `Selector`, then sorts and limits the result set.
+
+### RetrieveRequest
+
+<ParamField path="TaskDescriptor" type="string">
+  Natural-language description of the current task. When an embedding service is configured, this is encoded into a query vector used for hybrid ranking and applicability scoring.
+</ParamField>
+
+<ParamField path="QueryEmbedding" type="[]float32">
+  Optional pre-computed embedding for the query. When set, Retrieve uses this instead of calling `EmbedQuery`, avoiding an extra API round-trip. Useful for batching or avoiding rate limits.
+</ParamField>
+
+<ParamField path="Trust" type="*TrustContext" required>
+  Trust context that gates which records can be returned. Must not be `nil`.
+</ParamField>
+
+<ParamField path="MemoryTypes" type="[]schema.MemoryType">
+  Restricts retrieval to the specified memory types. When empty, all types are queried in canonical layer order.
+</ParamField>
+
+<ParamField path="MinSalience" type="float64">
+  Records with `Salience` below this threshold are excluded. `0` disables the filter.
+</ParamField>
+
+<ParamField path="Limit" type="int">
+  Maximum number of records to return. `0` means no limit.
+</ParamField>
+
+### RetrieveResponse
+
+<ResponseField name="Records" type="[]*schema.MemoryRecord">
+  Filtered, sorted, and limited result set.
+</ResponseField>
+
+<ResponseField name="Selection" type="*SelectionResult">
+  Non-nil when `competence` or `plan_graph` candidates were evaluated through the multi-solution selector. `nil` if no such candidates were found.
+</ResponseField>
+
+<CodeGroup>
+
+```go basic retrieve
+trust := retrieval.NewTrustContext(
+    schema.SensitivityMedium,
+    true,
+    "user:alice",
+    []string{"project:myapp"},
+)
+
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "deploy the application to production",
+    Trust:          trust,
+    MinSalience:    0.3,
+    Limit:          20,
+})
+if err != nil {
+    log.Fatal(err)
+}
+for _, rec := range resp.Records {
+    fmt.Println(rec.ID, rec.Type, rec.Salience)
+}
+```
+
+```go restrict by type
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    Trust: trust,
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeSemantic,
+        schema.MemoryTypeCompetence,
+    },
+    Limit: 10,
+})
+```
+
+</CodeGroup>
+
+---
+
+## RetrieveByID
+
+```go
+func (svc *Service) RetrieveByID(ctx context.Context, id string, trust *TrustContext) (*schema.MemoryRecord, error)
+```
+
+Fetches a single record by ID and checks it against the trust context. Returns `storage.ErrNotFound` if the record does not exist, or `ErrAccessDenied` if the trust context denies access.
+
+<ParamField path="id" type="string" required>
+  Unique ID of the record to fetch.
+</ParamField>
+
+<ParamField path="trust" type="*TrustContext" required>
+  Trust context for access control.
+</ParamField>
+
+<CodeGroup>
+
+```go example
+rec, err := m.RetrieveByID(ctx, "550e8400-e29b-41d4-a716-446655440000", trust)
+if errors.Is(err, storage.ErrNotFound) {
+    // record does not exist
+} else if errors.Is(err, retrieval.ErrAccessDenied) {
+    // insufficient trust
+}
+```
+
+</CodeGroup>
+
+---
+
+## TrustContext
+
+```go
+type TrustContext struct {
+    MaxSensitivity schema.Sensitivity
+    Authenticated  bool
+    ActorID        string
+    Scopes         []string
+}
+
+func NewTrustContext(maxSensitivity schema.Sensitivity, authenticated bool, actorID string, scopes []string) *TrustContext
+```
+
+Gates retrieval based on the requester's trust attributes. A record is accessible when:
+- Its `Sensitivity` level does not exceed `MaxSensitivity`.
+- Its `Scope` matches one of the listed `Scopes` (or the record has no scope, or `Scopes` is empty).
+
+<ParamField path="MaxSensitivity" type="schema.Sensitivity" required>
+  Maximum sensitivity level the requester is allowed to access.
+</ParamField>
+
+<ParamField path="Authenticated" type="bool">
+  Whether the requester has been authenticated.
+</ParamField>
+
+<ParamField path="ActorID" type="string">
+  Identifies who is making the retrieval request.
+</ParamField>
+
+<ParamField path="Scopes" type="[]string">
+  Scopes the requester is allowed to access. An empty slice grants access to all scopes.
+</ParamField>
+
+### Methods
+
+```go
+func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool
+func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool
+```
+
+`AllowsRedacted` returns `true` when the record's sensitivity is exactly one level above `MaxSensitivity`, enabling a redacted metadata view per RFC Section 13.
+
+---
+
+## Selector
+
+```go
+type Selector struct { ... }
+
+func NewSelector(confidenceThreshold float64) *Selector
+func NewSelectorWithEmbedding(confidenceThreshold float64, embedding EmbeddingProvider) *Selector
+```
+
+Ranks `competence` and `plan_graph` candidates using three equally-weighted signals:
+
+1. **Applicability** — the record's `Confidence` field (or embedding similarity when an `EmbeddingProvider` is configured).
+2. **Observed success rate** — derived from `PerformanceStats` (competence) or `PlanMetrics.FailureRate` (plan graph). Defaults to `0.5` when no data is available.
+3. **Recency** — exponential decay with a 30-day half-life from `Lifecycle.LastReinforcedAt`.
+
+```go
+func (s *Selector) Select(ctx context.Context, candidates []*schema.MemoryRecord, queryEmbedding []float32) *SelectionResult
+```
+
+### EmbeddingProvider interface
+
+```go
+type EmbeddingProvider interface {
+    Similarity(ctx context.Context, recordID string, query []float32) (float64, bool)
+}
+```
+
+### SelectionResult
+
+<ResponseField name="Selected" type="[]*schema.MemoryRecord">
+  Candidates ranked in descending composite score order.
+</ResponseField>
+
+<ResponseField name="Confidence" type="float64">
+  Selection confidence in `[0, 1]`. Computed as the normalised score gap between the best and second-best candidate.
+</ResponseField>
+
+<ResponseField name="NeedsMore" type="bool">
+  `true` when `Confidence` falls below the selector's threshold, indicating disambiguation is needed.
+</ResponseField>
+
+<ResponseField name="Scores" type="map[string]float64">
+  Composite score for each candidate record ID.
+</ResponseField>
+
+---
+
+## RetrieveByType
+
+```go
+func (svc *Service) RetrieveByType(ctx context.Context, memType schema.MemoryType, trust *TrustContext) ([]*schema.MemoryRecord, error)
+```
+
+Fetches all records of the given memory type that pass the trust context check, sorted by salience descending.
+
+<ParamField path="memType" type="schema.MemoryType" required>
+  The memory type to query: `episodic`, `working`, `semantic`, `competence`, or `plan_graph`.
+</ParamField>
+
+<ParamField path="trust" type="*TrustContext" required>
+  Trust context for access control. Must not be `nil`.
+</ParamField>
+
+```go
+records, err := svc.RetrieveByType(ctx, schema.MemoryTypeCompetence, trust)
+if err != nil {
+    log.Fatal(err)
+}
+for _, rec := range records {
+    fmt.Println(rec.ID, rec.Confidence)
+}
+```
+
+<Note>
+  `RetrieveByType` is a lower-level convenience method on `Service`. The top-level `Membrane` facade does not expose it directly — use `Retrieve` with `MemoryTypes` set for equivalent behaviour through the public API.
+</Note>
+
+---
+
+## Errors
+
+| Symbol | Description |
+|---|---|
+| `ErrAccessDenied` | Returned by `RetrieveByID` when the trust context denies access to the record. |
+| `ErrNilTrust` | Returned by any operation when a `nil` `TrustContext` is provided. |

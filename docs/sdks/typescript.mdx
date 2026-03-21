@@ -1,0 +1,747 @@
+---
+title: "TypeScript SDK"
+description: "TypeScript/Node client for the Membrane memory substrate. Communicates with the Membrane daemon over gRPC."
+---
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @gustycube/membrane
+```
+
+```bash yarn
+yarn add @gustycube/membrane
+```
+
+```bash pnpm
+pnpm add @gustycube/membrane
+```
+
+</CodeGroup>
+
+<Info>
+Requires Node.js 20+ and a running Membrane daemon (default: `localhost:9090`).
+</Info>
+
+## Quick start
+
+```typescript
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", {
+  apiKey: "your-api-key"
+});
+
+const record = await client.ingestEvent("file_edit", "src/main.ts", {
+  summary: "Refactored auth middleware",
+  sensitivity: Sensitivity.LOW,
+  tags: ["auth", "typescript"]
+});
+
+const records = await client.retrieve("debug auth", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent-1",
+    scopes: []
+  },
+  limit: 10
+});
+
+console.log(record.id, records.length);
+client.close();
+```
+
+## Exports
+
+The package exports the following from the top-level `@gustycube/membrane` entry point:
+
+| Export | Kind | Description |
+|--------|------|-------------|
+| `MembraneClient` | class | Main client class |
+| `MembraneError` | class | Error thrown by failed RPCs |
+| `Sensitivity` | const enum | Sensitivity level values |
+| `MemoryType` | const enum | Memory type values |
+| `OutcomeStatus` | const enum | Outcome status values |
+| `DecayCurve` | const enum | Decay curve values |
+| `DeletionPolicy` | const enum | Deletion policy values |
+| `RevisionStatus` | const enum | Revision status values |
+| `ValidityMode` | const enum | Validity mode values |
+| `TaskState` | const enum | Task state values |
+| `AuditAction` | const enum | Audit action values |
+| `ProvenanceKind` | const enum | Provenance kind values |
+| `EdgeKind` | const enum | Plan graph edge kind values |
+| `createDefaultTrustContext` | function | Creates a default `TrustContext` |
+| `TrustContext` | type | Trust context interface |
+| `MemoryRecord` | type | Memory record interface |
+| `RetrieveResult` | type | Result from `retrieveWithSelection` |
+| `SelectionResult` | type | Selector metadata |
+| `MembraneClientOptions` | type | Constructor options |
+| `IngestEventOptions` | type | Options for `ingestEvent` |
+| `IngestToolOutputOptions` | type | Options for `ingestToolOutput` |
+| `IngestObservationOptions` | type | Options for `ingestObservation` |
+| `IngestOutcomeOptions` | type | Options for `ingestOutcome` |
+| `IngestWorkingStateOptions` | type | Options for `ingestWorkingState` |
+| `RetrieveOptions` | type | Options for `retrieve` / `retrieveWithSelection` |
+
+## `MembraneClient`
+
+### Constructor
+
+```typescript
+new MembraneClient(addr?: string, options?: MembraneClientOptions)
+```
+
+<ParamField path="addr" type="string">
+  gRPC server address in `host:port` format. Defaults to `"localhost:9090"`.
+</ParamField>
+
+<ParamField path="options" type="MembraneClientOptions">
+  Optional configuration object.
+</ParamField>
+
+#### `MembraneClientOptions`
+
+<ParamField path="tls" type="boolean">
+  Enable TLS transport. Defaults to `false`.
+</ParamField>
+
+<ParamField path="tlsCaCertPath" type="string">
+  Path to a PEM-encoded CA certificate for server verification. Implies TLS.
+</ParamField>
+
+<ParamField path="apiKey" type="string">
+  Bearer token sent as `authorization` metadata on every RPC.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Default RPC timeout in milliseconds. No timeout if omitted.
+</ParamField>
+
+#### TLS and authentication example
+
+```typescript
+const client = new MembraneClient("membrane.example.com:443", {
+  tls: true,
+  tlsCaCertPath: "/path/to/ca.pem",
+  apiKey: "your-api-key",
+  timeoutMs: 10_000
+});
+```
+
+---
+
+## Ingestion methods
+
+### `ingestEvent`
+
+Create an episodic record from an event.
+
+```typescript
+async ingestEvent(
+  eventKind: string,
+  ref: string,
+  options?: IngestEventOptions
+): Promise<MemoryRecord>
+```
+
+<ParamField path="eventKind" type="string" required>
+  Kind of event, e.g. `"file_edit"`, `"tool_call"`, `"error"`.
+</ParamField>
+
+<ParamField path="ref" type="string" required>
+  Reference identifier for the event source.
+</ParamField>
+
+<ParamField path="options.summary" type="string">
+  Human-readable summary of the event.
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string">
+  Sensitivity classification. Defaults to `"low"`.
+</ParamField>
+
+<ParamField path="options.source" type="string">
+  Provenance source identifier. Defaults to `"typescript-client"`.
+</ParamField>
+
+<ParamField path="options.tags" type="string[]">
+  Tags for categorization and retrieval filtering.
+</ParamField>
+
+<ParamField path="options.scope" type="string">
+  Visibility scope for the record.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp. Defaults to now.
+</ParamField>
+
+```typescript
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"]
+});
+```
+
+### `ingestToolOutput`
+
+Create an episodic record from a tool invocation.
+
+```typescript
+async ingestToolOutput(
+  toolName: string,
+  options?: IngestToolOutputOptions
+): Promise<MemoryRecord>
+```
+
+<ParamField path="toolName" type="string" required>
+  Name of the tool that produced output.
+</ParamField>
+
+<ParamField path="options.args" type="Record<string, unknown>">
+  Arguments passed to the tool, JSON-serializable.
+</ParamField>
+
+<ParamField path="options.result" type="unknown">
+  Result returned by the tool, JSON-serializable.
+</ParamField>
+
+<ParamField path="options.dependsOn" type="string[]">
+  IDs of records this output depends on.
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string">
+  Sensitivity classification. Defaults to `"low"`.
+</ParamField>
+
+```typescript
+const record = await client.ingestToolOutput("run_tests", {
+  args: { suite: "auth" },
+  result: { passed: 42, failed: 0 },
+  tags: ["tests", "auth"]
+});
+```
+
+### `ingestObservation`
+
+Create a semantic record from a subject-predicate-object triple.
+
+```typescript
+async ingestObservation(
+  subject: string,
+  predicate: string,
+  obj: unknown,
+  options?: IngestObservationOptions
+): Promise<MemoryRecord>
+```
+
+<ParamField path="subject" type="string" required>
+  The subject of the observation.
+</ParamField>
+
+<ParamField path="predicate" type="string" required>
+  The predicate relating subject to object.
+</ParamField>
+
+<ParamField path="obj" type="unknown" required>
+  The object value (any JSON-serializable value).
+</ParamField>
+
+```typescript
+const record = await client.ingestObservation(
+  "user",
+  "prefers",
+  { language: "TypeScript" },
+  { sensitivity: Sensitivity.LOW, tags: ["preferences"] }
+);
+```
+
+### `ingestOutcome`
+
+Attach an outcome to an existing episodic record.
+
+```typescript
+async ingestOutcome(
+  targetRecordId: string,
+  outcomeStatus: OutcomeStatus | string,
+  options?: IngestOutcomeOptions
+): Promise<MemoryRecord>
+```
+
+<ParamField path="targetRecordId" type="string" required>
+  ID of the record to attach the outcome to.
+</ParamField>
+
+<ParamField path="outcomeStatus" type="OutcomeStatus | string" required>
+  One of `"success"`, `"failure"`, or `"partial"`.
+</ParamField>
+
+```typescript
+import { OutcomeStatus } from "@gustycube/membrane";
+
+await client.ingestOutcome(record.id, OutcomeStatus.SUCCESS);
+```
+
+### `ingestWorkingState`
+
+Create a working memory snapshot for a task thread.
+
+```typescript
+async ingestWorkingState(
+  threadId: string,
+  state: string,
+  options?: IngestWorkingStateOptions
+): Promise<MemoryRecord>
+```
+
+<ParamField path="threadId" type="string" required>
+  Identifier for the task thread.
+</ParamField>
+
+<ParamField path="state" type="string" required>
+  Current task state: `"planning"`, `"executing"`, `"blocked"`, `"waiting"`, or `"done"`.
+</ParamField>
+
+<ParamField path="options.nextActions" type="string[]">
+  Planned next steps.
+</ParamField>
+
+<ParamField path="options.openQuestions" type="string[]">
+  Unresolved questions.
+</ParamField>
+
+<ParamField path="options.contextSummary" type="string">
+  Human-readable summary of current context.
+</ParamField>
+
+<ParamField path="options.activeConstraints" type="Record<string, unknown>[]">
+  Active constraints as JSON-serializable objects.
+</ParamField>
+
+```typescript
+import { TaskState } from "@gustycube/membrane";
+
+await client.ingestWorkingState("session-001", TaskState.EXECUTING, {
+  nextActions: ["run tests", "deploy"],
+  contextSummary: "Backend initialized, frontend pending"
+});
+```
+
+---
+
+## Retrieval methods
+
+### `retrieve`
+
+Retrieve memory records relevant to a task descriptor.
+
+```typescript
+async retrieve(
+  taskDescriptor: string,
+  options?: RetrieveOptions
+): Promise<MemoryRecord[]>
+```
+
+<ParamField path="taskDescriptor" type="string" required>
+  Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="options.trust" type="TrustContext">
+  Trust context controlling record access. Defaults to a minimal context with `Sensitivity.LOW`.
+</ParamField>
+
+<ParamField path="options.memoryTypes" type="Array<MemoryType | string>">
+  Filter by memory types: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`.
+</ParamField>
+
+<ParamField path="options.minSalience" type="number">
+  Minimum salience threshold. Defaults to `0`.
+</ParamField>
+
+<ParamField path="options.limit" type="number">
+  Maximum records to return. Defaults to `10`.
+</ParamField>
+
+```typescript
+const records = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: []
+  },
+  memoryTypes: ["semantic", "competence"],
+  limit: 5
+});
+```
+
+### `retrieveWithSelection`
+
+Retrieve records plus selector metadata (ranked candidates, confidence).
+
+```typescript
+async retrieveWithSelection(
+  taskDescriptor: string,
+  options?: RetrieveOptions
+): Promise<RetrieveResult>
+```
+
+Returns a `RetrieveResult` with `records` and an optional `selection` field:
+
+```typescript
+interface RetrieveResult {
+  records: MemoryRecord[];
+  selection?: SelectionResult;
+}
+
+interface SelectionResult {
+  selected: MemoryRecord[];
+  confidence: number;
+  needs_more: boolean;
+}
+```
+
+```typescript
+const result = await client.retrieveWithSelection("fix build error", {
+  trust: { max_sensitivity: Sensitivity.HIGH, authenticated: true, actor_id: "ci", scopes: [] },
+  memoryTypes: ["competence", "episodic"]
+});
+console.log(result.records.length, result.selection?.confidence);
+```
+
+### `retrieveById`
+
+Fetch a single record by its ID.
+
+```typescript
+async retrieveById(
+  recordId: string,
+  options?: { trust?: TrustContext }
+): Promise<MemoryRecord>
+```
+
+```typescript
+const record = await client.retrieveById("rec-uuid-here", {
+  trust: { max_sensitivity: Sensitivity.MEDIUM, authenticated: true, actor_id: "agent", scopes: [] }
+});
+```
+
+---
+
+## Revision methods
+
+### `supersede`
+
+Replace a record with a new version, creating an audit trail.
+
+```typescript
+async supersede(
+  oldId: string,
+  newRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+```typescript
+const updated = await client.supersede(
+  oldRecord.id,
+  { ...oldRecord, payload: { ...oldRecord.payload, version: "2.0" } },
+  "agent-1",
+  "Updated version field"
+);
+```
+
+### `fork`
+
+Create a conditional variant of a record.
+
+```typescript
+async fork(
+  sourceId: string,
+  forkedRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+```typescript
+const variant = await client.fork(
+  sourceRecord.id,
+  { ...sourceRecord, scope: "dev" },
+  "agent-1",
+  "Different behavior for dev environment"
+);
+```
+
+### `retract`
+
+Soft-delete a record. The record remains in the store but is marked as retracted.
+
+```typescript
+async retract(
+  recordId: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+```typescript
+await client.retract(record.id, "agent-1", "No longer accurate");
+```
+
+### `merge`
+
+Combine multiple records into a single consolidated record.
+
+```typescript
+async merge(
+  recordIds: string[],
+  mergedRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+```typescript
+const merged = await client.merge(
+  [id1, id2, id3],
+  { type: "semantic", payload: { fact: "combined knowledge" } },
+  "agent-1",
+  "Consolidating duplicate semantic records"
+);
+```
+
+### `contest`
+
+Mark a record as contested due to conflicting evidence.
+
+```typescript
+async contest(
+  recordId: string,
+  contestingRef: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+```typescript
+await client.contest(
+  record.id,
+  conflictingRecord.id,
+  "agent-1",
+  "New evidence contradicts this"
+);
+```
+
+---
+
+## Reinforcement methods
+
+### `reinforce`
+
+Boost a record's salience score.
+
+```typescript
+async reinforce(
+  recordId: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+```typescript
+await client.reinforce(record.id, "agent-1", "Used successfully in task");
+```
+
+### `penalize`
+
+Reduce a record's salience score.
+
+```typescript
+async penalize(
+  recordId: string,
+  amount: number,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+```typescript
+await client.penalize(record.id, 0.2, "agent-1", "Led to incorrect result");
+```
+
+---
+
+## `getMetrics`
+
+Retrieve a point-in-time metrics snapshot from the daemon.
+
+```typescript
+async getMetrics(): Promise<JsonObject>
+```
+
+```typescript
+const metrics = await client.getMetrics();
+console.log(metrics.total_records, metrics.avg_salience);
+```
+
+---
+
+## `close`
+
+Close the underlying gRPC channel. Always call this when done.
+
+```typescript
+client.close(): void
+```
+
+---
+
+## Core types
+
+### `Sensitivity`
+
+Controls access during retrieval. Records above the caller's `max_sensitivity` are returned in redacted form (metadata only).
+
+| Value | String |
+|-------|--------|
+| `Sensitivity.PUBLIC` | `"public"` |
+| `Sensitivity.LOW` | `"low"` |
+| `Sensitivity.MEDIUM` | `"medium"` |
+| `Sensitivity.HIGH` | `"high"` |
+| `Sensitivity.HYPER` | `"hyper"` |
+
+### `TrustContext`
+
+```typescript
+interface TrustContext {
+  max_sensitivity: Sensitivity | string; // highest sensitivity the caller may access
+  authenticated: boolean;               // whether the caller is authenticated
+  actor_id: string;                     // identifier of the calling actor
+  scopes: string[];                     // optional scope constraints
+}
+```
+
+Use `createDefaultTrustContext()` to get a zero-value context (`Sensitivity.LOW`, unauthenticated).
+
+### `MemoryRecord`
+
+```typescript
+interface MemoryRecord {
+  id: string;
+  type: MemoryType | string;           // "episodic" | "working" | "semantic" | "competence" | "plan_graph"
+  sensitivity: Sensitivity | string;
+  confidence: number;                  // 0–1 applicability score
+  salience: number;                    // 0–1 current importance score
+  scope?: string;
+  tags?: string[];
+  created_at?: string;
+  updated_at?: string;
+  lifecycle?: Lifecycle;
+  provenance?: Provenance;
+  relations?: Relation[];
+  payload?: unknown;                   // type-specific structured payload
+  audit_log?: AuditEntry[];
+}
+```
+
+### `MemoryType`
+
+| Value | String |
+|-------|--------|
+| `MemoryType.EPISODIC` | `"episodic"` |
+| `MemoryType.WORKING` | `"working"` |
+| `MemoryType.SEMANTIC` | `"semantic"` |
+| `MemoryType.COMPETENCE` | `"competence"` |
+| `MemoryType.PLAN_GRAPH` | `"plan_graph"` |
+
+---
+
+## Error handling
+
+Failed RPCs throw `MembraneError`. It exposes a stable shape regardless of the underlying gRPC status.
+
+```typescript
+import { MembraneClient, MembraneError } from "@gustycube/membrane";
+
+try {
+  const record = await client.retrieveById("nonexistent-id");
+} catch (err) {
+  if (err instanceof MembraneError) {
+    console.error(err.code);      // numeric gRPC status code
+    console.error(err.codeName); // e.g. "NOT_FOUND", "UNAUTHENTICATED"
+    console.error(err.details);  // gRPC details string
+    console.error(err.metadata); // response metadata as string arrays
+  }
+}
+```
+
+---
+
+## LLM integration pattern
+
+The common runtime pattern is: ingest execution traces, retrieve relevant memory, build a prompt, then reinforce useful records.
+
+```typescript
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // For OpenRouter or other OpenAI-compatible providers:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("how should I handle this incident?", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "incident-agent",
+    scopes: ["prod"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 10,
+});
+
+const memoryContext = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use the memory context as evidence. Cite record ids." },
+    { role: "user", content: `Incident task:\n...\n\nMemory:\n${memoryContext}` },
+  ],
+});
+
+console.log(completion.choices[0]?.message?.content);
+memory.close();
+```
+
+<Tip>
+After using a record successfully, call `reinforce` to boost its salience so it surfaces higher in future retrievals.
+</Tip>
+
+---
+
+## Snake_case aliases
+
+Every camelCase method has a snake_case alias for ergonomics in mixed-language codebases:
+
+| camelCase | snake_case |
+|-----------|------------|
+| `ingestEvent` | `ingest_event` |
+| `ingestToolOutput` | `ingest_tool_output` |
+| `ingestObservation` | `ingest_observation` |
+| `ingestOutcome` | `ingest_outcome` |
+| `ingestWorkingState` | `ingest_working_state` |
+| `retrieveWithSelection` | `retrieve_with_selection` |
+| `retrieveById` | `retrieve_by_id` |
+| `getMetrics` | `get_metrics` |

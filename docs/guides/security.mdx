@@ -1,0 +1,193 @@
+---
+title: "Security"
+description: "Encryption at rest, TLS transport, API key authentication, rate limiting, and the trust-aware retrieval model."
+---
+
+Membrane provides multiple layers of defense: encrypted storage, authenticated transport, request-rate limiting, and a trust-gated retrieval model that restricts data access by sensitivity level and scope.
+
+## Encryption at rest
+
+Membrane's SQLite backend uses **SQLCipher** to encrypt the database file. The encryption key is applied via `PRAGMA key` at database open time.
+
+<Steps>
+  <Step title="Set the encryption key">
+    Set the key via the environment variable (recommended) or in the config file.
+
+    ```bash
+    export MEMBRANE_ENCRYPTION_KEY="your-strong-key-here"
+    ./bin/membraned
+    ```
+
+    Or in `config.yaml`:
+
+    ```yaml
+    encryption_key: "your-strong-key-here"
+    ```
+  </Step>
+  <Step title="Verify the database is encrypted">
+    Without the correct key, the database file is unreadable binary. Any attempt to open it with a missing or wrong key returns an error at startup.
+  </Step>
+</Steps>
+
+<Warning>
+Set the encryption key before the first run. Records written without a key cannot be read back after adding one. The key cannot be changed in-place without re-encrypting the database.
+</Warning>
+
+In Go, pass the key directly in `Config`:
+
+```go
+cfg := membrane.DefaultConfig()
+cfg.EncryptionKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
+```
+
+The Postgres backend does not use SQLCipher. Encryption at rest for Postgres should be handled at the infrastructure level (encrypted volumes, managed database encryption).
+
+---
+
+## TLS transport
+
+The gRPC server supports optional TLS. Provide a certificate and key file to enable it.
+
+```yaml
+tls_cert_file: "/etc/membrane/tls.crt"
+tls_key_file:  "/etc/membrane/tls.key"
+```
+
+When both fields are set, the gRPC server starts with TLS. When either is empty, the server runs without TLS.
+
+<Tip>
+In production, use a certificate issued by a trusted CA or managed through your infrastructure's certificate manager. The `tls_cert_file` and `tls_key_file` paths accept any PEM-encoded certificate and RSA/ECDSA private key.
+</Tip>
+
+---
+
+## API key authentication
+
+Membrane supports bearer-token authentication for gRPC clients via the `authorization` metadata header.
+
+<Steps>
+  <Step title="Set the API key">
+    Set the key via the environment variable (recommended):
+
+    ```bash
+    export MEMBRANE_API_KEY="your-api-key-here"
+    ./bin/membraned
+    ```
+
+    Or in `config.yaml`:
+
+    ```yaml
+    api_key: "your-api-key-here"
+    ```
+  </Step>
+  <Step title="Pass the key from clients">
+    TypeScript client:
+
+    ```typescript
+    const client = new MembraneClient("localhost:9090", {
+      apiKey: process.env.MEMBRANE_API_KEY,
+    });
+    ```
+
+    Python client:
+
+    ```python
+    client = MembraneClient("localhost:9090", api_key=os.environ["MEMBRANE_API_KEY"])
+    ```
+  </Step>
+</Steps>
+
+When `api_key` is empty in both config and environment, authentication is disabled and all gRPC requests are accepted.
+
+---
+
+## Rate limiting
+
+Membrane uses a token bucket rate limiter applied per client. Configure the rate via `rate_limit_per_second`:
+
+```yaml
+rate_limit_per_second: 100
+```
+
+| Value | Behavior |
+|-------|----------|
+| `100` (default) | 100 requests per second per client |
+| `0` | Rate limiting disabled |
+
+Requests that exceed the limit receive a gRPC `ResourceExhausted` error.
+
+---
+
+## Trust-aware retrieval
+
+Trust-gated retrieval is the primary data access control boundary in Membrane. Every retrieval request must supply a `TrustContext` that specifies:
+
+- **`MaxSensitivity`** — the highest sensitivity level the caller may access.
+- **`Authenticated`** — whether the caller is authenticated.
+- **`ActorID`** — who is making the request.
+- **`Scopes`** — the visibility scopes the caller is allowed to access.
+
+### Sensitivity levels
+
+Records are assigned a sensitivity level at ingestion (default: `low`). The sensitivity ladder is:
+
+| Level | Order |
+|-------|-------|
+| `public` | 0 |
+| `low` | 1 |
+| `medium` | 2 |
+| `high` | 3 |
+| `hyper` | 4 |
+
+A record with sensitivity `medium` is accessible only to trust contexts with `MaxSensitivity` of `medium`, `high`, or `hyper`.
+
+### Graduated exposure (redacted access)
+
+Records at exactly one sensitivity level above the caller's `MaxSensitivity` are returned in **redacted form**: metadata only, with the payload stripped. This gives the caller awareness that relevant but restricted records exist, without exposing sensitive content.
+
+Records two or more levels above the threshold are not returned at all.
+
+### Scope filtering
+
+Records can be tagged with a scope at ingestion. When the trust context's `Scopes` list is non-empty, only records whose scope matches one of the allowed scopes (or records with no scope) are returned.
+
+```go
+trust := &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityMedium,
+    Authenticated:  true,
+    ActorID:        "planner-agent",
+    Scopes:         []string{"project-acme"},
+}
+```
+
+---
+
+## Input validation
+
+The ingestion policy engine validates all candidates before writing to the store:
+
+- **Required fields** — `Source`, `EventKind`, `Ref` (for events), `Subject` + `Predicate` (for observations), `ThreadID` + `State` (for working state).
+- **Sensitivity values** — must be one of `public`, `low`, `medium`, `high`, `hyper`.
+- **Payload size limits** — enforced at the gRPC transport layer.
+- **String length checks** — long strings are rejected before reaching the store.
+- **Tag count limits** — excessive tag arrays are rejected.
+- **NaN/Inf rejection** — floating-point fields (salience, confidence) are validated against NaN and Inf.
+
+Invalid candidates return an error and are not written to the store.
+
+---
+
+## Audit trail
+
+Every write operation—ingestion, revision, reinforcement, penalization, and outcome recording—appends a structured entry to the record's `AuditLog`:
+
+```go
+type AuditEntry struct {
+    Action    AuditAction
+    Actor     string
+    Timestamp time.Time
+    Rationale string
+}
+```
+
+Audit entries are immutable once written and are included in the `GetMetrics` snapshot via `TotalAuditEntries`. This provides a full, queryable provenance trail for every record's lifecycle.

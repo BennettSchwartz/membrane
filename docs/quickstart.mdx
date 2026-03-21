@@ -1,0 +1,343 @@
+---
+title: "Quickstart"
+description: "Build and run a working Membrane instance in under five minutes."
+---
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed:
+
+- **Go 1.22+** — required to build the daemon and use the Go library
+- **Make** — used to run build, test, and eval targets
+- **protoc >= 3.20** — only needed if you plan to modify or regenerate the gRPC stubs
+- **Node.js 20+** — only needed for the TypeScript client SDK
+- **Python 3.10+** — only needed for the Python client SDK
+
+## Run the daemon
+
+<Tabs>
+  <Tab title="Go library (embedded)">
+    Membrane can be used as an embedded library in your Go application without running a separate daemon process. This is the simplest way to get started.
+
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/GustyCube/membrane.git
+        cd membrane
+        ```
+      </Step>
+      <Step title="Add the dependency to your module">
+        ```bash
+        go get github.com/GustyCube/membrane
+        ```
+      </Step>
+      <Step title="Write your first agent memory loop">
+        The example below is taken directly from the repository README. It creates a Membrane instance with the default SQLite backend, ingests three memory records, and retrieves them with a trust context.
+
+        ```go main.go
+        package main
+
+        import (
+            "context"
+            "fmt"
+            "log"
+
+            "github.com/GustyCube/membrane/pkg/ingestion"
+            "github.com/GustyCube/membrane/pkg/membrane"
+            "github.com/GustyCube/membrane/pkg/retrieval"
+            "github.com/GustyCube/membrane/pkg/schema"
+        )
+
+        func main() {
+            cfg := membrane.DefaultConfig()
+            cfg.DBPath = "my-agent.db"
+
+            m, err := membrane.New(cfg)
+            if err != nil {
+                log.Fatal(err)
+            }
+            defer m.Stop()
+
+            ctx := context.Background()
+            m.Start(ctx)
+
+            // Ingest an episodic event (tool call observation)
+            rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+                Source:    "build-agent",
+                EventKind: "tool_call",
+                Ref:       "build#42",
+                Summary:   "Executed go build, failed with linker error",
+                Tags:      []string{"build", "error"},
+            })
+            fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+
+            // Ingest a semantic observation
+            m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+                Source:    "build-agent",
+                Subject:   "user",
+                Predicate: "prefers_language",
+                Object:    "go",
+                Tags:      []string{"preferences"},
+            })
+
+            // Ingest working memory state
+            m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+                Source:      "build-agent",
+                ThreadID:    "session-001",
+                State:       schema.TaskStateExecuting,
+                NextActions: []string{"run tests", "deploy"},
+            })
+
+            // Retrieve with trust context
+            resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+                TaskDescriptor: "fix build error",
+                Trust: &retrieval.TrustContext{
+                    MaxSensitivity: schema.SensitivityMedium,
+                    Authenticated:  true,
+                },
+                MemoryTypes: []schema.MemoryType{
+                    schema.MemoryTypeCompetence,
+                    schema.MemoryTypeSemantic,
+                },
+            })
+
+            for _, r := range resp.Records {
+                fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+            }
+        }
+        ```
+      </Step>
+      <Step title="Run it">
+        ```bash
+        go run main.go
+        ```
+
+        Membrane creates `my-agent.db` on first run. Background decay and consolidation schedulers start automatically and stop when `m.Stop()` is called.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Daemon (gRPC server)">
+    Run `membraned` as a standalone gRPC server that TypeScript, Python, or any gRPC client can connect to.
+
+    <Steps>
+      <Step title="Clone and build">
+        ```bash
+        git clone https://github.com/GustyCube/membrane.git
+        cd membrane
+        make build
+        ```
+
+        The binary is written to `bin/membraned`.
+      </Step>
+      <Step title="Run tests (optional but recommended)">
+        ```bash
+        make test
+        ```
+      </Step>
+      <Step title="Start the daemon">
+        <Tabs>
+          <Tab title="SQLite (default)">
+            ```bash
+            ./bin/membraned
+            ```
+
+            Starts with `membrane.db` in the current directory, listening on `:9090`.
+          </Tab>
+          <Tab title="Postgres + pgvector">
+            Start the database first using the provided Docker Compose file:
+
+            ```bash
+            docker compose up -d
+            ```
+
+            Then start the daemon pointing at Postgres:
+
+            ```bash
+            ./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+            ```
+          </Tab>
+          <Tab title="Custom config file">
+            ```bash
+            ./bin/membraned --config /path/to/config.yaml
+            ```
+
+            See [Configuration](/guides/configuration) for the full YAML schema.
+          </Tab>
+        </Tabs>
+      </Step>
+      <Step title="Verify the daemon is running">
+        ```bash
+        ./bin/membraned --version
+        ```
+
+        The daemon logs `membraned: listening on :9090` when it starts successfully. Send `SIGINT` or `SIGTERM` to trigger graceful shutdown.
+      </Step>
+    </Steps>
+
+    <Note>
+      The daemon reads the API key from the `MEMBRANE_API_KEY` environment variable if not set in the config file. Leaving it unset disables authentication — suitable for local development only.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Connect a client
+
+Once the daemon is running, connect from TypeScript or Python.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
+
+// Ingest an event
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"]
+});
+
+// Retrieve with trust context
+const results = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: []
+  },
+  memoryTypes: ["semantic", "competence"]
+});
+
+client.close();
+```
+
+```python Python
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+
+# Ingest an event
+record = client.ingest_event(
+    source="my-agent",
+    event_kind="tool_call",
+    ref="task#1",
+    summary="Ran database migration successfully",
+    tags=["db", "migration"],
+)
+
+# Retrieve with trust context
+results = client.retrieve(
+    task_descriptor="database operations",
+    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+    memory_types=["semantic", "competence"],
+)
+```
+
+</CodeGroup>
+
+### Install the SDKs
+
+<CodeGroup>
+
+```bash TypeScript
+npm install @gustycube/membrane
+```
+
+```bash Python
+pip install -e clients/python
+```
+
+</CodeGroup>
+
+## Configuration reference
+
+Override defaults using a YAML config file or CLI flags. Secrets should always come from environment variables.
+
+```yaml config.yaml
+backend: "sqlite"
+db_path: "membrane.db"
+# postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+
+# Optional embedding-backed retrieval (Postgres only)
+# embedding_endpoint: "https://api.openai.com/v1/embeddings"
+# embedding_model: "text-embedding-3-small"
+# embedding_dimensions: 1536
+# embedding_api_key: ""   # or set MEMBRANE_EMBEDDING_API_KEY
+
+# Optional LLM-backed semantic extraction (Postgres only)
+# llm_endpoint: "https://api.openai.com/v1/chat/completions"
+# llm_model: "gpt-5-mini"
+# llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
+
+# Security (prefer environment variables for keys)
+# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""              # or set MEMBRANE_API_KEY
+# tls_cert_file: ""
+# tls_key_file: ""
+rate_limit_per_second: 100
+```
+
+Key environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the database |
+| `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN used when `backend: postgres` |
+| `MEMBRANE_EMBEDDING_API_KEY` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_API_KEY` | API key for the semantic extraction LLM endpoint |
+| `MEMBRANE_API_KEY` | Bearer token for gRPC authentication |
+
+## Run the eval suite
+
+Membrane ships a comprehensive evaluation suite. Run the full suite or individual capability evals:
+
+```bash
+# Full suite (Go tests + vector E2E)
+make eval-all
+
+# Individual capability evals
+make eval-typed          # Memory type handling
+make eval-revision       # Revision semantics
+make eval-decay          # Decay curves and pruning
+make eval-trust          # Trust-gated retrieval
+make eval-competence     # Competence learning
+make eval-plan           # Plan graph operations
+make eval-consolidation  # Episodic consolidation
+make eval-metrics        # Observability metrics
+make eval-grpc           # gRPC endpoint coverage
+```
+
+The vector E2E eval requires Python dependencies:
+
+```bash
+python3 -m pip install -r tools/eval/requirements.txt
+make eval
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the three logical planes and all subsystems.
+  </Card>
+  <Card title="Memory types" icon="layers" href="/concepts/memory-types">
+    Learn the five memory types and their lifecycle rules.
+  </Card>
+  <Card title="Go library guide" icon="code" href="/guides/go-library">
+    Embed Membrane directly in your Go application.
+  </Card>
+  <Card title="LLM integration" icon="brain" href="/guides/llm-integration">
+    Connect Membrane to your LLM orchestration layer.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/guides/configuration">
+    Full YAML and environment variable reference.
+  </Card>
+  <Card title="Security" icon="lock" href="/guides/security">
+    Encryption, TLS, authentication, and rate limiting.
+  </Card>
+</CardGroup>

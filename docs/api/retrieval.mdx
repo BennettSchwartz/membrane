@@ -1,0 +1,237 @@
+---
+title: "Retrieval"
+description: "Trust-gated, layered memory retrieval with salience ranking."
+---
+
+Retrieval methods surface memory records that are relevant to the caller's current task. Every retrieval call requires a `TrustContext` that controls which records are visible based on sensitivity level and scope.
+
+## Trust-aware retrieval
+
+Membrane enforces graduated access control on every read. A record is returned only when both conditions are met:
+
+1. The record's sensitivity level is at or below the trust context's `max_sensitivity`.
+2. If the trust context specifies scopes, the record's scope must match one of them (unscoped records are visible to all callers).
+
+Records that are exactly one sensitivity level above the caller's maximum are returned in **redacted form** — metadata only, with the payload removed. Records two or more levels above are not returned at all.
+
+| Record sensitivity | Caller max | Result |
+|--------------------|------------|--------|
+| `low` | `medium` | Full record |
+| `medium` | `medium` | Full record |
+| `high` | `medium` | Redacted (metadata only) |
+| `hyper` | `medium` | Not returned |
+
+## Retrieval layer order
+
+When no `memory_types` filter is specified, `Retrieve` queries all five types in the following canonical order:
+
+```
+working → semantic → competence → plan_graph → episodic
+```
+
+Results are sorted by salience descending. When competence or plan_graph records are present, the selector runs applicability scoring before the final sort.
+
+---
+
+## Retrieve
+
+Performs layered retrieval across one or more memory types with trust filtering and salience ranking.
+
+### Request fields
+
+<ParamField path="task_descriptor" type="string">
+  Describes the current task. Used as the query for applicability scoring of competence and plan_graph records. When a Postgres + pgvector backend with embeddings is configured, this field drives semantic similarity search.
+</ParamField>
+
+<ParamField path="trust" type="object" required>
+  Trust context that gates which records are visible.
+  <Expandable title="TrustContext fields">
+    <ParamField path="trust.max_sensitivity" type="string" required>
+      Maximum sensitivity the caller may access: `public`, `low`, `medium`, `high`, or `hyper`.
+    </ParamField>
+    <ParamField path="trust.authenticated" type="boolean">
+      Whether the caller has been authenticated.
+    </ParamField>
+    <ParamField path="trust.actor_id" type="string">
+      Identifier of the requesting agent or user.
+    </ParamField>
+    <ParamField path="trust.scopes" type="string[]">
+      Allowed visibility scopes. An empty list means all scopes are accessible.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="memory_types" type="string[]">
+  Restrict retrieval to specific memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph`. When omitted, all types are queried in layer order.
+</ParamField>
+
+<ParamField path="min_salience" type="number">
+  Minimum salience threshold. Records with salience below this value are excluded. Must be non-negative and finite.
+</ParamField>
+
+<ParamField path="limit" type="number">
+  Maximum number of records to return. `0` means no limit. Maximum is 10 000.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="records" type="bytes[]">
+  Array of JSON-encoded `MemoryRecord` objects, sorted by salience descending.
+</ResponseField>
+
+<ResponseField name="selection" type="bytes">
+  JSON-encoded `SelectionResult` when competence or plan_graph candidates were scored by the selector. May be null when no competence or plan_graph records exist in the result set.
+</ResponseField>
+
+### Examples
+
+<CodeGroup>
+
+```go Go
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeSemantic,
+    },
+})
+
+for _, r := range resp.Records {
+    fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+}
+```
+
+```typescript TypeScript
+const results = await client.retrieve("fix build error", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "ts-agent",
+    scopes: [],
+  },
+  memoryTypes: ["semantic", "competence"],
+  limit: 12,
+});
+
+for (const r of results) {
+  console.log(`Found: ${r.id} (type=${r.type}, confidence=${r.confidence})`);
+}
+```
+
+```python Python
+results = client.retrieve(
+    task_descriptor="fix build error",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="py-agent",
+    ),
+    memory_types=["semantic", "competence"],
+    limit=12,
+)
+
+for r in results:
+    print(f"Found: {r.id} (type={r.type}, confidence={r.confidence:.2f})")
+```
+
+</CodeGroup>
+
+### Trust-filtered retrieval example
+
+This pattern retrieves only records that the caller is authorised to see, with scope restriction to a single project:
+
+```go Go — scoped, authenticated retrieval
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "plan a safe migration",
+    Trust: retrieval.NewTrustContext(
+        schema.SensitivityMedium,
+        true,           // authenticated
+        "planner-agent",
+        []string{"project-acme"},
+    ),
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeSemantic,
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeWorking,
+    },
+    Limit: 12,
+})
+```
+
+<Info>
+For LLM integration, map each returned record to a JSON string and include it in the system or user prompt. Records carry their `type`, `confidence`, `salience`, and structured `payload`, giving the model typed context rather than raw text.
+</Info>
+
+---
+
+## RetrieveByID
+
+Fetches a single record by its UUID. The same trust rules apply: the record is returned only if its sensitivity is within the caller's trust context.
+
+### Request fields
+
+<ParamField path="id" type="string" required>
+  UUID of the record to retrieve.
+</ParamField>
+
+<ParamField path="trust" type="object" required>
+  Trust context that gates access.
+  <Expandable title="TrustContext fields">
+    <ParamField path="trust.max_sensitivity" type="string" required>
+      Maximum sensitivity the caller may access: `public`, `low`, `medium`, `high`, or `hyper`.
+    </ParamField>
+    <ParamField path="trust.authenticated" type="boolean">
+      Whether the caller has been authenticated.
+    </ParamField>
+    <ParamField path="trust.actor_id" type="string">
+      Identifier of the requesting agent or user.
+    </ParamField>
+    <ParamField path="trust.scopes" type="string[]">
+      Allowed visibility scopes.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Response fields
+
+<ResponseField name="record" type="bytes">
+  JSON-encoded `MemoryRecord`. Returns `NOT_FOUND` if the ID does not exist, or `PERMISSION_DENIED` if the trust context denies access.
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```go Go
+rec, err := m.RetrieveByID(ctx, recordID, &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityMedium,
+    Authenticated:  true,
+})
+if err != nil {
+    log.Printf("record not found or access denied: %v", err)
+    return
+}
+fmt.Printf("Record type: %s, salience: %.2f\n", rec.Type, rec.Salience)
+```
+
+```typescript TypeScript
+const record = await client.retrieveById(recordId, {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+  },
+});
+```
+
+```python Python
+record = client.retrieve_by_id(
+    id=record_id,
+    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+)
+```
+
+</CodeGroup>

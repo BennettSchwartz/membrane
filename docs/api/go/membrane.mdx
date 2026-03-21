@@ -1,0 +1,274 @@
+---
+title: "membrane"
+description: "Top-level package that wires all subsystems together and exposes the unified API surface."
+---
+
+Import path: `github.com/GustyCube/membrane/pkg/membrane`
+
+The `membrane` package is the entry point for the Go library. It initialises the storage backend, ingestion pipeline, retrieval service, decay scheduler, revision service, consolidation service, and metrics collector from a single `Config` struct.
+
+## Constructors
+
+### New
+
+```go
+func New(cfg *Config) (*Membrane, error)
+```
+
+Initialises all subsystems from the provided `Config` and returns a ready-to-start `Membrane` instance. Returns an error if the configuration is invalid (for example, an unrecognised backend or an invalid default sensitivity).
+
+<ParamField path="cfg" type="*Config" required>
+  Configuration for the Membrane instance. Use `DefaultConfig()` or `LoadConfig()` to obtain a populated struct.
+</ParamField>
+
+<CodeGroup>
+
+```go basic usage
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/GustyCube/membrane/pkg/membrane"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+
+    if err := m.Start(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+</CodeGroup>
+
+### DefaultConfig
+
+```go
+func DefaultConfig() *Config
+```
+
+Returns a `*Config` populated with sensible defaults. All fields can be overridden before passing the struct to `New`.
+
+### LoadConfig
+
+```go
+func LoadConfig(path string) (*Config, error)
+```
+
+Reads a YAML configuration file from `path` and returns a `*Config`. Fields absent from the file retain the values returned by `DefaultConfig`.
+
+<ParamField path="path" type="string" required>
+  Filesystem path to a YAML configuration file.
+</ParamField>
+
+<CodeGroup>
+
+```go load from file
+cfg, err := membrane.LoadConfig("/etc/membrane/config.yaml")
+if err != nil {
+    log.Fatal(err)
+}
+m, err := membrane.New(cfg)
+```
+
+</CodeGroup>
+
+## Lifecycle methods
+
+### Start
+
+```go
+func (m *Membrane) Start(ctx context.Context) error
+```
+
+Begins the background schedulers for decay and consolidation. If an embedding service is configured, it also starts a goroutine to backfill missing embeddings. Call `Start` once after `New` and before making any API calls.
+
+<ParamField path="ctx" type="context.Context" required>
+  Context used to control the lifetime of background schedulers.
+</ParamField>
+
+### Stop
+
+```go
+func (m *Membrane) Stop() error
+```
+
+Gracefully shuts down both schedulers and closes the underlying storage. Returns any error from the store's `Close` call.
+
+## Ingestion methods
+
+All ingestion methods delegate to `pkg/ingestion.Service`. See the [ingestion reference](/api/go/ingestion) for request struct details.
+
+```go
+func (m *Membrane) IngestEvent(ctx context.Context, req ingestion.IngestEventRequest) (*schema.MemoryRecord, error)
+func (m *Membrane) IngestToolOutput(ctx context.Context, req ingestion.IngestToolOutputRequest) (*schema.MemoryRecord, error)
+func (m *Membrane) IngestObservation(ctx context.Context, req ingestion.IngestObservationRequest) (*schema.MemoryRecord, error)
+func (m *Membrane) IngestOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error)
+func (m *Membrane) IngestWorkingState(ctx context.Context, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error)
+```
+
+## Retrieval methods
+
+All retrieval methods delegate to `pkg/retrieval.Service`. See the [retrieval reference](/api/go/retrieval) for request and response struct details.
+
+```go
+func (m *Membrane) Retrieve(ctx context.Context, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error)
+func (m *Membrane) RetrieveByID(ctx context.Context, id string, trust *retrieval.TrustContext) (*schema.MemoryRecord, error)
+```
+
+## Revision methods
+
+All revision methods delegate to `pkg/revision.Service`. See the [revision reference](/api/go/revision) for detailed behaviour.
+
+```go
+func (m *Membrane) Supersede(ctx context.Context, oldID string, newRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+func (m *Membrane) Fork(ctx context.Context, sourceID string, forkedRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+func (m *Membrane) Retract(ctx context.Context, id, actor, rationale string) error
+func (m *Membrane) Merge(ctx context.Context, ids []string, mergedRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+func (m *Membrane) Contest(ctx context.Context, id, contestingRef, actor, rationale string) error
+```
+
+## Decay methods
+
+```go
+func (m *Membrane) Reinforce(ctx context.Context, id, actor, rationale string) error
+func (m *Membrane) Penalize(ctx context.Context, id string, amount float64, actor, rationale string) error
+```
+
+## Metrics
+
+```go
+func (m *Membrane) GetMetrics(ctx context.Context) (*metrics.Snapshot, error)
+```
+
+Collects a point-in-time snapshot of substrate metrics. See `pkg/metrics.Snapshot` for field details.
+
+---
+
+## Config
+
+```go
+type Config struct { ... }
+```
+
+All configurable parameters for a `Membrane` instance. Use the `yaml` struct tags to load values from a YAML file via `LoadConfig`.
+
+### Storage
+
+<ParamField path="Backend" type="string" default="sqlite">
+  Storage backend. Accepted values: `sqlite`, `postgres`.
+</ParamField>
+
+<ParamField path="DBPath" type="string" default="membrane.db">
+  SQLite database file path. Only used when `Backend` is `sqlite`.
+</ParamField>
+
+<ParamField path="PostgresDSN" type="string">
+  PostgreSQL connection string. Required when `Backend` is `postgres`. Falls back to the `MEMBRANE_POSTGRES_DSN` environment variable.
+</ParamField>
+
+### Server
+
+<ParamField path="ListenAddr" type="string" default=":9090">
+  gRPC server listen address.
+</ParamField>
+
+<ParamField path="TLSCertFile" type="string">
+  Path to the TLS certificate PEM file. Leave empty to run without TLS.
+</ParamField>
+
+<ParamField path="TLSKeyFile" type="string">
+  Path to the TLS private key PEM file.
+</ParamField>
+
+<ParamField path="APIKey" type="string">
+  Shared secret for authenticating gRPC clients. Authentication is disabled when empty. Falls back to the `MEMBRANE_API_KEY` environment variable.
+</ParamField>
+
+<ParamField path="RateLimitPerSecond" type="int" default="100">
+  Maximum requests per second per client. `0` disables rate limiting.
+</ParamField>
+
+### Scheduling
+
+<ParamField path="DecayInterval" type="time.Duration" default="1h">
+  How often the decay scheduler runs.
+</ParamField>
+
+<ParamField path="ConsolidationInterval" type="time.Duration" default="6h">
+  How often the consolidation scheduler runs.
+</ParamField>
+
+### Ingestion
+
+<ParamField path="DefaultSensitivity" type="string" default="low">
+  Default sensitivity level applied to ingested records when no override is provided. Must be one of the `Sensitivity` enum values: `public`, `low`, `medium`, `high`, `hyper`.
+</ParamField>
+
+<ParamField path="EncryptionKey" type="string">
+  SQLCipher encryption key for the SQLite database. The database is unencrypted when empty. Falls back to the `MEMBRANE_ENCRYPTION_KEY` environment variable.
+</ParamField>
+
+### Retrieval
+
+<ParamField path="SelectionConfidenceThreshold" type="float64" default="0.7">
+  Minimum confidence score for the retrieval selector to accept a `competence` or `plan_graph` candidate without flagging `NeedsMore`.
+</ParamField>
+
+### Embeddings
+
+<ParamField path="EmbeddingEndpoint" type="string">
+  HTTP endpoint used to generate vector embeddings. Semantic search is disabled when empty.
+</ParamField>
+
+<ParamField path="EmbeddingModel" type="string">
+  Embedding model name sent to the endpoint.
+</ParamField>
+
+<ParamField path="EmbeddingDimensions" type="int" default="1536">
+  Output dimension of the embedding model.
+</ParamField>
+
+<ParamField path="EmbeddingAPIKey" type="string">
+  Authentication key for the embedding endpoint. Falls back to the `MEMBRANE_EMBEDDING_API_KEY` environment variable.
+</ParamField>
+
+### LLM (consolidation)
+
+<ParamField path="LLMEndpoint" type="string">
+  HTTP endpoint used for semantic fact extraction during consolidation.
+</ParamField>
+
+<ParamField path="LLMModel" type="string">
+  Chat model name sent to the LLM endpoint.
+</ParamField>
+
+<ParamField path="LLMAPIKey" type="string">
+  Authentication key for the LLM endpoint. Falls back to the `MEMBRANE_LLM_API_KEY` environment variable.
+</ParamField>
+
+### YAML example
+
+```yaml membrane.yaml
+backend: postgres
+postgres_dsn: "postgres://user:pass@localhost:5432/membrane"
+listen_addr: ":9090"
+decay_interval: 1h
+consolidation_interval: 6h
+default_sensitivity: low
+selection_confidence_threshold: 0.7
+embedding_endpoint: "https://api.openai.com/v1/embeddings"
+embedding_model: "text-embedding-3-small"
+embedding_dimensions: 1536
+llm_endpoint: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-4o-mini"
+rate_limit_per_second: 100
+```

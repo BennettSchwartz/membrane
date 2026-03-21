@@ -1,0 +1,247 @@
+---
+title: "LLM Integration"
+description: "Integrate Membrane into LLM agent workflows using the ingest-retrieve-prompt-reinforce pattern."
+---
+
+Membrane is designed to sit between your orchestration layer and the model call. This guide covers the core integration pattern and how to configure Membrane's advanced LLM and embedding features.
+
+## The 4-step pattern
+
+<Steps>
+  <Step title="Ingest">
+    Record tool outputs, observations, and events during execution. Each call creates a typed memory record with a UUID you can reference later.
+  </Step>
+  <Step title="Retrieve">
+    Before each model call, retrieve relevant records using a task descriptor and a trust context. Membrane returns records ranked by salience and selection score.
+  </Step>
+  <Step title="Prompt">
+    Format the retrieved records into your system or user message. Include record IDs so the model can cite sources when asked to justify its output.
+  </Step>
+  <Step title="Reinforce">
+    After the model's output is used successfully, call `reinforce` on the record IDs that contributed. This boosts their salience so they surface again in future retrievals.
+  </Step>
+</Steps>
+
+---
+
+## Full TypeScript + OpenAI example
+
+This example shows the complete pattern using the TypeScript client SDK and the OpenAI API.
+
+```typescript
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenAI-compatible providers are supported here, e.g. OpenRouter:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("plan a safe migration", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "planner-agent",
+    scopes: ["project-acme"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 12,
+});
+
+const context = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use memory context as evidence. Cite record ids." },
+    { role: "user", content: `Task: plan migration\n\nMemory:\n${context}` },
+  ],
+});
+
+const answer = completion.choices[0]?.message?.content ?? "";
+const planRecord = await memory.ingestEvent("llm_plan", "migration-task-42", {
+  source: "planner-agent",
+  summary: answer.slice(0, 500),
+  tags: ["llm", "plan", "migration"],
+  scope: "project-acme",
+});
+await memory.reinforce(planRecord.id, "planner-agent", "plan used successfully");
+
+memory.close();
+```
+
+---
+
+## Explaining each step
+
+### Step 1 — Ingest during execution
+
+Every tool call, error, and observation should be ingested as it happens. The ingestion plane classifies, validates, and persists the record automatically.
+
+```typescript
+// After a tool runs
+const record = await memory.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"],
+});
+```
+
+For tool output with structured arguments and results, use `ingestToolOutput` to preserve the full tool graph:
+
+```typescript
+const record = await memory.ingestToolOutput("db_migrate", {
+  args: { target: "v20", dryRun: false },
+  result: { rowsAffected: 142, duration: "1.2s" },
+  tags: ["db", "migration"],
+});
+```
+
+### Step 2 — Retrieve before prompting
+
+Pass a natural-language task descriptor. Membrane retrieves records in layer order (working → semantic → competence → plan_graph → episodic) and ranks them by salience.
+
+```typescript
+const records = await memory.retrieve("plan a safe migration", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "planner-agent",
+    scopes: ["project-acme"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 12,
+});
+```
+
+### Step 3 — Build the prompt
+
+Serialize the records into your prompt. Including the record ID lets the model cite sources:
+
+```typescript
+const context = records.map((r) => JSON.stringify(r)).join("\n");
+
+const messages = [
+  { role: "system", content: "Use memory context as evidence. Cite record ids." },
+  { role: "user", content: `Task: plan migration\n\nMemory:\n${context}` },
+];
+```
+
+### Step 4 — Reinforce on success
+
+After the plan or action succeeds, reinforce the records that contributed. This boosts their salience so they are ranked higher in future retrievals.
+
+```typescript
+await memory.reinforce(planRecord.id, "planner-agent", "plan used successfully");
+```
+
+To reduce salience on failure, use `penalize`:
+
+```typescript
+await memory.penalize(recordId, 0.2, "planner-agent", "procedure failed in staging");
+```
+
+---
+
+## Tips for effective integration
+
+### Scope records to actors and projects
+
+Use `actor_id` and `scopes` in the trust context to isolate memory across agents or projects. Records with no scope are visible to all contexts; records with a scope are only returned when that scope appears in the trust context's allowed scopes list.
+
+```typescript
+const records = await memory.retrieve("deploy frontend", {
+  trust: {
+    max_sensitivity: Sensitivity.LOW,
+    authenticated: true,
+    actor_id: "frontend-agent",
+    scopes: ["project-frontend"],
+  },
+});
+```
+
+### Choose memory types for different tasks
+
+| Task | Recommended types |
+|------|------------------|
+| Planning | `semantic`, `competence`, `plan_graph` |
+| Debugging | `episodic`, `competence` |
+| Context restoration | `working`, `semantic` |
+| Self-correction | `competence`, `episodic` |
+| Preference retrieval | `semantic` |
+
+### Limit and salience filtering
+
+Always pass a `limit` to keep prompt context manageable. Use `MinSalience` to discard records that have decayed below a useful threshold.
+
+---
+
+## LLM-backed semantic extraction
+
+When Postgres and an LLM endpoint are configured, Membrane runs a background consolidation job that automatically extracts typed semantic facts from episodic traces.
+
+Configure it via `Config` or `config.yaml`:
+
+```yaml
+backend: postgres
+postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+
+llm_endpoint: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-5-mini"
+# llm_api_key: ""  # or set MEMBRANE_LLM_API_KEY
+```
+
+Or in Go:
+
+```go
+cfg := membrane.DefaultConfig()
+cfg.Backend     = "postgres"
+cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
+cfg.LLMEndpoint = "https://api.openai.com/v1/chat/completions"
+cfg.LLMModel    = "gpt-5-mini"
+cfg.LLMAPIKey   = os.Getenv("MEMBRANE_LLM_API_KEY")
+```
+
+The consolidation scheduler runs every `ConsolidationInterval` (default 6 hours) and converts eligible episodic records into semantic records with full provenance.
+
+---
+
+## Embedding-backed retrieval
+
+With the Postgres + pgvector backend and an embedding endpoint configured, competence and plan_graph applicability is scored using embedding similarity instead of the confidence-only fallback.
+
+```yaml
+backend: postgres
+postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+
+embedding_endpoint: "https://api.openai.com/v1/embeddings"
+embedding_model: "text-embedding-3-small"
+embedding_dimensions: 1536
+# embedding_api_key: ""  # or set MEMBRANE_EMBEDDING_API_KEY
+```
+
+When embedding is enabled, `Retrieve` generates a query embedding for the `TaskDescriptor` and uses it to rank competence and plan_graph candidates.
+
+<Tip>
+Embedding-backed retrieval is most effective when task descriptors are specific and descriptive. Generic descriptors like `"do task"` reduce recall quality.
+</Tip>
+
+---
+
+## Prompt injection format
+
+A simple and effective format is to JSON-serialize each record and join with newlines. You can also project only the fields the model needs:
+
+```typescript
+const context = records
+  .map((r) => `[${r.id}] (${r.type}, confidence=${r.confidence.toFixed(2)}) ${JSON.stringify(r.payload)}`)
+  .join("\n");
+
+const systemPrompt = `You are a planning agent. Use the memory context below as evidence. Cite record IDs in your response.
+
+Memory context:
+${context}`;
+```
+
+This format lets the model reference specific records by ID, which you can use to drive `reinforce` or `penalize` calls based on which records actually contributed to a successful outcome.
