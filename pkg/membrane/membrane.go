@@ -110,7 +110,10 @@ func New(cfg *Config) (*Membrane, error) {
 	// Retrieval
 	var selector *retrieval.Selector
 	var retrievalSvc *retrieval.Service
-	if embService != nil {
+	if embService != nil && pgStore != nil {
+		selector = retrieval.NewSelectorWithEmbedding(cfg.SelectionConfidenceThreshold, embService)
+		retrievalSvc = retrieval.NewServiceWithVectorRanker(store, selector, embService, pgStore)
+	} else if embService != nil {
 		selector = retrieval.NewSelectorWithEmbedding(cfg.SelectionConfidenceThreshold, embService)
 		retrievalSvc = retrieval.NewServiceWithEmbedding(store, selector, embService)
 	} else {
