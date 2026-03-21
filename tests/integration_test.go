@@ -2,8 +2,12 @@ package tests_test
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/GustyCube/membrane/pkg/ingestion"
 	"github.com/GustyCube/membrane/pkg/membrane"
@@ -11,12 +15,50 @@ import (
 	"github.com/GustyCube/membrane/pkg/schema"
 )
 
-// newTestMembrane creates a Membrane instance backed by an in-memory SQLite database.
+// truncatePostgres removes all rows from every application table so that each
+// test starts with a clean database when running against Postgres.
+func truncatePostgres(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("truncatePostgres: open: %v", err)
+	}
+	defer db.Close()
+	// Create schema if it doesn't exist yet (first run on a fresh database).
+	// We open a throwaway membrane instance to bootstrap the tables.
+	tmpCfg := membrane.DefaultConfig()
+	tmpCfg.Backend = "postgres"
+	tmpCfg.PostgresDSN = dsn
+	tmpM, err := membrane.New(tmpCfg)
+	if err != nil {
+		t.Fatalf("truncatePostgres: bootstrap schema: %v", err)
+	}
+	_ = tmpM.Stop()
+
+	_, err = db.Exec(`TRUNCATE memory_records, decay_profiles, payloads, tags,
+		provenance_sources, relations, audit_log, competence_stats,
+		trigger_embeddings, episodic_extraction_log CASCADE`)
+	if err != nil {
+		t.Fatalf("truncatePostgres: truncate: %v", err)
+	}
+}
+
+// newTestMembrane creates a Membrane instance. When MEMBRANE_TEST_POSTGRES_DSN
+// is set it uses Postgres+pgvector; otherwise it falls back to in-memory SQLite.
 func newTestMembrane(t *testing.T) *membrane.Membrane {
 	t.Helper()
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = ":memory:"
 	cfg.SelectionConfidenceThreshold = 0.3
+
+	dsn := os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if dsn != "" {
+		cfg.Backend = "postgres"
+		cfg.PostgresDSN = dsn
+		truncatePostgres(t, dsn)
+	} else {
+		cfg.DBPath = ":memory:"
+	}
+
 	m, err := membrane.New(cfg)
 	if err != nil {
 		t.Fatalf("failed to create membrane: %v", err)
