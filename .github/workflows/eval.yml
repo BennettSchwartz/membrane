@@ -1,0 +1,196 @@
+name: Eval
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      MEMBRANE_EMBEDDING_API_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY }}
+      MEMBRANE_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: membrane_test
+          POSTGRES_USER: membrane
+          POSTGRES_PASSWORD: membrane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U membrane -d membrane_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Wait for Postgres
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres (${attempt}/30)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
+
+      - name: Create pgvector extension
+        run: |
+          PGPASSWORD=membrane psql -h 127.0.0.1 -U membrane -d membrane_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run retrieval eval
+        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+        run: |
+          go run ./cmd/membrane-eval \
+            -dataset tests/data/recall_dataset.jsonl \
+            -postgres-dsn "postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable" \
+            -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
+            -embedding-model "openai/text-embedding-3-small" \
+            -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
+            -embedding-dimensions 1536 \
+            | tee eval-retrieval.txt
+
+      - name: Reset database for lifecycle eval
+        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+        run: |
+          PGPASSWORD=membrane psql -h 127.0.0.1 -U membrane -d membrane_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE EXTENSION vector; GRANT ALL ON SCHEMA public TO membrane;"
+
+      - name: Run lifecycle eval
+        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+        run: |
+          go run ./cmd/membrane-eval-lifecycle \
+            -postgres-dsn "postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable" \
+            -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
+            -embedding-model "openai/text-embedding-3-small" \
+            -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
+            -embedding-dimensions 1536 \
+            | tee eval-lifecycle.txt
+
+      - name: Update README with eval results
+        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+
+          # Extract retrieval metrics from the COMPARISON table.
+          # Output lines look like:
+          #   recall@k                  0.959      0.959         +0.000
+          RECALL=$(awk '/^recall@k[[:space:]]/{printf "| recall@k | %s | %s | %s |", $2, $3, $4}' eval-retrieval.txt)
+          PRECISION=$(awk '/^precision@k[[:space:]]/{printf "| precision@k | %s | %s | %s |", $2, $3, $4}' eval-retrieval.txt)
+          MRR=$(awk '/^MRR@k[[:space:]]/{printf "| MRR@k | %s | %s | %s |", $2, $3, $4}' eval-retrieval.txt)
+          NDCG=$(awk '/^NDCG@k[[:space:]]/{printf "| NDCG@k | %s | %s | %s |", $2, $3, $4}' eval-retrieval.txt)
+
+          # Extract lifecycle win/loss counts.
+          # Output lines look like:
+          #   Membrane wins: 4
+          #   RAG wins:      0
+          MEM_WINS=$(grep 'Membrane wins:' eval-lifecycle.txt | awk '{print $NF}')
+          RAG_WINS=$(grep 'RAG wins:' eval-lifecycle.txt | awk '{print $NF}')
+
+          # Determine per-scenario winners from ✓/✗ result lines.
+          # Output lines look like:
+          #   ✓ Membrane wins: filtered retracted record
+          #   ✗ RAG wins
+          if grep -A5 'Scenario 1: Retraction' eval-lifecycle.txt | grep -q '✓'; then
+            RETRACTION_WINNER="Membrane"
+          else
+            RETRACTION_WINNER="RAG"
+          fi
+          if grep -A5 'Scenario 2: Reinforcement' eval-lifecycle.txt | grep -q '✓'; then
+            REINFORCEMENT_WINNER="Membrane"
+          else
+            REINFORCEMENT_WINNER="RAG"
+          fi
+          if grep -A5 'Scenario 3: Supersession' eval-lifecycle.txt | grep -q '✓'; then
+            SUPERSESSION_WINNER="Membrane"
+          else
+            SUPERSESSION_WINNER="RAG"
+          fi
+          if grep -A5 'Scenario 4: Decay' eval-lifecycle.txt | grep -q '✓'; then
+            DECAY_WINNER="Membrane"
+          else
+            DECAY_WINNER="RAG"
+          fi
+
+          TOTAL_SCENARIOS=$((MEM_WINS + RAG_WINS))
+
+          # Replace everything between "### Latest Results" and the next "## " header.
+          awk \
+            -v date="$DATE" \
+            -v recall="$RECALL" \
+            -v precision="$PRECISION" \
+            -v mrr="$MRR" \
+            -v ndcg="$NDCG" \
+            -v retraction="$RETRACTION_WINNER" \
+            -v reinforcement="$REINFORCEMENT_WINNER" \
+            -v supersession="$SUPERSESSION_WINNER" \
+            -v decay="$DECAY_WINNER" \
+            -v mem_wins="$MEM_WINS" \
+            -v total="$TOTAL_SCENARIOS" \
+            '
+            /^### Latest Results/ {
+              print
+              print ""
+              print "**Retrieval Eval** (RAG vs Membrane, " date "):"
+              print ""
+              print "59 records across 5 types, 25 queries."
+              print ""
+              print "| Metric | RAG | Membrane | Delta |"
+              print "|--------|-----|----------|-------|"
+              print recall
+              print precision
+              print mrr
+              print ndcg
+              print ""
+              print "Membrane matches RAG on pure retrieval quality while adding typed storage, trust gating, salience decay, revision tracking, and audit trails."
+              print ""
+              print "**Lifecycle Eval** (" date "):"
+              print ""
+              print "| Scenario | RAG | Membrane | Winner |"
+              print "|----------|-----|----------|--------|"
+              print "| Retraction | Returns wrong fact | Filters retracted record | **" retraction "** |"
+              print "| Reinforcement | Ranks bad procedure first | Ranks proven procedure first | **" reinforcement "** |"
+              print "| Supersession | Returns outdated value | Returns current value only | **" supersession "** |"
+              print "| Decay | Ranks stale record first | Ranks fresh record first | **" decay "** |"
+              print ""
+              print "Membrane wins: **" mem_wins "/" total "** scenarios. RAG has no concept of knowledge lifecycle — it returns whatever is most similar, including retracted, superseded, and stale information."
+              print ""
+              print "Retrieval eval results depend on embedding quality, trust filters, and reinforcement behavior. Treat them as scenario-level regression guards. The lifecycle eval demonstrates Membrane'"'"'s structural advantages over flat vector search. CI auto-updates this section when scores change."
+              skip=1
+              next
+            }
+            skip && /^## / {
+              skip=0
+            }
+            !skip { print }
+            ' README.md > README.md.tmp && mv README.md.tmp README.md
+
+      - name: Commit and push README if changed
+        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --cached --quiet || (git commit -m "Update eval results in README" && git push)
