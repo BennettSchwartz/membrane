@@ -327,33 +327,52 @@ merged, _ := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolid
 
 ## Evaluation and Metrics
 
-Membrane exposes behavioral metrics (retrieval usefulness, competence success rate, plan reuse frequency) via `GetMetrics`, and the test suite covers ingestion, revision, selection, and retrieval ordering.
+Membrane exposes behavioral metrics (retrieval usefulness, competence success rate, plan reuse frequency) via `GetMetrics`, and the eval suite compares Membrane's structured retrieval against pure RAG across all five memory types.
 
-### Recall Regression Checks
+### Retrieval Eval (RAG vs Membrane)
 
-```bash
-go test ./tests -run TestRetrievalRecallAtK
-```
-
-### Vector-Aware End-to-End Metrics
-
-Optional; requires Python dependencies:
+Compares pure vector similarity search (RAG) against Membrane's full pipeline (vector ranking + salience + trust gating) using pgvector and OpenAI text-embedding-3-small embeddings. Tests all five memory types: episodic, working, semantic, competence, and plan graph.
 
 ```bash
-python3 -m pip install -r tools/eval/requirements.txt
-make eval
+# Requires Postgres + pgvector and an OpenRouter/OpenAI API key.
+# Copy .env.example to .env and fill in values.
+go run ./cmd/membrane-eval \
+  -dataset tests/data/recall_dataset.jsonl \
+  -postgres-dsn "$MEMBRANE_POSTGRES_DSN" \
+  -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
+  -embedding-model "openai/text-embedding-3-small" \
+  -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
+  -embedding-dimensions 1536
 ```
 
-Thresholds are enforced by default (override via environment variables):
+### Lifecycle Eval (Membrane vs RAG)
+
+Tests four scenarios where Membrane's structured memory (retraction, reinforcement, supersession, decay) should outperform naive vector search:
+
+| Scenario | What it tests |
+|----------|---------------|
+| **Retraction** | Wrong facts set to salience 0 and filtered out; RAG still returns them |
+| **Reinforcement** | Proven-useful records ranked higher via hybrid vector+salience scoring |
+| **Supersession** | Outdated facts replaced; old version filtered, new version returned |
+| **Decay** | Stale records lose salience over time; fresh records promoted |
 
 ```bash
-MEMBRANE_EVAL_MIN_RECALL=0.90
-MEMBRANE_EVAL_MIN_PRECISION=0.20
-MEMBRANE_EVAL_MIN_MRR=0.90
-MEMBRANE_EVAL_MIN_NDCG=0.90
+go run ./cmd/membrane-eval-lifecycle \
+  -postgres-dsn "$MEMBRANE_POSTGRES_DSN" \
+  -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
+  -embedding-model "openai/text-embedding-3-small" \
+  -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
+  -embedding-dimensions 1536
 ```
 
-### Targeted Capability Evals
+### Unit and Integration Tests
+
+```bash
+make test                # All Go tests
+make eval-all            # All targeted capability evals
+```
+
+Targeted evals:
 
 ```bash
 make eval-typed          # Memory type handling
@@ -366,18 +385,35 @@ make eval-consolidation  # Episodic consolidation
 make eval-metrics        # Observability metrics
 make eval-invariants     # System invariants
 make eval-grpc           # gRPC endpoint coverage
-
-make eval-all            # Run everything
 ```
 
 ### Latest Results
 
-Local run (Feb 5, 2026):
+**Retrieval Eval** (RAG vs Membrane, Mar 21, 2026):
 
-- **Unit/Integration**: 22 top-level eval tests + 7 subtests = 29 test cases, 0 failures (~0.40s)
-- **Vector E2E**: 35 records, 18 queries -- recall@k 1.000, precision@k 0.267, MRR@k 0.956, NDCG@k 0.955
+59 records across 5 types, 25 queries.
 
-Note: Membrane can use pgvector-backed similarity search and embedding-based applicability scoring when the Postgres backend is enabled. End-to-end recall still depends on ingestion quality, trust filters, and reinforcement behavior, so treat recall tests as scenario-level regression guards rather than universal benchmarks.
+| Metric | RAG | Membrane | Delta |
+|--------|-----|----------|-------|
+| recall@k | 0.959 | 0.959 | +0.000 |
+| precision@k | 0.353 | 0.353 | +0.000 |
+| MRR@k | 1.000 | 1.000 | +0.000 |
+| NDCG@k | 0.956 | 0.956 | +0.000 |
+
+Membrane matches RAG on pure retrieval quality while adding typed storage, trust gating, salience decay, revision tracking, and audit trails.
+
+**Lifecycle Eval** (Mar 21, 2026):
+
+| Scenario | RAG | Membrane | Winner |
+|----------|-----|----------|--------|
+| Retraction | Returns wrong fact | Filters retracted record | **Membrane** |
+| Reinforcement | Ranks bad procedure first | Ranks proven procedure first | **Membrane** |
+| Supersession | Returns outdated value | Returns current value only | **Membrane** |
+| Decay | Ranks stale record first | Ranks fresh record first | **Membrane** |
+
+Membrane wins: **4/4** scenarios. RAG has no concept of knowledge lifecycle — it returns whatever is most similar, including retracted, superseded, and stale information.
+
+Retrieval eval results depend on embedding quality, trust filters, and reinforcement behavior. Treat them as scenario-level regression guards. The lifecycle eval demonstrates Membrane's structural advantages over flat vector search. CI auto-updates this section when scores change.
 
 ## Observability
 
