@@ -77,7 +77,13 @@ func (s *Service) BackfillMissing(ctx context.Context) (int, error) {
 	}
 
 	var total int
-	for _, memType := range []schema.MemoryType{schema.MemoryTypeCompetence, schema.MemoryTypePlanGraph} {
+	for _, memType := range []schema.MemoryType{
+		schema.MemoryTypeEpisodic,
+		schema.MemoryTypeWorking,
+		schema.MemoryTypeSemantic,
+		schema.MemoryTypeCompetence,
+		schema.MemoryTypePlanGraph,
+	} {
 		records, err := s.store.ListByType(ctx, memType)
 		if err != nil {
 			return total, fmt.Errorf("list %s for embedding backfill: %w", memType, err)
@@ -101,6 +107,32 @@ func (s *Service) BackfillMissing(ctx context.Context) (int, error) {
 
 func triggerText(rec *schema.MemoryRecord) string {
 	switch payload := rec.Payload.(type) {
+	case *schema.EpisodicPayload:
+		// Use the summary from the most recent timeline event.
+		for i := len(payload.Timeline) - 1; i >= 0; i-- {
+			if payload.Timeline[i].Summary != "" {
+				return payload.Timeline[i].Summary
+			}
+		}
+		// Fall back to event kind + ref.
+		if len(payload.Timeline) > 0 {
+			ev := payload.Timeline[0]
+			return ev.EventKind + " " + ev.Ref
+		}
+		return ""
+	case *schema.WorkingPayload:
+		parts := make([]string, 0, 3)
+		if payload.ContextSummary != "" {
+			parts = append(parts, payload.ContextSummary)
+		}
+		parts = append(parts, string(payload.State))
+		if len(payload.NextActions) > 0 {
+			parts = append(parts, strings.Join(payload.NextActions, " "))
+		}
+		return strings.Join(parts, " ")
+	case *schema.SemanticPayload:
+		obj, _ := payload.Object.(string)
+		return payload.Subject + " " + payload.Predicate + " " + obj
 	case *schema.CompetencePayload:
 		signals := make([]string, 0, len(payload.Triggers))
 		for _, trig := range payload.Triggers {
@@ -109,7 +141,7 @@ func triggerText(rec *schema.MemoryRecord) string {
 			}
 		}
 		if len(signals) > 0 {
-			return strings.Join(signals, " ")
+			return payload.SkillName + " " + strings.Join(signals, " ")
 		}
 		return payload.SkillName
 	case *schema.PlanGraphPayload:
