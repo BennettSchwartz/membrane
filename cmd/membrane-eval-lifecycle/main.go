@@ -3,10 +3,10 @@
 // It runs four scenarios where Membrane's structured memory (retraction, reinforcement,
 // supersession, decay) should outperform naive vector similarity search:
 //
-//   1. Retraction:  Wrong facts retracted → Membrane filters them, RAG still returns them.
-//   2. Reinforcement: Useful records boosted → Membrane ranks them higher via hybrid scoring.
-//   3. Supersession: Outdated facts replaced → Membrane prefers the new version.
-//   4. Decay: Stale records lose salience → Membrane deprioritizes them.
+//  1. Retraction:  Wrong facts retracted → Membrane filters them, RAG still returns them.
+//  2. Reinforcement: Useful records boosted → Membrane ranks them higher via hybrid scoring.
+//  3. Supersession: Outdated facts replaced → Membrane prefers the new version.
+//  4. Decay: Stale records lose salience → Membrane deprioritizes them.
 package main
 
 import (

@@ -37,13 +37,13 @@ type planEdgeEntry struct {
 }
 
 type recordEntry struct {
-	Type       string   `json:"type"`
-	MemoryType string   `json:"memory_type"`
-	Key        string   `json:"key"`
-	Text       string   `json:"text"` // used for embedding
-	Sensitivity string  `json:"sensitivity"`
-	Scope      string   `json:"scope"`
-	Tags       []string `json:"tags"`
+	Type        string   `json:"type"`
+	MemoryType  string   `json:"memory_type"`
+	Key         string   `json:"key"`
+	Text        string   `json:"text"` // used for embedding
+	Sensitivity string   `json:"sensitivity"`
+	Scope       string   `json:"scope"`
+	Tags        []string `json:"tags"`
 	// Semantic
 	Subject   string `json:"subject"`
 	Predicate string `json:"predicate"`
@@ -252,12 +252,12 @@ func ingestRecord(ctx context.Context, m *membrane.Membrane, store *postgres.Pos
 
 	case "episodic":
 		r, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-			Source:    "eval",
-			EventKind: rec.EventKind,
-			Ref:       rec.Ref,
-			Summary:   rec.Summary,
-			Tags:      rec.Tags,
-			Scope:     rec.Scope,
+			Source:      "eval",
+			EventKind:   rec.EventKind,
+			Ref:         rec.Ref,
+			Summary:     rec.Summary,
+			Tags:        rec.Tags,
+			Scope:       rec.Scope,
 			Sensitivity: sens,
 		})
 		if err != nil {
