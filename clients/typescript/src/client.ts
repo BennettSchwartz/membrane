@@ -10,6 +10,7 @@ import { encodeJsonBytes, parseMetricsEnvelope, parseRecordEnvelope, parseRetrie
 import { nowRfc3339 } from "./internal/util";
 import {
   createDefaultTrustContext,
+  type Constraint,
   type JsonObject,
   type MemoryRecord,
   type MemoryType,
@@ -64,7 +65,7 @@ export interface IngestWorkingStateOptions {
   nextActions?: string[];
   openQuestions?: string[];
   contextSummary?: string;
-  activeConstraints?: Record<string, unknown>[];
+  activeConstraints?: Constraint[];
   sensitivity?: Sensitivity | string;
   source?: string;
   tags?: string[];

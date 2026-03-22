@@ -2,21 +2,41 @@
 
 from membrane.types import (
     AuditEntry,
+    CompetencePayload,
+    Constraint,
     DecayCurve,
     DecayProfile,
     DeletionPolicy,
+    EdgeKind,
+    EpisodicPayload,
+    EnvironmentSnapshot,
     Lifecycle,
     MemoryRecord,
     MemoryType,
     OutcomeStatus,
+    PerformanceStats,
+    PlanEdge,
+    PlanGraphPayload,
+    PlanMetrics,
+    PlanNode,
     Provenance,
+    ProvenanceRef,
     ProvenanceSource,
+    RecipeStep,
     Relation,
     RetrieveResult,
+    RevisionState,
     RevisionStatus,
     SelectionResult,
+    SemanticPayload,
     Sensitivity,
+    TimelineEvent,
+    ToolNode,
+    Trigger,
     TrustContext,
+    Validity,
+    ValidityMode,
+    WorkingPayload,
 )
 
 
@@ -224,11 +244,19 @@ class TestSubstructures:
 
     def test_relation_from_dict(self):
         r = Relation.from_dict(
+            {"target_id": "rec-999", "predicate": "supersedes", "weight": 1.0}
+        )
+        assert r.target_id == "rec-999"
+        assert r.predicate == "supersedes"
+        assert r.weight == 1.0
+
+    def test_relation_from_dict_legacy_kind(self):
+        """Legacy 'kind' key is accepted as a fallback for 'predicate'."""
+        r = Relation.from_dict(
             {"target_id": "rec-999", "kind": "supersedes", "weight": 1.0}
         )
         assert r.target_id == "rec-999"
-        assert r.kind == "supersedes"
-        assert r.weight == 1.0
+        assert r.predicate == "supersedes"
 
     def test_audit_entry_from_dict(self):
         ae = AuditEntry.from_dict(
@@ -269,3 +297,341 @@ class TestSubstructures:
         result = RetrieveResult()
         assert result.records == []
         assert result.selection is None
+
+
+class TestDecayProfileExtended:
+    def test_optional_fields(self):
+        dp = DecayProfile.from_dict(
+            {
+                "curve": "exponential",
+                "half_life_seconds": 3600,
+                "min_salience": 0.1,
+                "max_age_seconds": 604800,
+                "reinforcement_gain": 0.5,
+            }
+        )
+        assert dp.min_salience == 0.1
+        assert dp.max_age_seconds == 604800
+        assert dp.reinforcement_gain == 0.5
+
+    def test_optional_fields_absent(self):
+        dp = DecayProfile.from_dict({"curve": "exponential", "half_life_seconds": 86400})
+        assert dp.min_salience is None
+        assert dp.max_age_seconds is None
+        assert dp.reinforcement_gain is None
+
+
+class TestLifecycleExtended:
+    def test_pinned_field(self):
+        lc = Lifecycle.from_dict(
+            {
+                "decay": {"curve": "exponential", "half_life_seconds": 86400},
+                "last_reinforced_at": "2025-01-01T00:00:00Z",
+                "pinned": True,
+                "deletion_policy": "never",
+            }
+        )
+        assert lc.pinned is True
+
+    def test_pinned_defaults_false(self):
+        lc = Lifecycle.from_dict(
+            {"decay": {"curve": "exponential", "half_life_seconds": 86400}}
+        )
+        assert lc.pinned is False
+
+
+class TestProvenanceSourceExtended:
+    def test_hash_and_created_by(self):
+        ps = ProvenanceSource.from_dict(
+            {
+                "kind": "artifact",
+                "ref": "file.py",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "hash": "sha256:abc123",
+                "created_by": "agent-1",
+            }
+        )
+        assert ps.hash == "sha256:abc123"
+        assert ps.created_by == "agent-1"
+
+    def test_absent_optional_fields(self):
+        ps = ProvenanceSource.from_dict({"kind": "event", "ref": "evt-1"})
+        assert ps.hash == ""
+        assert ps.created_by == ""
+
+
+class TestProvenanceExtended:
+    def test_created_by(self):
+        prov = Provenance.from_dict(
+            {"sources": [], "created_by": "consolidator-v1"}
+        )
+        assert prov.created_by == "consolidator-v1"
+
+    def test_created_by_absent(self):
+        prov = Provenance.from_dict({"sources": []})
+        assert prov.created_by == ""
+
+
+class TestRelationExtended:
+    def test_predicate_field(self):
+        r = Relation.from_dict(
+            {"target_id": "rec-1", "predicate": "supports", "weight": 0.9}
+        )
+        assert r.predicate == "supports"
+
+    def test_created_at(self):
+        r = Relation.from_dict(
+            {
+                "target_id": "rec-1",
+                "predicate": "derived_from",
+                "created_at": "2025-01-01T00:00:00Z",
+            }
+        )
+        assert r.created_at == "2025-01-01T00:00:00Z"
+
+
+class TestConstraint:
+    def test_from_dict(self):
+        c = Constraint.from_dict(
+            {"type": "scope", "key": "workspace", "value": "proj-1", "required": True}
+        )
+        assert c.type == "scope"
+        assert c.key == "workspace"
+        assert c.value == "proj-1"
+        assert c.required is True
+
+    def test_defaults(self):
+        c = Constraint()
+        assert c.type == ""
+        assert c.required is False
+
+
+class TestProvenanceRef:
+    def test_from_dict(self):
+        pr = ProvenanceRef.from_dict(
+            {
+                "source_type": "tool",
+                "source_id": "tool-123",
+                "timestamp": "2025-01-01T00:00:00Z",
+            }
+        )
+        assert pr.source_type == "tool"
+        assert pr.source_id == "tool-123"
+
+
+class TestRevisionState:
+    def test_from_dict(self):
+        rs = RevisionState.from_dict(
+            {
+                "supersedes": "old-id",
+                "superseded_by": "",
+                "status": "active",
+            }
+        )
+        assert rs.supersedes == "old-id"
+        assert rs.status is RevisionStatus.ACTIVE
+
+    def test_absent_status(self):
+        rs = RevisionState.from_dict({})
+        assert rs.status is None
+
+
+class TestValidity:
+    def test_from_dict(self):
+        v = Validity.from_dict(
+            {
+                "mode": "timeboxed",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2026-01-01T00:00:00Z",
+            }
+        )
+        assert v.mode is ValidityMode.TIMEBOXED
+        assert v.start == "2025-01-01T00:00:00Z"
+        assert v.end == "2026-01-01T00:00:00Z"
+
+    def test_conditional_with_conditions(self):
+        v = Validity.from_dict({"mode": "conditional", "conditions": {"env": "prod"}})
+        assert v.mode is ValidityMode.CONDITIONAL
+        assert v.conditions == {"env": "prod"}
+
+
+class TestEpisodicPayload:
+    def test_from_dict(self):
+        data = {
+            "kind": "episodic",
+            "timeline": [
+                {"t": "2025-01-01T00:00:00Z", "event_kind": "file_edit", "ref": "src/main.py"}
+            ],
+            "outcome": "success",
+            "artifacts": ["log.txt"],
+        }
+        p = EpisodicPayload.from_dict(data)
+        assert p.kind == "episodic"
+        assert len(p.timeline) == 1
+        assert p.timeline[0].event_kind == "file_edit"
+        assert p.outcome == "success"
+        assert p.artifacts == ["log.txt"]
+
+    def test_tool_graph(self):
+        data = {
+            "kind": "episodic",
+            "timeline": [],
+            "tool_graph": [
+                {
+                    "id": "node-1",
+                    "tool": "bash",
+                    "args": {"cmd": "ls"},
+                    "result": {"exit_code": 0},
+                    "depends_on": [],
+                }
+            ],
+        }
+        p = EpisodicPayload.from_dict(data)
+        assert len(p.tool_graph) == 1
+        assert p.tool_graph[0].tool == "bash"
+        assert p.tool_graph[0].args == {"cmd": "ls"}
+
+    def test_environment(self):
+        data = {
+            "kind": "episodic",
+            "timeline": [],
+            "environment": {
+                "os": "linux",
+                "os_version": "6.1",
+                "tool_versions": {"python": "3.11"},
+                "working_directory": "/workspace",
+            },
+        }
+        p = EpisodicPayload.from_dict(data)
+        assert p.environment is not None
+        assert p.environment.os == "linux"
+        assert p.environment.tool_versions == {"python": "3.11"}
+
+
+class TestWorkingPayload:
+    def test_from_dict(self):
+        data = {
+            "kind": "working",
+            "thread_id": "t-1",
+            "state": "executing",
+            "next_actions": ["run tests"],
+            "open_questions": ["how to handle error?"],
+            "context_summary": "in progress",
+            "active_constraints": [
+                {"type": "scope", "key": "workspace", "value": "proj-1"}
+            ],
+        }
+        p = WorkingPayload.from_dict(data)
+        assert p.thread_id == "t-1"
+        assert p.state == "executing"
+        assert p.next_actions == ["run tests"]
+        assert len(p.active_constraints) == 1
+        assert p.active_constraints[0].key == "workspace"
+
+
+class TestSemanticPayload:
+    def test_from_dict(self):
+        data = {
+            "kind": "semantic",
+            "subject": "user",
+            "predicate": "prefers",
+            "object": "dark mode",
+            "validity": {"mode": "global"},
+            "revision_policy": "replace",
+        }
+        p = SemanticPayload.from_dict(data)
+        assert p.subject == "user"
+        assert p.predicate == "prefers"
+        assert p.object == "dark mode"
+        assert p.validity is not None
+        assert p.validity.mode is ValidityMode.GLOBAL
+
+    def test_revision(self):
+        data = {
+            "kind": "semantic",
+            "subject": "x",
+            "predicate": "is",
+            "object": 42,
+            "validity": {"mode": "global"},
+            "revision": {"supersedes": "old-id", "status": "active"},
+        }
+        p = SemanticPayload.from_dict(data)
+        assert p.revision is not None
+        assert p.revision.supersedes == "old-id"
+
+
+class TestCompetencePayload:
+    def test_from_dict(self):
+        data = {
+            "kind": "competence",
+            "skill_name": "run_tests",
+            "triggers": [{"signal": "test_needed", "conditions": {}}],
+            "recipe": [{"step": "run pytest", "tool": "bash"}],
+            "required_tools": ["bash"],
+            "version": "1.0",
+        }
+        p = CompetencePayload.from_dict(data)
+        assert p.skill_name == "run_tests"
+        assert len(p.triggers) == 1
+        assert p.triggers[0].signal == "test_needed"
+        assert len(p.recipe) == 1
+        assert p.recipe[0].step == "run pytest"
+        assert p.version == "1.0"
+
+    def test_performance(self):
+        data = {
+            "kind": "competence",
+            "skill_name": "deploy",
+            "triggers": [],
+            "recipe": [],
+            "performance": {
+                "success_count": 10,
+                "failure_count": 2,
+                "success_rate": 0.83,
+                "avg_latency_ms": 1200.0,
+            },
+        }
+        p = CompetencePayload.from_dict(data)
+        assert p.performance is not None
+        assert p.performance.success_count == 10
+        assert p.performance.success_rate == 0.83
+
+
+class TestPlanGraphPayload:
+    def test_from_dict(self):
+        data = {
+            "kind": "plan_graph",
+            "plan_id": "plan-1",
+            "version": "2",
+            "intent": "setup_project",
+            "nodes": [{"id": "n1", "op": "clone_repo"}, {"id": "n2", "op": "install_deps"}],
+            "edges": [{"from": "n1", "to": "n2", "kind": "control"}],
+        }
+        p = PlanGraphPayload.from_dict(data)
+        assert p.plan_id == "plan-1"
+        assert p.intent == "setup_project"
+        assert len(p.nodes) == 2
+        assert p.nodes[0].op == "clone_repo"
+        assert len(p.edges) == 1
+        assert p.edges[0].from_ == "n1"
+        assert p.edges[0].to == "n2"
+        assert p.edges[0].kind is EdgeKind.CONTROL
+
+    def test_metrics(self):
+        data = {
+            "kind": "plan_graph",
+            "plan_id": "plan-2",
+            "version": "1",
+            "nodes": [],
+            "edges": [],
+            "metrics": {
+                "avg_latency_ms": 500.0,
+                "failure_rate": 0.05,
+                "execution_count": 20,
+            },
+        }
+        p = PlanGraphPayload.from_dict(data)
+        assert p.metrics is not None
+        assert p.metrics.execution_count == 20
+        assert p.metrics.failure_rate == 0.05
+
