@@ -32,7 +32,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gustycube/membrane": "^0.1.4"
+    "@gustycube/membrane": "^0.2.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
