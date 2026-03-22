@@ -147,12 +147,18 @@ class DecayProfile:
 
     curve: DecayCurve = DecayCurve.EXPONENTIAL
     half_life_seconds: int = 86400
+    min_salience: Optional[float] = None
+    max_age_seconds: Optional[int] = None
+    reinforcement_gain: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DecayProfile:
         return cls(
             curve=DecayCurve(data.get("curve", "exponential")),
             half_life_seconds=data.get("half_life_seconds", 86400),
+            min_salience=data.get("min_salience"),
+            max_age_seconds=data.get("max_age_seconds"),
+            reinforcement_gain=data.get("reinforcement_gain"),
         )
 
 
@@ -162,6 +168,7 @@ class Lifecycle:
 
     decay: DecayProfile = field(default_factory=DecayProfile)
     last_reinforced_at: str = ""
+    pinned: bool = False
     deletion_policy: DeletionPolicy = DeletionPolicy.AUTO_PRUNE
 
     @classmethod
@@ -169,6 +176,7 @@ class Lifecycle:
         return cls(
             decay=DecayProfile.from_dict(data.get("decay", {})),
             last_reinforced_at=data.get("last_reinforced_at", ""),
+            pinned=data.get("pinned", False),
             deletion_policy=DeletionPolicy(
                 data.get("deletion_policy", "auto_prune")
             ),
@@ -182,6 +190,8 @@ class ProvenanceSource:
     kind: str = ""
     ref: str = ""
     timestamp: str = ""
+    hash: str = ""
+    created_by: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProvenanceSource:
@@ -189,6 +199,8 @@ class ProvenanceSource:
             kind=data.get("kind", ""),
             ref=data.get("ref", ""),
             timestamp=data.get("timestamp", ""),
+            hash=data.get("hash", ""),
+            created_by=data.get("created_by", ""),
         )
 
 
@@ -197,13 +209,14 @@ class Provenance:
     """Provenance tracking for a memory record."""
 
     sources: list[ProvenanceSource] = field(default_factory=list)
+    created_by: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Provenance:
         sources = [
             ProvenanceSource.from_dict(s) for s in data.get("sources", [])
         ]
-        return cls(sources=sources)
+        return cls(sources=sources, created_by=data.get("created_by", ""))
 
 
 @dataclass
@@ -211,15 +224,18 @@ class Relation:
     """A graph edge to another MemoryRecord."""
 
     target_id: str = ""
-    kind: str = ""
+    predicate: str = ""
     weight: float = 1.0
+    created_at: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Relation:
         return cls(
             target_id=data.get("target_id", ""),
-            kind=data.get("kind", ""),
+            # "predicate" is the canonical field; fall back to legacy "kind"
+            predicate=data.get("predicate", data.get("kind", "")),
             weight=data.get("weight", 1.0),
+            created_at=data.get("created_at", ""),
         )
 
 
@@ -360,3 +376,429 @@ class RetrieveResult:
 
     records: list[MemoryRecord] = field(default_factory=list)
     selection: Optional[SelectionResult] = None
+
+
+# ---------------------------------------------------------------------------
+# Constraint (RFC 15A.3, 15A.6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Constraint:
+    """A constraint on task execution or plan selection."""
+
+    type: str = ""
+    key: str = ""
+    value: Any = None
+    required: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Constraint:
+        return cls(
+            type=data.get("type", ""),
+            key=data.get("key", ""),
+            value=data.get("value"),
+            required=data.get("required", False),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Provenance reference (RFC 15A.8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProvenanceRef:
+    """A reference to evidence supporting a semantic memory record."""
+
+    source_type: str = ""
+    source_id: str = ""
+    timestamp: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProvenanceRef:
+        return cls(
+            source_type=data.get("source_type", ""),
+            source_id=data.get("source_id", ""),
+            timestamp=data.get("timestamp", ""),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Revision state (RFC 15A.8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RevisionState:
+    """Revision tracking metadata for a semantic memory record."""
+
+    supersedes: str = ""
+    superseded_by: str = ""
+    status: Optional[RevisionStatus] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RevisionState:
+        raw_status = data.get("status")
+        return cls(
+            supersedes=data.get("supersedes", ""),
+            superseded_by=data.get("superseded_by", ""),
+            status=RevisionStatus(raw_status) if raw_status else None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Validity (RFC 15A.8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Validity:
+    """Temporal and conditional validity scope for a semantic fact."""
+
+    mode: ValidityMode = ValidityMode.GLOBAL
+    conditions: dict[str, Any] = field(default_factory=dict)
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Validity:
+        return cls(
+            mode=ValidityMode(data.get("mode", "global")),
+            conditions=data.get("conditions", {}),
+            start=data.get("start"),
+            end=data.get("end"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Episodic payload helpers (RFC 15A.6, 15A.2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TimelineEvent:
+    """A single event in an episodic memory timeline."""
+
+    t: str = ""
+    event_kind: str = ""
+    ref: str = ""
+    summary: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TimelineEvent:
+        return cls(
+            t=data.get("t", ""),
+            event_kind=data.get("event_kind", ""),
+            ref=data.get("ref", ""),
+            summary=data.get("summary", ""),
+        )
+
+
+@dataclass
+class ToolNode:
+    """A tool call node in an episodic tool graph."""
+
+    id: str = ""
+    tool: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+    result: Any = None
+    timestamp: str = ""
+    depends_on: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolNode:
+        return cls(
+            id=data.get("id", ""),
+            tool=data.get("tool", ""),
+            args=data.get("args", {}),
+            result=data.get("result"),
+            timestamp=data.get("timestamp", ""),
+            depends_on=data.get("depends_on", []),
+        )
+
+
+@dataclass
+class EnvironmentSnapshot:
+    """Environment context captured during an episodic memory."""
+
+    os: str = ""
+    os_version: str = ""
+    tool_versions: dict[str, str] = field(default_factory=dict)
+    working_directory: str = ""
+    context: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EnvironmentSnapshot:
+        return cls(
+            os=data.get("os", ""),
+            os_version=data.get("os_version", ""),
+            tool_versions=data.get("tool_versions", {}),
+            working_directory=data.get("working_directory", ""),
+            context=data.get("context", {}),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Payload types (RFC 15A.2, 15A.6 – 15A.10)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EpisodicPayload:
+    """Typed payload for episodic memory records (RFC 15A.6)."""
+
+    kind: str = "episodic"
+    timeline: list[TimelineEvent] = field(default_factory=list)
+    tool_graph: list[ToolNode] = field(default_factory=list)
+    environment: Optional[EnvironmentSnapshot] = None
+    outcome: str = ""
+    artifacts: list[str] = field(default_factory=list)
+    tool_graph_ref: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EpisodicPayload:
+        env_data = data.get("environment")
+        return cls(
+            kind=data.get("kind", "episodic"),
+            timeline=[TimelineEvent.from_dict(e) for e in data.get("timeline", [])],
+            tool_graph=[ToolNode.from_dict(n) for n in data.get("tool_graph", [])],
+            environment=EnvironmentSnapshot.from_dict(env_data) if env_data else None,
+            outcome=data.get("outcome", ""),
+            artifacts=data.get("artifacts", []),
+            tool_graph_ref=data.get("tool_graph_ref", ""),
+        )
+
+
+@dataclass
+class WorkingPayload:
+    """Typed payload for working memory records (RFC 15A.7)."""
+
+    kind: str = "working"
+    thread_id: str = ""
+    state: str = ""
+    active_constraints: list[Constraint] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    context_summary: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkingPayload:
+        return cls(
+            kind=data.get("kind", "working"),
+            thread_id=data.get("thread_id", ""),
+            state=data.get("state", ""),
+            active_constraints=[
+                Constraint.from_dict(c)
+                for c in data.get("active_constraints", [])
+            ],
+            next_actions=data.get("next_actions", []),
+            open_questions=data.get("open_questions", []),
+            context_summary=data.get("context_summary", ""),
+        )
+
+
+@dataclass
+class SemanticPayload:
+    """Typed payload for semantic memory records (RFC 15A.8)."""
+
+    kind: str = "semantic"
+    subject: str = ""
+    predicate: str = ""
+    object: Any = None
+    validity: Optional[Validity] = None
+    evidence: list[ProvenanceRef] = field(default_factory=list)
+    revision_policy: str = ""
+    revision: Optional[RevisionState] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SemanticPayload:
+        validity_data = data.get("validity")
+        revision_data = data.get("revision")
+        return cls(
+            kind=data.get("kind", "semantic"),
+            subject=data.get("subject", ""),
+            predicate=data.get("predicate", ""),
+            object=data.get("object"),
+            validity=Validity.from_dict(validity_data) if validity_data else None,
+            evidence=[ProvenanceRef.from_dict(e) for e in data.get("evidence", [])],
+            revision_policy=data.get("revision_policy", ""),
+            revision=RevisionState.from_dict(revision_data) if revision_data else None,
+        )
+
+
+@dataclass
+class Trigger:
+    """A trigger condition that activates a competence skill."""
+
+    signal: str = ""
+    conditions: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Trigger:
+        return cls(
+            signal=data.get("signal", ""),
+            conditions=data.get("conditions", {}),
+        )
+
+
+@dataclass
+class RecipeStep:
+    """A single step in a competence skill recipe."""
+
+    step: str = ""
+    tool: str = ""
+    args_schema: dict[str, Any] = field(default_factory=dict)
+    validation: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecipeStep:
+        return cls(
+            step=data.get("step", ""),
+            tool=data.get("tool", ""),
+            args_schema=data.get("args_schema", {}),
+            validation=data.get("validation", ""),
+        )
+
+
+@dataclass
+class PerformanceStats:
+    """Execution performance statistics for a competence or plan."""
+
+    success_count: int = 0
+    failure_count: int = 0
+    success_rate: float = 0.0
+    avg_latency_ms: float = 0.0
+    last_used_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PerformanceStats:
+        return cls(
+            success_count=data.get("success_count", 0),
+            failure_count=data.get("failure_count", 0),
+            success_rate=data.get("success_rate", 0.0),
+            avg_latency_ms=data.get("avg_latency_ms", 0.0),
+            last_used_at=data.get("last_used_at"),
+        )
+
+
+@dataclass
+class CompetencePayload:
+    """Typed payload for competence memory records (RFC 15A.9)."""
+
+    kind: str = "competence"
+    skill_name: str = ""
+    triggers: list[Trigger] = field(default_factory=list)
+    recipe: list[RecipeStep] = field(default_factory=list)
+    required_tools: list[str] = field(default_factory=list)
+    failure_modes: list[str] = field(default_factory=list)
+    fallbacks: list[str] = field(default_factory=list)
+    performance: Optional[PerformanceStats] = None
+    version: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CompetencePayload:
+        perf_data = data.get("performance")
+        return cls(
+            kind=data.get("kind", "competence"),
+            skill_name=data.get("skill_name", ""),
+            triggers=[Trigger.from_dict(t) for t in data.get("triggers", [])],
+            recipe=[RecipeStep.from_dict(r) for r in data.get("recipe", [])],
+            required_tools=data.get("required_tools", []),
+            failure_modes=data.get("failure_modes", []),
+            fallbacks=data.get("fallbacks", []),
+            performance=PerformanceStats.from_dict(perf_data) if perf_data else None,
+            version=data.get("version", ""),
+        )
+
+
+@dataclass
+class PlanNode:
+    """An action node in a plan graph (RFC 15A.10)."""
+
+    id: str = ""
+    op: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+    guards: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlanNode:
+        return cls(
+            id=data.get("id", ""),
+            op=data.get("op", ""),
+            params=data.get("params", {}),
+            guards=data.get("guards", {}),
+        )
+
+
+@dataclass
+class PlanEdge:
+    """A dependency edge in a plan graph (RFC 15A.10).
+
+    Note: the JSON field name is ``"from"``; the Python attribute is
+    ``from_`` to avoid shadowing the built-in keyword.
+    """
+
+    from_: str = ""
+    to: str = ""
+    kind: EdgeKind = EdgeKind.DATA
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlanEdge:
+        return cls(
+            from_=data.get("from", ""),
+            to=data.get("to", ""),
+            kind=EdgeKind(data.get("kind", "data")),
+        )
+
+
+@dataclass
+class PlanMetrics:
+    """Execution metrics for a plan graph (RFC 15A.10)."""
+
+    avg_latency_ms: float = 0.0
+    failure_rate: float = 0.0
+    execution_count: int = 0
+    last_executed_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlanMetrics:
+        return cls(
+            avg_latency_ms=data.get("avg_latency_ms", 0.0),
+            failure_rate=data.get("failure_rate", 0.0),
+            execution_count=data.get("execution_count", 0),
+            last_executed_at=data.get("last_executed_at"),
+        )
+
+
+@dataclass
+class PlanGraphPayload:
+    """Typed payload for plan-graph memory records (RFC 15A.10)."""
+
+    kind: str = "plan_graph"
+    plan_id: str = ""
+    version: str = ""
+    intent: str = ""
+    constraints: dict[str, Any] = field(default_factory=dict)
+    inputs_schema: dict[str, Any] = field(default_factory=dict)
+    outputs_schema: dict[str, Any] = field(default_factory=dict)
+    nodes: list[PlanNode] = field(default_factory=list)
+    edges: list[PlanEdge] = field(default_factory=list)
+    metrics: Optional[PlanMetrics] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlanGraphPayload:
+        metrics_data = data.get("metrics")
+        return cls(
+            kind=data.get("kind", "plan_graph"),
+            plan_id=data.get("plan_id", ""),
+            version=data.get("version", ""),
+            intent=data.get("intent", ""),
+            constraints=data.get("constraints", {}),
+            inputs_schema=data.get("inputs_schema", {}),
+            outputs_schema=data.get("outputs_schema", {}),
+            nodes=[PlanNode.from_dict(n) for n in data.get("nodes", [])],
+            edges=[PlanEdge.from_dict(e) for e in data.get("edges", [])],
+            metrics=PlanMetrics.from_dict(metrics_data) if metrics_data else None,
+        )
+

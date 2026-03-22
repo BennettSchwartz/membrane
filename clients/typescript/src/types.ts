@@ -132,8 +132,8 @@ export interface Provenance {
 
 export interface Relation {
   target_id: string;
-  kind?: string;
   predicate?: string;
+  kind?: string;
   weight?: number;
   created_at?: string;
 }
@@ -183,3 +183,170 @@ export function createDefaultTrustContext(): TrustContext {
     scopes: []
   };
 }
+
+// ---------------------------------------------------------------------------
+// Constraint (RFC 15A.3, 15A.6)
+// ---------------------------------------------------------------------------
+
+export interface Constraint {
+  type: string;
+  key: string;
+  value?: unknown;
+  required?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Provenance reference and revision (RFC 15A.8)
+// ---------------------------------------------------------------------------
+
+export interface ProvenanceRef {
+  source_type: string;
+  source_id: string;
+  timestamp: string;
+}
+
+export interface RevisionState {
+  supersedes?: string;
+  superseded_by?: string;
+  status?: RevisionStatus | string;
+}
+
+// ---------------------------------------------------------------------------
+// Validity (RFC 15A.8)
+// ---------------------------------------------------------------------------
+
+export interface Validity {
+  mode: ValidityMode | string;
+  conditions?: Record<string, unknown>;
+  start?: string;
+  end?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Episodic payload helpers (RFC 15A.6, 15A.2)
+// ---------------------------------------------------------------------------
+
+export interface TimelineEvent {
+  t: string;
+  event_kind: string;
+  ref: string;
+  summary?: string;
+}
+
+export interface ToolNode {
+  id: string;
+  tool: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  timestamp?: string;
+  depends_on?: string[];
+}
+
+export interface EnvironmentSnapshot {
+  os?: string;
+  os_version?: string;
+  tool_versions?: Record<string, string>;
+  working_directory?: string;
+  context?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Payload types (RFC 15A.2, 15A.6 – 15A.10)
+// ---------------------------------------------------------------------------
+
+export interface EpisodicPayload {
+  kind: "episodic";
+  timeline: TimelineEvent[];
+  tool_graph?: ToolNode[];
+  environment?: EnvironmentSnapshot;
+  outcome?: OutcomeStatus | string;
+  artifacts?: string[];
+  tool_graph_ref?: string;
+}
+
+export interface WorkingPayload {
+  kind: "working";
+  thread_id: string;
+  state: TaskState | string;
+  active_constraints?: Constraint[];
+  next_actions?: string[];
+  open_questions?: string[];
+  context_summary?: string;
+}
+
+export interface SemanticPayload {
+  kind: "semantic";
+  subject: string;
+  predicate: string;
+  object: unknown;
+  validity: Validity;
+  evidence?: ProvenanceRef[];
+  revision_policy?: string;
+  revision?: RevisionState;
+}
+
+export interface Trigger {
+  signal: string;
+  conditions?: Record<string, unknown>;
+}
+
+export interface RecipeStep {
+  step: string;
+  tool?: string;
+  args_schema?: Record<string, unknown>;
+  validation?: string;
+}
+
+export interface PerformanceStats {
+  success_count?: number;
+  failure_count?: number;
+  success_rate?: number;
+  avg_latency_ms?: number;
+  last_used_at?: string;
+}
+
+export interface CompetencePayload {
+  kind: "competence";
+  skill_name: string;
+  triggers: Trigger[];
+  recipe: RecipeStep[];
+  required_tools?: string[];
+  failure_modes?: string[];
+  fallbacks?: string[];
+  performance?: PerformanceStats;
+  version?: string;
+}
+
+export interface PlanNode {
+  id: string;
+  op: string;
+  params?: Record<string, unknown>;
+  guards?: Record<string, unknown>;
+}
+
+export interface PlanEdge {
+  from: string;
+  to: string;
+  kind: EdgeKind | string;
+}
+
+export interface PlanMetrics {
+  avg_latency_ms?: number;
+  failure_rate?: number;
+  execution_count?: number;
+  last_executed_at?: string;
+}
+
+export interface PlanGraphPayload {
+  kind: "plan_graph";
+  plan_id: string;
+  version: string;
+  intent?: string;
+  constraints?: Record<string, unknown>;
+  inputs_schema?: Record<string, unknown>;
+  outputs_schema?: Record<string, unknown>;
+  nodes: PlanNode[];
+  edges: PlanEdge[];
+  metrics?: PlanMetrics;
+}
+
