@@ -10,6 +10,7 @@ Python-native helper methods.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
@@ -17,6 +18,7 @@ from typing import Any, Optional, Sequence
 import grpc
 
 from membrane.types import (
+    Constraint,
     MemoryRecord,
     MemoryType,
     RetrieveResult,
@@ -357,7 +359,7 @@ class MembraneClient:
         next_actions: Sequence[str] | None = None,
         open_questions: Sequence[str] | None = None,
         context_summary: str = "",
-        active_constraints: Sequence[dict[str, Any]] | None = None,
+        active_constraints: Sequence[Constraint | dict[str, Any]] | None = None,
         sensitivity: Sensitivity | str = Sensitivity.LOW,
         source: str = "python-client",
         tags: Sequence[str] | None = None,
@@ -395,7 +397,11 @@ class MembraneClient:
             sensitivity=_sensitivity_value(sensitivity),
         )
         if active_constraints is not None:
-            req.active_constraints = _json_bytes(list(active_constraints))
+            constraints_data = [
+                dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
+                for c in active_constraints
+            ]
+            req.active_constraints = _json_bytes(constraints_data)
         resp = self._stub.IngestWorkingState(req, **self._call_kwargs())
         return _parse_record_from_response(resp.record)
 
