@@ -7,13 +7,55 @@ import path from "node:path";
 import { MembraneClient, MembraneError, Sensitivity } from "../src/index";
 
 const API_KEY = "ts-integration-secret";
+const BUILD_TIMEOUT_MS = 180_000;
+const READY_TIMEOUT_MS = 60_000;
 
 let daemon: ChildProcess | undefined;
 let daemonAddr = "";
 let daemonLogs = "";
+let tempDir = "";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`${command} ${args.join(" ")} timed out after ${options.timeoutMs}ms\n${output}`));
+    }, options.timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(" ")} exited with code ${code}\n${output}`));
+    });
+  });
 }
 
 async function getFreePort(): Promise<number> {
@@ -39,14 +81,18 @@ async function getFreePort(): Promise<number> {
   });
 }
 
-async function waitForDaemonReady(addr: string): Promise<void> {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+async function waitForDaemonReady(addr: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
     const client = new MembraneClient(addr, { apiKey: API_KEY, timeoutMs: 1_000 });
     try {
       await client.getMetrics();
       client.close();
       return;
-    } catch {
+    } catch (err) {
+      lastError = err;
       client.close();
       if (daemon?.exitCode !== null && daemon?.exitCode !== undefined) {
         break;
@@ -55,18 +101,26 @@ async function waitForDaemonReady(addr: string): Promise<void> {
     }
   }
 
-  throw new Error(`membraned did not become ready. Logs:\n${daemonLogs}`);
+  throw new Error(`membraned did not become ready at ${addr}: ${String(lastError)}\nLogs:\n${daemonLogs}`);
 }
 
 beforeAll(async () => {
+  const repoRoot = path.resolve(__dirname, "../../..");
   const port = await getFreePort();
   daemonAddr = `127.0.0.1:${port}`;
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "membrane-ts-client-"));
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "membrane-ts-client-"));
   const dbPath = path.join(tempDir, "membrane.db");
+  const daemonBinary = path.join(tempDir, process.platform === "win32" ? "membraned.exe" : "membraned");
 
-  daemon = spawn("go", ["run", "./cmd/membraned", "-addr", daemonAddr, "-db", dbPath], {
-    cwd: path.resolve(__dirname, "../../.."),
+  await runCommand("go", ["build", "-o", daemonBinary, "./cmd/membraned"], {
+    cwd: repoRoot,
+    env: process.env,
+    timeoutMs: BUILD_TIMEOUT_MS
+  });
+
+  daemon = spawn(daemonBinary, ["-addr", daemonAddr, "-db", dbPath], {
+    cwd: repoRoot,
     env: {
       ...process.env,
       MEMBRANE_API_KEY: API_KEY
@@ -85,12 +139,18 @@ beforeAll(async () => {
   processRef.stderr.on("data", (chunk: Buffer) => {
     daemonLogs += chunk.toString("utf8");
   });
+  processRef.on("error", (err: Error) => {
+    daemonLogs += `${err.stack ?? err.message}\n`;
+  });
 
-  await waitForDaemonReady(daemonAddr);
-}, 30_000);
+  await waitForDaemonReady(daemonAddr, READY_TIMEOUT_MS);
+}, BUILD_TIMEOUT_MS + READY_TIMEOUT_MS);
 
 afterAll(async () => {
   if (!daemon) {
+    if (tempDir) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
     return;
   }
 
@@ -102,6 +162,10 @@ afterAll(async () => {
     daemon?.once("exit", () => resolve());
     setTimeout(() => resolve(), 5_000);
   });
+
+  if (tempDir) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }, 10_000);
 
 describe("MembraneClient integration", () => {
