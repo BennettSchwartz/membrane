@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Install actionlint
@@ -84,7 +84,7 @@ jobs:
           --health-retries=10
     strategy:
       matrix:
-        go-version: ['1.22', '1.23']
+        go-version: ['1.24', '1.25', '1.26']
     env:
       TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
 
@@ -131,7 +131,7 @@ jobs:
         run: go vet ./...
 
       - name: Install and run staticcheck
-        if: matrix.go-version == '1.23'
+        if: matrix.go-version == '1.26'
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           staticcheck ./...
@@ -155,7 +155,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Download Go dependencies
