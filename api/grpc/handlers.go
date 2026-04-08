@@ -84,32 +84,6 @@ func validateSensitivity(name, value string, required bool) error {
 	return nil
 }
 
-func validateOutcomeStatus(name, value string, required bool) error {
-	if value == "" {
-		if required {
-			return status.Errorf(codes.InvalidArgument, "%s is required", name)
-		}
-		return nil
-	}
-	if !schema.IsValidOutcomeStatus(schema.OutcomeStatus(value)) {
-		return status.Errorf(codes.InvalidArgument, "%s must be one of: success, failure, partial", name)
-	}
-	return nil
-}
-
-func validateTaskState(name, value string, required bool) error {
-	if value == "" {
-		if required {
-			return status.Errorf(codes.InvalidArgument, "%s is required", name)
-		}
-		return nil
-	}
-	if !schema.IsValidTaskState(schema.TaskState(value)) {
-		return status.Errorf(codes.InvalidArgument, "%s must be one of: planning, executing, blocked, waiting, done", name)
-	}
-	return nil
-}
-
 func validateMemoryType(name, value string) error {
 	if !schema.IsValidMemoryType(schema.MemoryType(value)) {
 		return status.Errorf(codes.InvalidArgument, "%s must be one of: episodic, working, semantic, competence, plan_graph, entity", name)

@@ -178,7 +178,6 @@ func (s *Service) CaptureMemory(ctx context.Context, req CaptureMemoryRequest) (
 		return nil, err
 	} else if semanticRecord != nil {
 		createdRecords = append(createdRecords, semanticRecord)
-		candidates = append(candidates, semanticRecord)
 		edges = append(edges, semanticEdges...)
 		for _, edge := range semanticEdges {
 			if edge.SourceID != sourceRecord.ID {
@@ -302,12 +301,8 @@ func buildFallbackInterpretation(req CaptureMemoryRequest) *schema.Interpretatio
 		TopicalLabels:        uniqueStrings(req.Tags),
 		ExtractionConfidence: 0.25,
 	}
-	for _, mention := range inferMentionsFromContent(req.Content) {
-		interpretation.Mentions = append(interpretation.Mentions, mention)
-	}
-	for _, ref := range inferReferenceCandidates(req.Content, req.Context) {
-		interpretation.ReferenceCandidates = append(interpretation.ReferenceCandidates, ref)
-	}
+	interpretation.Mentions = append(interpretation.Mentions, inferMentionsFromContent(req.Content)...)
+	interpretation.ReferenceCandidates = append(interpretation.ReferenceCandidates, inferReferenceCandidates(req.Content, req.Context)...)
 	if interpretation.ProposedType == "" {
 		interpretation.ProposedType = inferProposedType(req.SourceKind)
 	}
