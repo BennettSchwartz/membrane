@@ -64,6 +64,18 @@ type Config struct {
 	// LLMAPIKey authenticates requests to the LLM endpoint.
 	LLMAPIKey string `yaml:"llm_api_key"`
 
+	// IngestLLMEnabled enables ingest-side interpretation during CaptureMemory.
+	IngestLLMEnabled bool `yaml:"ingest_llm_enabled"`
+
+	// IngestLLMEndpoint is the HTTP endpoint used for ingest interpretation.
+	IngestLLMEndpoint string `yaml:"ingest_llm_endpoint"`
+
+	// IngestLLMModel is the chat model name sent to the ingest LLM endpoint.
+	IngestLLMModel string `yaml:"ingest_llm_model"`
+
+	// IngestLLMAPIKey authenticates requests to the ingest LLM endpoint.
+	IngestLLMAPIKey string `yaml:"ingest_llm_api_key"`
+
 	// TLSCertFile is the path to the TLS certificate PEM file.
 	// If empty, the server runs without TLS.
 	TLSCertFile string `yaml:"tls_cert_file"`
@@ -79,6 +91,18 @@ type Config struct {
 	// RateLimitPerSecond is the maximum requests per second per client.
 	// 0 means no rate limiting. Default: 100.
 	RateLimitPerSecond int `yaml:"rate_limit_per_second"`
+
+	// GraphDefaultRootLimit is the default root count for graph retrieval.
+	GraphDefaultRootLimit int `yaml:"graph_default_root_limit"`
+
+	// GraphDefaultNodeLimit is the default total node limit for graph retrieval.
+	GraphDefaultNodeLimit int `yaml:"graph_default_node_limit"`
+
+	// GraphDefaultEdgeLimit is the default total edge limit for graph retrieval.
+	GraphDefaultEdgeLimit int `yaml:"graph_default_edge_limit"`
+
+	// GraphDefaultMaxHops is the default maximum expansion depth for graph retrieval.
+	GraphDefaultMaxHops int `yaml:"graph_default_max_hops"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -94,6 +118,10 @@ func DefaultConfig() *Config {
 		EncryptionKey:                "",
 		EmbeddingDimensions:          1536,
 		RateLimitPerSecond:           100,
+		GraphDefaultRootLimit:        10,
+		GraphDefaultNodeLimit:        25,
+		GraphDefaultEdgeLimit:        100,
+		GraphDefaultMaxHops:          1,
 	}
 }
 

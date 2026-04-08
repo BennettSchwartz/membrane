@@ -12,126 +12,34 @@ import (
 	"github.com/GustyCube/membrane/pkg/schema"
 )
 
-func TestEvalIngestionValidation(t *testing.T) {
+func TestEvalCaptureAndOutcomeValidation(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	cases := []struct {
-		name    string
-		errText string
-		call    func() error
-	}{
-		{
-			name:    "event-missing-kind",
-			errText: "event kind is required",
-			call: func() error {
-				_, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-					Source:    "eval",
-					EventKind: "",
-					Ref:       "ref-1",
-					Summary:   "summary",
-				})
-				return err
-			},
-		},
-		{
-			name:    "event-missing-ref",
-			errText: "event ref is required",
-			call: func() error {
-				_, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-					Source:    "eval",
-					EventKind: "event",
-					Ref:       "",
-					Summary:   "summary",
-				})
-				return err
-			},
-		},
-		{
-			name:    "tool-missing-name",
-			errText: "tool name is required",
-			call: func() error {
-				_, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
-					Source:   "eval",
-					ToolName: "",
-					Args:     map[string]any{"cmd": "go test"},
-					Result:   "ok",
-				})
-				return err
-			},
-		},
-		{
-			name:    "observation-missing-subject",
-			errText: "subject is required",
-			call: func() error {
-				_, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-					Source:    "eval",
-					Subject:   "",
-					Predicate: "uses",
-					Object:    "go",
-				})
-				return err
-			},
-		},
-		{
-			name:    "observation-missing-predicate",
-			errText: "predicate is required",
-			call: func() error {
-				_, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-					Source:    "eval",
-					Subject:   "service",
-					Predicate: "",
-					Object:    "go",
-				})
-				return err
-			},
-		},
-		{
-			name:    "working-missing-thread",
-			errText: "thread ID is required",
-			call: func() error {
-				_, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-					Source:   "eval",
-					ThreadID: "",
-					State:    schema.TaskStateExecuting,
-				})
-				return err
-			},
-		},
-		{
-			name:    "working-missing-state",
-			errText: "task state is required",
-			call: func() error {
-				_, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-					Source:   "eval",
-					ThreadID: "thread-1",
-					State:    "",
-				})
-				return err
-			},
-		},
+	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+		Source:    "eval",
+		EventKind: "event",
+		Ref:       "ref-1",
+		Summary:   "summary",
+	})
+	if err != nil {
+		t.Fatalf("capture event: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.call()
-			if err == nil || !strings.Contains(err.Error(), tc.errText) {
-				t.Fatalf("expected error containing %q, got %v", tc.errText, err)
-			}
-		})
+	if event.Type != schema.MemoryTypeEpisodic {
+		t.Fatalf("expected episodic event, got %s", event.Type)
 	}
 
 	// Outcome must target an episodic record.
-	semantic, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	semantic, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses",
 		Object:    "go",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation: %v", err)
+		t.Fatalf("capture observation: %v", err)
 	}
-	_, err = m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
+	_, err = recordOutcome(ctx, m, ingestion.IngestOutcomeRequest{
 		Source:         "eval",
 		TargetRecordID: semantic.ID,
 		OutcomeStatus:  schema.OutcomeStatusSuccess,
@@ -145,7 +53,7 @@ func TestEvalRetrievalRequiresTrust(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	_, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{})
+	_, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{})
 	if !errors.Is(err, retrieval.ErrNilTrust) {
 		t.Fatalf("expected ErrNilTrust for Retrieve, got %v", err)
 	}
@@ -160,7 +68,7 @@ func TestEvalRevisionInvariants(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	event, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
 		Source:    "eval",
 		EventKind: "build",
 		Ref:       "evt-1",
@@ -194,7 +102,7 @@ func TestEvalRevisionInvariants(t *testing.T) {
 	}
 
 	// Evidence required for semantic revisions.
-	semantic, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	semantic, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses",

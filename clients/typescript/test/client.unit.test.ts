@@ -1,4 +1,4 @@
-import { MembraneClient, Sensitivity, type MemoryRecord } from "../src/index";
+import { MembraneClient, Sensitivity, SourceKind, type MemoryRecord } from "../src/index";
 import type { RpcMethodName, RpcRequest, RpcResponse, RpcTransport } from "../src/internal/grpc";
 
 class FakeTransport implements RpcTransport {
@@ -31,95 +31,86 @@ function asRecord(id: string): MemoryRecord {
 }
 
 describe("MembraneClient unit", () => {
-  it("ingestEvent applies defaults and parses envelope bytes", async () => {
-    const transport = new FakeTransport({ record: Buffer.from(JSON.stringify(asRecord("rec-1")), "utf8") });
-    const client = new MembraneClient("localhost:9090", { transport });
+  it("captureMemory encodes rich content and parses created graph artifacts", async () => {
+    const primary = asRecord("source-1");
+    const entity = {
+      ...asRecord("entity-1"),
+      type: "entity",
+      payload: {
+        kind: "entity",
+        canonical_name: "Membrane",
+        entity_kind: "project",
+        aliases: ["membrane"]
+      }
+    };
 
-    const record = await client.ingestEvent("file_edit", "src/index.ts");
-
-    expect(record.id).toBe("rec-1");
-    expect(transport.calls[0]?.method).toBe("IngestEvent");
-    expect(transport.calls[0]?.request.source).toBe("typescript-client");
-    expect(transport.calls[0]?.request.summary).toBe("");
-    expect(transport.calls[0]?.request.sensitivity).toBe("low");
-    expect(typeof transport.calls[0]?.request.timestamp).toBe("string");
-  });
-
-  it("ingestToolOutput encodes args and result as bytes", async () => {
-    const transport = new FakeTransport({ record: Buffer.from(JSON.stringify(asRecord("rec-2")), "utf8") });
-    const client = new MembraneClient("localhost:9090", { transport });
-
-    await client.ingestToolOutput("bash", {
-      args: { command: "go test ./..." },
-      result: { exit_code: 0 },
-      sensitivity: Sensitivity.MEDIUM,
-      dependsOn: ["abc"]
-    });
-
-    const call = transport.calls[0];
-    expect(call?.method).toBe("IngestToolOutput");
-    expect(Buffer.isBuffer(call?.request.args)).toBe(true);
-    expect(Buffer.isBuffer(call?.request.result)).toBe(true);
-    expect(call?.request.depends_on).toEqual(["abc"]);
-    expect(call?.request.sensitivity).toBe("medium");
-  });
-
-  it("retrieve uses default trust context and parses records", async () => {
-    const records = [asRecord("r1"), asRecord("r2")];
     const transport = new FakeTransport({
-      records: records.map((record) => Buffer.from(JSON.stringify(record), "utf8"))
+      primary_record: Buffer.from(JSON.stringify(primary), "utf8"),
+      created_records: [Buffer.from(JSON.stringify(entity), "utf8")],
+      edges: Buffer.from(
+        JSON.stringify([{ source_id: "source-1", predicate: "mentions_entity", target_id: "entity-1" }]),
+        "utf8"
+      )
     });
     const client = new MembraneClient("localhost:9090", { transport });
 
-    const result = await client.retrieve("debug task");
+    const result = await client.captureMemory(
+      {
+        text: "Membrane stores relational memory"
+      },
+      {
+        sourceKind: SourceKind.AGENT_TURN,
+        context: { thread_id: "thread-1" },
+        reasonToRemember: "important architecture note",
+        proposedType: "semantic",
+        tags: ["memory"]
+      }
+    );
 
-    expect(result).toHaveLength(2);
-    expect(result[0]?.id).toBe("r1");
-    expect(transport.calls[0]?.request.trust).toEqual({
-      max_sensitivity: "low",
-      authenticated: false,
-      actor_id: "",
-      scopes: []
-    });
-    expect(transport.calls[0]?.request.limit).toBe(10);
+    expect(transport.calls[0]?.method).toBe("CaptureMemory");
+    expect(Buffer.isBuffer(transport.calls[0]?.request.content)).toBe(true);
+    expect(Buffer.isBuffer(transport.calls[0]?.request.context)).toBe(true);
+    expect(transport.calls[0]?.request.source_kind).toBe("agent_turn");
+    expect(result.primary_record.id).toBe("source-1");
+    expect(result.created_records[0]?.id).toBe("entity-1");
+    expect(result.edges[0]?.predicate).toBe("mentions_entity");
   });
 
-  it("retrieveWithSelection parses optional selection metadata", async () => {
+  it("retrieveGraph parses graph nodes, edges, and selection", async () => {
     const transport = new FakeTransport({
-      records: [Buffer.from(JSON.stringify(asRecord("r1")), "utf8")],
+      nodes: Buffer.from(
+        JSON.stringify([
+          { record: asRecord("root-1"), root: true, hop: 0 },
+          { record: asRecord("neighbor-1"), root: false, hop: 1 }
+        ]),
+        "utf8"
+      ),
+      edges: Buffer.from(
+        JSON.stringify([{ source_id: "root-1", predicate: "mentions_entity", target_id: "neighbor-1" }]),
+        "utf8"
+      ),
+      root_ids: ["root-1"],
       selection: Buffer.from(
         JSON.stringify({
-          Selected: [asRecord("r2")],
-          Confidence: 0.4,
-          NeedsMore: true
+          selected: [asRecord("root-1")],
+          confidence: 0.8,
+          needs_more: false
         }),
         "utf8"
       )
     });
     const client = new MembraneClient("localhost:9090", { transport });
 
-    const result = await client.retrieveWithSelection("debug task");
+    const result = await client.retrieveGraph("membrane graph", { rootLimit: 3, maxHops: 2 });
 
-    expect(result.records[0]?.id).toBe("r1");
-    expect(result.selection).toEqual({
-      selected: [asRecord("r2")],
-      confidence: 0.4,
-      needs_more: true
-    });
-  });
-
-  it("retrieve_with_selection omits selection when absent", async () => {
-    const transport = new FakeTransport({
-      records: [Buffer.from(JSON.stringify(asRecord("r1")), "utf8")],
-      selection: Buffer.alloc(0)
-    });
-    const client = new MembraneClient("localhost:9090", { transport });
-
-    const result = await client.retrieve_with_selection("debug task");
-
-    expect(result.records[0]?.id).toBe("r1");
-    expect(result.selection).toBeUndefined();
-    expect(transport.calls[0]?.method).toBe("Retrieve");
+    expect(transport.calls[0]?.method).toBe("RetrieveGraph");
+    expect(transport.calls[0]?.request.root_limit).toBe(3);
+    expect(transport.calls[0]?.request.max_hops).toBe(2);
+    expect(result.nodes).toHaveLength(2);
+    expect(result.nodes[0]?.record.id).toBe("root-1");
+    expect(result.edges[0]?.target_id).toBe("neighbor-1");
+    expect(result.root_ids).toEqual(["root-1"]);
+    expect(result.selection?.confidence).toBe(0.8);
   });
 
   it("getMetrics parses snapshot payload", async () => {
@@ -134,39 +125,27 @@ describe("MembraneClient unit", () => {
   it("supports snake_case method aliases", async () => {
     const aliasCases = [
       {
-        name: "ingest_event",
-        expectedMethod: "IngestEvent",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-event")), "utf8") },
-        invoke: (client: MembraneClient) => client.ingest_event("user_input", "session-1"),
-        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-event")
+        name: "capture_memory",
+        expectedMethod: "CaptureMemory",
+        response: {
+          primary_record: Buffer.from(JSON.stringify(asRecord("alias-capture")), "utf8"),
+          created_records: [],
+          edges: Buffer.from("[]", "utf8")
+        },
+        invoke: (client: MembraneClient) => client.capture_memory({ text: "remember this" }),
+        assertResult: (result: unknown) => expect((result as { primary_record: MemoryRecord }).primary_record.id).toBe("alias-capture")
       },
       {
-        name: "ingest_tool_output",
-        expectedMethod: "IngestToolOutput",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-tool")), "utf8") },
-        invoke: (client: MembraneClient) => client.ingest_tool_output("bash", { result: { ok: true } }),
-        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-tool")
-      },
-      {
-        name: "ingest_observation",
-        expectedMethod: "IngestObservation",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-observation")), "utf8") },
-        invoke: (client: MembraneClient) => client.ingest_observation("service", "uses", "grpc"),
-        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-observation")
-      },
-      {
-        name: "ingest_outcome",
-        expectedMethod: "IngestOutcome",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-outcome")), "utf8") },
-        invoke: (client: MembraneClient) => client.ingest_outcome("rec-1", "success"),
-        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-outcome")
-      },
-      {
-        name: "ingest_working_state",
-        expectedMethod: "IngestWorkingState",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-working")), "utf8") },
-        invoke: (client: MembraneClient) => client.ingest_working_state("thread-1", "executing"),
-        assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-working")
+        name: "retrieve_graph",
+        expectedMethod: "RetrieveGraph",
+        response: {
+          nodes: Buffer.from(JSON.stringify([{ record: asRecord("alias-graph"), root: true, hop: 0 }]), "utf8"),
+          edges: Buffer.from("[]", "utf8"),
+          root_ids: ["alias-graph"]
+        },
+        invoke: (client: MembraneClient) => client.retrieve_graph("alias graph"),
+        assertResult: (result: unknown) =>
+          expect((result as { nodes: Array<{ record: MemoryRecord }> }).nodes[0]?.record.id).toBe("alias-graph")
       },
       {
         name: "retrieve_by_id",

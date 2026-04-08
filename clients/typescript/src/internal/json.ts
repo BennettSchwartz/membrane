@@ -1,4 +1,13 @@
-import { type JsonObject, type MemoryRecord, type RetrieveResult, type SelectionResult } from "../types";
+import {
+  type CaptureMemoryResult,
+  type GraphEdge,
+  type GraphNode,
+  type JsonObject,
+  type MemoryRecord,
+  type RetrieveGraphResult,
+  type RetrieveResult,
+  type SelectionResult
+} from "../types";
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,6 +53,26 @@ export function parseRecordEnvelope(response: unknown): MemoryRecord {
   }
 
   return decoded as unknown as MemoryRecord;
+}
+
+function parseGraphEdge(value: unknown): GraphEdge {
+  const decoded = decodeJsonValue(value);
+  if (!isObject(decoded)) {
+    throw new TypeError("Expected graph edge object");
+  }
+  return decoded as unknown as GraphEdge;
+}
+
+function parseGraphNode(value: unknown): GraphNode {
+  const decoded = decodeJsonValue(value);
+  if (!isObject(decoded)) {
+    throw new TypeError("Expected graph node object");
+  }
+  return {
+    record: parseRecord(decoded.record),
+    root: decoded.root === true,
+    hop: typeof decoded.hop === "number" ? decoded.hop : 0
+  };
 }
 
 export function parseRecordsEnvelope(response: unknown): MemoryRecord[] {
@@ -99,6 +128,55 @@ export function parseRetrieveEnvelope(response: unknown): RetrieveResult {
   }
 
   return { records, selection };
+}
+
+export function parseCaptureMemoryEnvelope(response: unknown): CaptureMemoryResult {
+  const decoded = decodeJsonValue(response);
+  if (!isObject(decoded)) {
+    throw new TypeError("Expected object response for capture envelope");
+  }
+
+  const createdRecords = Array.isArray(decoded.created_records)
+    ? decoded.created_records.map((raw) => parseRecord(raw))
+    : [];
+  const edges = Array.isArray(decodeJsonValue(decoded.edges))
+    ? (decodeJsonValue(decoded.edges) as unknown[]).map((raw) => parseGraphEdge(raw))
+    : [];
+
+  return {
+    primary_record: parseRecord(decoded.primary_record),
+    created_records: createdRecords,
+    edges
+  };
+}
+
+export function parseRetrieveGraphEnvelope(response: unknown): RetrieveGraphResult {
+  const decoded = decodeJsonValue(response);
+  if (!isObject(decoded)) {
+    throw new TypeError("Expected object response for graph envelope");
+  }
+
+  const nodesValue = decodeJsonValue(decoded.nodes);
+  const edgesValue = decodeJsonValue(decoded.edges);
+  const nodes = Array.isArray(nodesValue) ? nodesValue.map((raw) => parseGraphNode(raw)) : [];
+  const edges = Array.isArray(edgesValue) ? edgesValue.map((raw) => parseGraphEdge(raw)) : [];
+
+  let selection: SelectionResult | undefined;
+  if ("selection" in decoded && !isEmptyPayload(decoded.selection)) {
+    selection = parseSelection(decoded.selection);
+  }
+
+  const result: RetrieveGraphResult = {
+    nodes,
+    edges,
+    root_ids: Array.isArray(decoded.root_ids) ? decoded.root_ids.map((value) => String(value)) : []
+  };
+
+  if (selection !== undefined) {
+    result.selection = selection;
+  }
+
+  return result;
 }
 
 export function parseMetricsEnvelope(response: unknown): JsonObject {

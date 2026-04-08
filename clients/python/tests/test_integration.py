@@ -12,7 +12,7 @@ from pathlib import Path
 import grpc
 import pytest
 
-from membrane import MembraneClient, Sensitivity, TrustContext
+from membrane import MembraneClient, Sensitivity, SourceKind, TrustContext
 
 
 def _free_port() -> int:
@@ -119,19 +119,53 @@ def test_auth_and_happy_path(daemon_env) -> None:
     )
 
     with MembraneClient(addr, api_key=api_key, timeout=2.0) as client:
-        record = client.ingest_event(
-            "deployment",
-            "deploy-1",
-            summary="Ran deployment successfully",
+        capture = client.capture_memory(
+            {
+                "text": "Remember Orchid as the staging deploy target.",
+                "project": "Orchid",
+            },
+            reason_to_remember="Niche deploy vocabulary should be recoverable",
             scope="project:alpha",
             tags=["integration", "python"],
             sensitivity=Sensitivity.LOW,
         )
 
+        record = capture.primary_record
         assert record.id
+        first_entity = next(
+            created for created in capture.created_records if created.type is not None and created.type.value == "entity"
+        )
 
-        retrieved = client.retrieve("deployment", trust=trust, limit=10)
-        assert any(item.id == record.id for item in retrieved)
+        second_capture = client.capture_memory(
+            {
+                "text": "Use Orchid for rollout verification before production.",
+                "project": "Orchid",
+            },
+            reason_to_remember="Repeated mention should link to same entity",
+            scope="project:alpha",
+            tags=["integration", "python", "orchid"],
+            sensitivity=Sensitivity.LOW,
+        )
+
+        mention_edge = next(
+            edge
+            for edge in second_capture.edges
+            if edge.predicate == "mentions_entity"
+            and edge.source_id == second_capture.primary_record.id
+        )
+        assert mention_edge.target_id == first_entity.id
+
+        graph = client.retrieve_graph(
+            "Orchid deploy target",
+            trust=trust,
+            root_limit=10,
+            node_limit=20,
+            edge_limit=20,
+            max_hops=1,
+        )
+        assert any(node.record.id == record.id for node in graph.nodes)
+        assert any(node.record.type.value == "entity" for node in graph.nodes)
+        assert any(edge.predicate == "mentions_entity" for edge in graph.edges)
 
         by_id = client.retrieve_by_id(record.id, trust=trust)
         assert by_id.id == record.id
@@ -145,11 +179,12 @@ def test_retract_episodic_failure(daemon_env) -> None:
     api_key = daemon_env["api_key"]
 
     with MembraneClient(addr, api_key=api_key, timeout=2.0) as client:
-        record = client.ingest_event(
-            "tool_call",
-            "evt-1",
+        capture = client.capture_memory(
+            {"ref": "evt-1", "text": "Created for immutable retraction check"},
+            source_kind=SourceKind.EVENT,
             summary="Created for immutable retraction check",
         )
+        record = capture.primary_record
 
         with pytest.raises(grpc.RpcError) as excinfo:
             client.retract(record.id, actor="py-test", rationale="should fail")

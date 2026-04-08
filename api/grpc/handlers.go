@@ -112,7 +112,7 @@ func validateTaskState(name, value string, required bool) error {
 
 func validateMemoryType(name, value string) error {
 	if !schema.IsValidMemoryType(schema.MemoryType(value)) {
-		return status.Errorf(codes.InvalidArgument, "%s must be one of: episodic, working, semantic, competence, plan_graph", name)
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: episodic, working, semantic, competence, plan_graph, entity", name)
 	}
 	return nil
 }
@@ -120,15 +120,15 @@ func validateMemoryType(name, value string) error {
 // compile-time assertion
 var _ pb.MembraneServiceServer = (*Handler)(nil)
 
-// IngestEvent converts the gRPC request and delegates to Membrane.IngestEvent.
-func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (*pb.IngestResponse, error) {
+// CaptureMemory converts the gRPC request and delegates to Membrane.CaptureMemory.
+func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryRequest) (*pb.CaptureMemoryResponse, error) {
 	if err := validateStringField("source", req.Source); err != nil {
 		return nil, err
 	}
-	if err := validateStringField("event_kind", req.EventKind); err != nil {
+	if err := validateStringField("source_kind", req.SourceKind); err != nil {
 		return nil, err
 	}
-	if err := validateStringField("ref", req.Ref); err != nil {
+	if err := validateStringField("reason_to_remember", req.ReasonToRemember); err != nil {
 		return nil, err
 	}
 	if err := validateStringField("summary", req.Summary); err != nil {
@@ -140,240 +140,79 @@ func (h *Handler) IngestEvent(ctx context.Context, req *pb.IngestEventRequest) (
 	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
 		return nil, err
 	}
-
-	ts, err := parseOptionalTime(req.Timestamp)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
-	}
-
-	rec, err := h.membrane.IngestEvent(ctx, ingestion.IngestEventRequest{
-		Source:      req.Source,
-		EventKind:   req.EventKind,
-		Ref:         req.Ref,
-		Summary:     req.Summary,
-		Timestamp:   ts,
-		Tags:        req.Tags,
-		Scope:       req.Scope,
-		Sensitivity: schema.Sensitivity(req.Sensitivity),
-	})
-	if err != nil {
-		return nil, serviceErr(err)
-	}
-
-	return marshalRecordResponse(rec)
-}
-
-// IngestToolOutput converts the gRPC request and delegates to Membrane.IngestToolOutput.
-func (h *Handler) IngestToolOutput(ctx context.Context, req *pb.IngestToolOutputRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("tool_name", req.ToolName); err != nil {
-		return nil, err
-	}
-	if err := validateJSONPayload("args", req.Args); err != nil {
-		return nil, err
-	}
-	if err := validateJSONPayload("result", req.Result); err != nil {
-		return nil, err
-	}
-	if err := validateTags(req.Tags); err != nil {
-		return nil, err
-	}
-	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
-		return nil, err
-	}
-
-	ts, err := parseOptionalTime(req.Timestamp)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
-	}
-
-	var args map[string]any
-	if len(req.Args) > 0 {
-		if err := json.Unmarshal(req.Args, &args); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid args JSON: %v", err)
-		}
-	}
-
-	var result any
-	if len(req.Result) > 0 {
-		if err := json.Unmarshal(req.Result, &result); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid result JSON: %v", err)
-		}
-	}
-
-	rec, err := h.membrane.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
-		Source:      req.Source,
-		ToolName:    req.ToolName,
-		Args:        args,
-		Result:      result,
-		DependsOn:   req.DependsOn,
-		Timestamp:   ts,
-		Tags:        req.Tags,
-		Scope:       req.Scope,
-		Sensitivity: schema.Sensitivity(req.Sensitivity),
-	})
-	if err != nil {
-		return nil, serviceErr(err)
-	}
-
-	return marshalRecordResponse(rec)
-}
-
-// IngestObservation converts the gRPC request and delegates to Membrane.IngestObservation.
-func (h *Handler) IngestObservation(ctx context.Context, req *pb.IngestObservationRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("subject", req.Subject); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("predicate", req.Predicate); err != nil {
-		return nil, err
-	}
-	if err := validateJSONPayload("object", req.Object); err != nil {
-		return nil, err
-	}
-	if err := validateTags(req.Tags); err != nil {
-		return nil, err
-	}
-	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
-		return nil, err
-	}
-
-	ts, err := parseOptionalTime(req.Timestamp)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
-	}
-
-	var obj any
-	if len(req.Object) > 0 {
-		if err := json.Unmarshal(req.Object, &obj); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid object JSON: %v", err)
-		}
-	}
-
-	rec, err := h.membrane.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source:      req.Source,
-		Subject:     req.Subject,
-		Predicate:   req.Predicate,
-		Object:      obj,
-		Timestamp:   ts,
-		Tags:        req.Tags,
-		Scope:       req.Scope,
-		Sensitivity: schema.Sensitivity(req.Sensitivity),
-	})
-	if err != nil {
-		return nil, serviceErr(err)
-	}
-
-	return marshalRecordResponse(rec)
-}
-
-// IngestOutcome converts the gRPC request and delegates to Membrane.IngestOutcome.
-func (h *Handler) IngestOutcome(ctx context.Context, req *pb.IngestOutcomeRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("target_record_id", req.TargetRecordId); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("outcome_status", req.OutcomeStatus); err != nil {
-		return nil, err
-	}
-	if err := validateOutcomeStatus("outcome_status", req.OutcomeStatus, true); err != nil {
-		return nil, err
-	}
-
-	ts, err := parseOptionalTime(req.Timestamp)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
-	}
-
-	rec, err := h.membrane.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
-		Source:         req.Source,
-		TargetRecordID: req.TargetRecordId,
-		OutcomeStatus:  schema.OutcomeStatus(req.OutcomeStatus),
-		Timestamp:      ts,
-	})
-	if err != nil {
-		return nil, serviceErr(err)
-	}
-
-	return marshalRecordResponse(rec)
-}
-
-// IngestWorkingState converts the gRPC request and delegates to Membrane.IngestWorkingState.
-func (h *Handler) IngestWorkingState(ctx context.Context, req *pb.IngestWorkingStateRequest) (*pb.IngestResponse, error) {
-	if err := validateStringField("source", req.Source); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("thread_id", req.ThreadId); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("context_summary", req.ContextSummary); err != nil {
-		return nil, err
-	}
-	if err := validateTags(req.Tags); err != nil {
-		return nil, err
-	}
-	if err := validateSensitivity("sensitivity", req.Sensitivity, false); err != nil {
-		return nil, err
-	}
-	if err := validateTaskState("state", req.State, true); err != nil {
-		return nil, err
-	}
-
-	ts, err := parseOptionalTime(req.Timestamp)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
-	}
-
-	var constraints []schema.Constraint
-	if len(req.ActiveConstraints) > 0 {
-		if err := validateJSONPayload("active_constraints", req.ActiveConstraints); err != nil {
+	if req.ProposedType != "" {
+		if err := validateMemoryType("proposed_type", req.ProposedType); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(req.ActiveConstraints, &constraints); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid active_constraints JSON: %v", err)
+	}
+	if err := validateJSONPayload("content", req.Content); err != nil {
+		return nil, err
+	}
+	if err := validateJSONPayload("context", req.Context); err != nil {
+		return nil, err
+	}
+
+	ts, err := parseOptionalTime(req.Timestamp)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
+	}
+
+	var content any
+	if len(req.Content) > 0 {
+		if err := json.Unmarshal(req.Content, &content); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid content JSON: %v", err)
+		}
+	}
+	var captureContext any
+	if len(req.Context) > 0 {
+		if err := json.Unmarshal(req.Context, &captureContext); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid context JSON: %v", err)
 		}
 	}
 
-	rec, err := h.membrane.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-		Source:            req.Source,
-		ThreadID:          req.ThreadId,
-		State:             schema.TaskState(req.State),
-		NextActions:       req.NextActions,
-		OpenQuestions:     req.OpenQuestions,
-		ContextSummary:    req.ContextSummary,
-		ActiveConstraints: constraints,
-		Timestamp:         ts,
-		Tags:              req.Tags,
-		Scope:             req.Scope,
-		Sensitivity:       schema.Sensitivity(req.Sensitivity),
+	resp, err := h.membrane.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+		Source:           req.Source,
+		SourceKind:       req.SourceKind,
+		Content:          content,
+		Context:          captureContext,
+		ReasonToRemember: req.ReasonToRemember,
+		ProposedType:     schema.MemoryType(req.ProposedType),
+		Summary:          req.Summary,
+		Tags:             req.Tags,
+		Scope:            req.Scope,
+		Sensitivity:      schema.Sensitivity(req.Sensitivity),
+		Timestamp:        ts,
 	})
 	if err != nil {
 		return nil, serviceErr(err)
 	}
 
-	return marshalRecordResponse(rec)
+	return marshalCaptureMemoryResponse(resp)
 }
 
-// Retrieve converts the gRPC request and delegates to Membrane.Retrieve.
-func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.RetrieveResponse, error) {
+// RetrieveGraph converts the gRPC request and delegates to Membrane.RetrieveGraph.
+func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphRequest) (*pb.RetrieveGraphResponse, error) {
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
 	}
 	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
 		return nil, err
 	}
-
 	if req.MinSalience < 0 || math.IsNaN(req.MinSalience) || math.IsInf(req.MinSalience, 0) {
 		return nil, status.Error(codes.InvalidArgument, "min_salience must be non-negative and finite")
 	}
-	if req.Limit < 0 || req.Limit > maxLimit {
-		return nil, status.Errorf(codes.InvalidArgument, "limit must be between 0 and %d", maxLimit)
+	for _, v := range []struct {
+		name  string
+		value int32
+	}{
+		{name: "root_limit", value: req.RootLimit},
+		{name: "node_limit", value: req.NodeLimit},
+		{name: "edge_limit", value: req.EdgeLimit},
+		{name: "max_hops", value: req.MaxHops},
+	} {
+		if v.value < 0 || v.value > maxLimit {
+			return nil, status.Errorf(codes.InvalidArgument, "%s must be between 0 and %d", v.name, maxLimit)
+		}
 	}
 
 	memTypes := make([]schema.MemoryType, len(req.MemoryTypes))
@@ -384,40 +223,21 @@ func (h *Handler) Retrieve(ctx context.Context, req *pb.RetrieveRequest) (*pb.Re
 		memTypes[i] = schema.MemoryType(mt)
 	}
 
-	trust := toTrustContext(req.Trust)
-
-	resp, err := h.membrane.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err := h.membrane.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
 		TaskDescriptor: req.TaskDescriptor,
-		Trust:          trust,
+		Trust:          toTrustContext(req.Trust),
 		MemoryTypes:    memTypes,
 		MinSalience:    req.MinSalience,
-		Limit:          int(req.Limit),
+		RootLimit:      int(req.RootLimit),
+		NodeLimit:      int(req.NodeLimit),
+		EdgeLimit:      int(req.EdgeLimit),
+		MaxHops:        int(req.MaxHops),
 	})
 	if err != nil {
 		return nil, serviceErr(err)
 	}
 
-	records := make([][]byte, len(resp.Records))
-	for i, rec := range resp.Records {
-		data, err := json.Marshal(rec)
-		if err != nil {
-			return nil, internalErr(fmt.Errorf("marshal record: %w", err))
-		}
-		records[i] = data
-	}
-
-	var selBytes []byte
-	if resp.Selection != nil {
-		selBytes, err = json.Marshal(resp.Selection)
-		if err != nil {
-			return nil, internalErr(fmt.Errorf("marshal selection: %w", err))
-		}
-	}
-
-	return &pb.RetrieveResponse{
-		Records:   records,
-		Selection: selBytes,
-	}, nil
+	return marshalRetrieveGraphResponse(resp)
 }
 
 // RetrieveByID converts the gRPC request and delegates to Membrane.RetrieveByID.
@@ -606,15 +426,6 @@ func unmarshalRecord(data []byte) (*schema.MemoryRecord, error) {
 	return &rec, nil
 }
 
-// marshalRecordResponse JSON-encodes a MemoryRecord into an IngestResponse.
-func marshalRecordResponse(rec *schema.MemoryRecord) (*pb.IngestResponse, error) {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return nil, internalErr(fmt.Errorf("marshal record: %w", err))
-	}
-	return &pb.IngestResponse{Record: data}, nil
-}
-
 // marshalMemoryRecordResponse JSON-encodes a MemoryRecord into a MemoryRecordResponse.
 func marshalMemoryRecordResponse(rec *schema.MemoryRecord) (*pb.MemoryRecordResponse, error) {
 	data, err := json.Marshal(rec)
@@ -622,6 +433,60 @@ func marshalMemoryRecordResponse(rec *schema.MemoryRecord) (*pb.MemoryRecordResp
 		return nil, internalErr(fmt.Errorf("marshal record: %w", err))
 	}
 	return &pb.MemoryRecordResponse{Record: data}, nil
+}
+
+func marshalCaptureMemoryResponse(resp *ingestion.CaptureMemoryResponse) (*pb.CaptureMemoryResponse, error) {
+	if resp == nil {
+		return &pb.CaptureMemoryResponse{}, nil
+	}
+	primaryBytes, err := json.Marshal(resp.PrimaryRecord)
+	if err != nil {
+		return nil, internalErr(fmt.Errorf("marshal primary_record: %w", err))
+	}
+	createdRecords := make([][]byte, 0, len(resp.CreatedRecords))
+	for _, rec := range resp.CreatedRecords {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return nil, internalErr(fmt.Errorf("marshal created_record: %w", err))
+		}
+		createdRecords = append(createdRecords, data)
+	}
+	edgeBytes, err := json.Marshal(resp.Edges)
+	if err != nil {
+		return nil, internalErr(fmt.Errorf("marshal capture edges: %w", err))
+	}
+	return &pb.CaptureMemoryResponse{
+		PrimaryRecord:  primaryBytes,
+		CreatedRecords: createdRecords,
+		Edges:          edgeBytes,
+	}, nil
+}
+
+func marshalRetrieveGraphResponse(resp *retrieval.RetrieveGraphResponse) (*pb.RetrieveGraphResponse, error) {
+	if resp == nil {
+		return &pb.RetrieveGraphResponse{}, nil
+	}
+	nodeBytes, err := json.Marshal(resp.Nodes)
+	if err != nil {
+		return nil, internalErr(fmt.Errorf("marshal graph nodes: %w", err))
+	}
+	edgeBytes, err := json.Marshal(resp.Edges)
+	if err != nil {
+		return nil, internalErr(fmt.Errorf("marshal graph edges: %w", err))
+	}
+	var selBytes []byte
+	if resp.Selection != nil {
+		selBytes, err = json.Marshal(resp.Selection)
+		if err != nil {
+			return nil, internalErr(fmt.Errorf("marshal graph selection: %w", err))
+		}
+	}
+	return &pb.RetrieveGraphResponse{
+		Nodes:     nodeBytes,
+		Edges:     edgeBytes,
+		RootIds:   resp.RootIDs,
+		Selection: selBytes,
+	}, nil
 }
 
 func serviceErr(err error) error {

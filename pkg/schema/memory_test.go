@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -46,6 +47,7 @@ func TestIsValidMemoryType(t *testing.T) {
 		MemoryTypeSemantic,
 		MemoryTypeCompetence,
 		MemoryTypePlanGraph,
+		MemoryTypeEntity,
 	}
 	for _, mt := range valid {
 		if !IsValidMemoryType(mt) {
@@ -88,5 +90,56 @@ func TestIsValidOutcomeStatus(t *testing.T) {
 	}
 	if IsValidOutcomeStatus(OutcomeStatus("invalid")) {
 		t.Fatalf("expected invalid outcome status to be rejected")
+	}
+}
+
+func TestMemoryRecordJSONRoundTripPreservesInterpretationAndEntityPayload(t *testing.T) {
+	rec := NewMemoryRecord("entity-1", MemoryTypeEntity, SensitivityLow, &EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		EntityKind:    EntityKindProject,
+		Aliases:       []string{"orchid", "staging target"},
+		Summary:       "Staging deploy target",
+	})
+	rec.Interpretation = &Interpretation{
+		Status:               InterpretationStatusResolved,
+		Summary:              "Canonicalized Orchid entity",
+		ProposedType:         MemoryTypeEntity,
+		TopicalLabels:        []string{"deploy", "staging"},
+		ExtractionConfidence: 0.92,
+		Mentions: []Mention{{
+			Surface:           "Orchid",
+			EntityKind:        EntityKindProject,
+			CanonicalEntityID: "entity-1",
+			Confidence:        0.92,
+			Aliases:           []string{"orchid"},
+		}},
+	}
+
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got MemoryRecord
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	payload, ok := got.Payload.(*EntityPayload)
+	if !ok {
+		t.Fatalf("Payload type = %T, want *EntityPayload", got.Payload)
+	}
+	if payload.CanonicalName != "Orchid" {
+		t.Fatalf("CanonicalName = %q, want Orchid", payload.CanonicalName)
+	}
+	if got.Interpretation == nil {
+		t.Fatalf("Interpretation = nil, want populated interpretation")
+	}
+	if got.Interpretation.Status != InterpretationStatusResolved {
+		t.Fatalf("Interpretation.Status = %q, want %q", got.Interpretation.Status, InterpretationStatusResolved)
+	}
+	if len(got.Interpretation.Mentions) != 1 || got.Interpretation.Mentions[0].CanonicalEntityID != "entity-1" {
+		t.Fatalf("Interpretation mentions = %+v, want canonical entity link", got.Interpretation.Mentions)
 	}
 }

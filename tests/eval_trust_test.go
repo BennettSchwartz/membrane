@@ -14,7 +14,7 @@ func TestEvalTrustGating(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	lowAlpha, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	lowAlpha, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:      "eval",
 		Subject:     "project alpha",
 		Predicate:   "uses",
@@ -27,7 +27,7 @@ func TestEvalTrustGating(t *testing.T) {
 		t.Fatalf("IngestObservation low: %v", err)
 	}
 
-	highAlpha, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	highAlpha, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:      "eval",
 		Subject:     "project alpha",
 		Predicate:   "secret",
@@ -40,7 +40,7 @@ func TestEvalTrustGating(t *testing.T) {
 		t.Fatalf("IngestObservation high: %v", err)
 	}
 
-	lowBeta, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	lowBeta, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:      "eval",
 		Subject:     "project beta",
 		Predicate:   "uses",
@@ -54,7 +54,7 @@ func TestEvalTrustGating(t *testing.T) {
 	}
 
 	trustLow := retrieval.NewTrustContext(schema.SensitivityLow, true, "eval", []string{"project:alpha"})
-	respLow, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	respLow, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trustLow,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 	})
@@ -77,7 +77,7 @@ func TestEvalTrustGating(t *testing.T) {
 	}
 
 	trustHigh := retrieval.NewTrustContext(schema.SensitivityHigh, true, "eval", []string{"project:alpha"})
-	respHigh, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	respHigh, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trustHigh,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 	})

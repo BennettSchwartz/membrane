@@ -13,7 +13,7 @@ func TestEvalTypedMemory(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	event, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
 		Source:    "eval",
 		EventKind: "user_input",
 		Ref:       "evt-1",
@@ -24,7 +24,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestEvent: %v", err)
 	}
 
-	tool, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+	tool, err := captureToolOutputRecord(ctx, m, ingestion.IngestToolOutputRequest{
 		Source:   "eval",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go build"},
@@ -35,7 +35,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestToolOutput: %v", err)
 	}
 
-	obs, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	obs, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "user",
 		Predicate: "prefers_language",
@@ -46,7 +46,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestObservation: %v", err)
 	}
 
-	working, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+	working, err := captureWorkingStateRecord(ctx, m, ingestion.IngestWorkingStateRequest{
 		Source:      "eval",
 		ThreadID:    "thread-1",
 		State:       schema.TaskStateExecuting,
@@ -58,7 +58,7 @@ func TestEvalTypedMemory(t *testing.T) {
 
 	trust := fullTrust()
 
-	episodicResp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	episodicResp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeEpisodic},
 	})
@@ -68,7 +68,7 @@ func TestEvalTypedMemory(t *testing.T) {
 	requireRecord(t, episodicResp.Records, event.ID)
 	requireRecord(t, episodicResp.Records, tool.ID)
 
-	semanticResp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	semanticResp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 	})
@@ -77,7 +77,7 @@ func TestEvalTypedMemory(t *testing.T) {
 	}
 	requireRecord(t, semanticResp.Records, obs.ID)
 
-	workingResp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	workingResp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeWorking},
 	})

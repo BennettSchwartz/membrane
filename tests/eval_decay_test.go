@@ -19,7 +19,7 @@ func TestEvalDecayAndReinforce(t *testing.T) {
 	m := newTestMembrane(t)
 	trust := fullTrust()
 
-	rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+	rec, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
 		Source:    "eval",
 		EventKind: "tool_call",
 		Ref:       "decay-1",
@@ -57,7 +57,7 @@ func TestEvalDecayAndReinforce(t *testing.T) {
 		t.Fatalf("expected LastReinforcedAt to advance")
 	}
 
-	resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeEpisodic},
 		MinSalience: decayed.Salience + 0.01,

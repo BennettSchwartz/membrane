@@ -3,7 +3,8 @@ export const MemoryType = {
   WORKING: "working",
   SEMANTIC: "semantic",
   COMPETENCE: "competence",
-  PLAN_GRAPH: "plan_graph"
+  PLAN_GRAPH: "plan_graph",
+  ENTITY: "entity"
 } as const;
 
 export type MemoryType = (typeof MemoryType)[keyof typeof MemoryType];
@@ -95,6 +96,34 @@ export const EdgeKind = {
 
 export type EdgeKind = (typeof EdgeKind)[keyof typeof EdgeKind];
 
+export const EntityKind = {
+  PERSON: "person",
+  TOOL: "tool",
+  PROJECT: "project",
+  FILE: "file",
+  CONCEPT: "concept",
+  OTHER: "other"
+} as const;
+
+export type EntityKind = (typeof EntityKind)[keyof typeof EntityKind];
+
+export const InterpretationStatus = {
+  TENTATIVE: "tentative",
+  RESOLVED: "resolved"
+} as const;
+
+export type InterpretationStatus = (typeof InterpretationStatus)[keyof typeof InterpretationStatus];
+
+export const SourceKind = {
+  EVENT: "event",
+  TOOL_OUTPUT: "tool_output",
+  OBSERVATION: "observation",
+  WORKING_STATE: "working_state",
+  AGENT_TURN: "agent_turn"
+} as const;
+
+export type SourceKind = (typeof SourceKind)[keyof typeof SourceKind];
+
 export interface TrustContext {
   max_sensitivity: Sensitivity | string;
   authenticated: boolean;
@@ -138,6 +167,14 @@ export interface Relation {
   created_at?: string;
 }
 
+export interface GraphEdge {
+  source_id: string;
+  predicate: string;
+  target_id: string;
+  weight?: number;
+  created_at?: string;
+}
+
 export interface AuditEntry {
   action: AuditAction | string;
   actor: string;
@@ -158,6 +195,7 @@ export interface MemoryRecord {
   lifecycle?: Lifecycle;
   provenance?: Provenance;
   relations?: Relation[];
+  interpretation?: Interpretation;
   payload?: unknown;
   audit_log?: AuditEntry[];
 }
@@ -173,6 +211,25 @@ export interface SelectionResult {
 export interface RetrieveResult {
   records: MemoryRecord[];
   selection?: SelectionResult;
+}
+
+export interface GraphNode {
+  record: MemoryRecord;
+  root: boolean;
+  hop: number;
+}
+
+export interface RetrieveGraphResult {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  root_ids: string[];
+  selection?: SelectionResult;
+}
+
+export interface CaptureMemoryResult {
+  primary_record: MemoryRecord;
+  created_records: MemoryRecord[];
+  edges: GraphEdge[];
 }
 
 export function createDefaultTrustContext(): TrustContext {
@@ -248,6 +305,41 @@ export interface EnvironmentSnapshot {
   tool_versions?: Record<string, string>;
   working_directory?: string;
   context?: Record<string, unknown>;
+}
+
+export interface Mention {
+  surface: string;
+  entity_kind?: EntityKind | string;
+  canonical_entity_id?: string;
+  confidence?: number;
+  aliases?: string[];
+}
+
+export interface RelationCandidate {
+  predicate: string;
+  target_record_id?: string;
+  target_entity_id?: string;
+  confidence?: number;
+  resolved?: boolean;
+}
+
+export interface ReferenceCandidate {
+  ref: string;
+  target_record_id?: string;
+  target_entity_id?: string;
+  confidence?: number;
+  resolved?: boolean;
+}
+
+export interface Interpretation {
+  status: InterpretationStatus | string;
+  summary?: string;
+  proposed_type?: MemoryType | string;
+  topical_labels?: string[];
+  mentions?: Mention[];
+  relation_candidates?: RelationCandidate[];
+  reference_candidates?: ReferenceCandidate[];
+  extraction_confidence?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,3 +442,10 @@ export interface PlanGraphPayload {
   metrics?: PlanMetrics;
 }
 
+export interface EntityPayload {
+  kind: "entity";
+  canonical_name: string;
+  entity_kind: EntityKind | string;
+  aliases?: string[];
+  summary?: string;
+}

@@ -21,3 +21,12 @@ type Relation struct {
 	// Extension field for tracking relation history.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 }
+
+// GraphEdge is a concrete graph edge with both source and target IDs.
+type GraphEdge struct {
+	SourceID  string    `json:"source_id"`
+	Predicate string    `json:"predicate"`
+	TargetID  string    `json:"target_id"`
+	Weight    float64   `json:"weight,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}

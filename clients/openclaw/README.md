@@ -83,11 +83,11 @@ Check connection status:
 ```text
 OpenClaw Agent
      │
-     ├── after_agent_reply ──→ ingestEvent()
-     ├── after_tool_call ────→ ingestToolOutput()
-     ├── before_agent_start ─→ retrieve() → inject context
+     ├── after_agent_reply ──→ captureMemory()
+     ├── after_tool_call ────→ captureMemory()
+     ├── before_agent_start ─→ retrieveGraph() → inject context
      │
-     └── membrane_search ───→ retrieve() → return results
+     └── membrane_search ───→ retrieveGraph() → return results
                                   │
                                   ▼
                           Membrane (gRPC)

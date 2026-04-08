@@ -4,7 +4,7 @@ PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS memory_records (
     id TEXT PRIMARY KEY,
-    type TEXT NOT NULL CHECK(type IN ('episodic','working','semantic','competence','plan_graph')),
+    type TEXT NOT NULL CHECK(type IN ('episodic','working','semantic','competence','plan_graph','entity')),
     sensitivity TEXT NOT NULL CHECK(sensitivity IN ('public','low','medium','high','hyper')),
     confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
     salience REAL NOT NULL CHECK(salience >= 0),
@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS decay_profiles (
 CREATE TABLE IF NOT EXISTS payloads (
     record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
     payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS interpretations (
+    record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
+    interpretation_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tags (

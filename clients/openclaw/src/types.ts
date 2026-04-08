@@ -18,7 +18,7 @@ export interface PluginConfig {
 }
 
 /** Valid Membrane memory types for retrieval filtering */
-export const VALID_MEMORY_TYPES = ["episodic", "working", "semantic", "competence", "plan_graph"] as const;
+export const VALID_MEMORY_TYPES = ["episodic", "working", "semantic", "competence", "plan_graph", "entity"] as const;
 
 export const DEFAULT_CONFIG: PluginConfig = {
   grpc_endpoint: "localhost:4222",

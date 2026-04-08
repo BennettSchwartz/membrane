@@ -153,6 +153,7 @@ type Service struct {
 	store      storage.Store
 	classifier *Classifier
 	policy     *PolicyEngine
+	interpreter Interpreter
 }
 
 // NewService creates a new ingestion Service.
@@ -161,6 +162,17 @@ func NewService(store storage.Store, classifier *Classifier, policy *PolicyEngin
 		store:      store,
 		classifier: classifier,
 		policy:     policy,
+	}
+}
+
+// NewServiceWithInterpreter creates a new ingestion Service with ingest-side
+// interpretation support.
+func NewServiceWithInterpreter(store storage.Store, classifier *Classifier, policy *PolicyEngine, interpreter Interpreter) *Service {
+	return &Service{
+		store:       store,
+		classifier:  classifier,
+		policy:      policy,
+		interpreter: interpreter,
 	}
 }
 
