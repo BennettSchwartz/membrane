@@ -74,21 +74,21 @@ type MemoryRecord struct {
 
 // memoryRecordJSON is used for custom JSON marshaling/unmarshaling.
 type memoryRecordJSON struct {
-	ID          string          `json:"id"`
-	Type        MemoryType      `json:"type"`
-	Sensitivity Sensitivity     `json:"sensitivity"`
-	Confidence  float64         `json:"confidence"`
-	Salience    float64         `json:"salience"`
-	Scope       string          `json:"scope,omitempty"`
-	Tags        []string        `json:"tags,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	Lifecycle   Lifecycle       `json:"lifecycle"`
-	Provenance  Provenance      `json:"provenance"`
-	Relations   []Relation      `json:"relations,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
+	ID             string          `json:"id"`
+	Type           MemoryType      `json:"type"`
+	Sensitivity    Sensitivity     `json:"sensitivity"`
+	Confidence     float64         `json:"confidence"`
+	Salience       float64         `json:"salience"`
+	Scope          string          `json:"scope,omitempty"`
+	Tags           []string        `json:"tags,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	Lifecycle      Lifecycle       `json:"lifecycle"`
+	Provenance     Provenance      `json:"provenance"`
+	Relations      []Relation      `json:"relations,omitempty"`
+	Payload        json.RawMessage `json:"payload"`
 	Interpretation *Interpretation `json:"interpretation,omitempty"`
-	AuditLog    []AuditEntry    `json:"audit_log"`
+	AuditLog       []AuditEntry    `json:"audit_log"`
 }
 
 // MarshalJSON implements json.Marshaler for MemoryRecord.
@@ -99,21 +99,21 @@ func (mr MemoryRecord) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(memoryRecordJSON{
-		ID:          mr.ID,
-		Type:        mr.Type,
-		Sensitivity: mr.Sensitivity,
-		Confidence:  mr.Confidence,
-		Salience:    mr.Salience,
-		Scope:       mr.Scope,
-		Tags:        mr.Tags,
-		CreatedAt:   mr.CreatedAt,
-		UpdatedAt:   mr.UpdatedAt,
-		Lifecycle:   mr.Lifecycle,
-		Provenance:  mr.Provenance,
-		Relations:   mr.Relations,
-		Payload:     payloadBytes,
+		ID:             mr.ID,
+		Type:           mr.Type,
+		Sensitivity:    mr.Sensitivity,
+		Confidence:     mr.Confidence,
+		Salience:       mr.Salience,
+		Scope:          mr.Scope,
+		Tags:           mr.Tags,
+		CreatedAt:      mr.CreatedAt,
+		UpdatedAt:      mr.UpdatedAt,
+		Lifecycle:      mr.Lifecycle,
+		Provenance:     mr.Provenance,
+		Relations:      mr.Relations,
+		Payload:        payloadBytes,
 		Interpretation: mr.Interpretation,
-		AuditLog:    mr.AuditLog,
+		AuditLog:       mr.AuditLog,
 	})
 }
 
@@ -172,8 +172,8 @@ func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, pay
 		Provenance: Provenance{
 			Sources: []ProvenanceSource{},
 		},
-		Relations: []Relation{},
-		Payload:   payload,
+		Relations:      []Relation{},
+		Payload:        payload,
 		Interpretation: nil,
 		AuditLog: []AuditEntry{
 			{

@@ -150,9 +150,9 @@ type IngestWorkingStateRequest struct {
 // Service orchestrates ingestion of raw data into the memory substrate.
 // It coordinates classification, policy application, and storage.
 type Service struct {
-	store      storage.Store
-	classifier *Classifier
-	policy     *PolicyEngine
+	store       storage.Store
+	classifier  *Classifier
+	policy      *PolicyEngine
 	interpreter Interpreter
 }
 
