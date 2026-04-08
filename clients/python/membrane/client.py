@@ -10,7 +10,6 @@ Python-native helper methods.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
@@ -18,12 +17,15 @@ from typing import Any, Optional, Sequence
 import grpc
 
 from membrane.types import (
-    Constraint,
+    CaptureMemoryResult,
+    GraphEdge,
+    GraphNode,
     MemoryRecord,
     MemoryType,
-    RetrieveResult,
+    RetrieveGraphResult,
     SelectionResult,
     Sensitivity,
+    SourceKind,
     TrustContext,
 )
 from membrane.v1 import membrane_pb2, membrane_pb2_grpc
@@ -48,17 +50,10 @@ def _parse_json_bytes(data: bytes) -> Any:
 def _parse_record_from_response(record: bytes) -> MemoryRecord:
     """Parse a JSON-encoded MemoryRecord from a protobuf bytes field.
 
-    Both ``IngestResponse`` and ``MemoryRecordResponse`` expose the record
-    bytes directly on their ``record`` field.
+    ``MemoryRecordResponse`` exposes the record bytes directly on its
+    ``record`` field.
     """
     return MemoryRecord.from_dict(_parse_json_bytes(record))
-
-
-def _parse_records_from_response(
-    response: membrane_pb2.RetrieveResponse,
-) -> list[MemoryRecord]:
-    """Parse a list of records from a RetrieveResponse."""
-    return [_parse_record_from_response(raw) for raw in response.records]
 
 
 def _parse_selection_from_response(data: bytes) -> SelectionResult | None:
@@ -69,6 +64,32 @@ def _parse_selection_from_response(data: bytes) -> SelectionResult | None:
     if not isinstance(raw, dict):
         raise TypeError("Expected selection metadata object")
     return SelectionResult.from_dict(raw)
+
+
+def _parse_capture_memory_response(
+    response: membrane_pb2.CaptureMemoryResponse,
+) -> CaptureMemoryResult:
+    raw_edges = _parse_json_bytes(response.edges) if response.edges else []
+    return CaptureMemoryResult(
+        primary_record=_parse_record_from_response(response.primary_record),
+        created_records=[
+            _parse_record_from_response(raw) for raw in response.created_records
+        ],
+        edges=[GraphEdge.from_dict(edge) for edge in raw_edges],
+    )
+
+
+def _parse_retrieve_graph_response(
+    response: membrane_pb2.RetrieveGraphResponse,
+) -> RetrieveGraphResult:
+    raw_nodes = _parse_json_bytes(response.nodes) if response.nodes else []
+    raw_edges = _parse_json_bytes(response.edges) if response.edges else []
+    return RetrieveGraphResult(
+        nodes=[GraphNode.from_dict(node) for node in raw_nodes],
+        edges=[GraphEdge.from_dict(edge) for edge in raw_edges],
+        root_ids=list(response.root_ids),
+        selection=_parse_selection_from_response(response.selection),
+    )
 
 
 def _sensitivity_value(value: Sensitivity | str) -> str:
@@ -96,36 +117,33 @@ class MembraneClient:
     """Python client for the Membrane memory substrate.
 
     Connects to the Membrane daemon over gRPC and exposes methods for
-    ingestion, retrieval, revision, reinforcement, and metrics.
+    graph-aware capture, retrieval, revision, reinforcement, and metrics.
 
     Example::
 
-        from membrane import MembraneClient, Sensitivity, TrustContext
+        from membrane import MembraneClient, Sensitivity, SourceKind, TrustContext
 
         client = MembraneClient("localhost:9090")
 
-        # Ingest an event
-        record = client.ingest_event(
-            event_kind="file_edit",
-            ref="src/main.py",
-            summary="Edited main entry point",
+        capture = client.capture_memory(
+            {"text": "Remember Orchid as the deploy target", "project": "Orchid"},
+            source_kind=SourceKind.EVENT,
             sensitivity=Sensitivity.LOW,
         )
 
-        # Retrieve relevant memories
         trust = TrustContext(
             max_sensitivity=Sensitivity.MEDIUM,
             authenticated=True,
             actor_id="agent-1",
         )
-        records = client.retrieve("fix the login bug", trust=trust, limit=5)
+        graph = client.retrieve_graph("deploy target", trust=trust, root_limit=5)
 
         client.close()
 
     The client also supports the context-manager protocol::
 
         with MembraneClient("localhost:9090") as client:
-            record = client.ingest_event(...)
+            capture = client.capture_memory(...)
 
     For secured deployments, pass ``tls=True`` and/or ``api_key``::
 
@@ -192,287 +210,48 @@ class MembraneClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    # -- Ingestion -----------------------------------------------------------
+    # -- Capture -------------------------------------------------------------
 
-    def ingest_event(
+    def capture_memory(
         self,
-        event_kind: str,
-        ref: str,
+        content: Any,
         *,
+        source_kind: SourceKind | str = SourceKind.AGENT_TURN,
+        context: Any = None,
+        reason_to_remember: str = "",
+        proposed_type: MemoryType | str | None = None,
         summary: str = "",
         sensitivity: Sensitivity | str = Sensitivity.LOW,
         source: str = "python-client",
         tags: Sequence[str] | None = None,
         scope: str = "",
         timestamp: str | None = None,
-    ) -> MemoryRecord:
-        """Ingest an event into the memory substrate.
-
-        Args:
-            event_kind: Kind of event (e.g. ``"file_edit"``, ``"error"``).
-            ref: Reference identifier for the event source.
-            summary: Optional human-readable summary.
-            sensitivity: Sensitivity classification.
-            source: Source identifier for provenance.
-            tags: Optional tags for categorization.
-            scope: Visibility scope.
-            timestamp: RFC 3339 timestamp; defaults to now.
-
-        Returns:
-            The created ``MemoryRecord``.
-        """
-        req = membrane_pb2.IngestEventRequest(
+    ) -> CaptureMemoryResult:
+        """Capture a rich memory candidate for interpretation and linking."""
+        req = membrane_pb2.CaptureMemoryRequest(
             source=source,
-            event_kind=event_kind,
-            ref=ref,
-            summary=summary,
-            timestamp=timestamp or _now_rfc3339(),
-            tags=list(tags) if tags else [],
-            scope=scope,
-            sensitivity=_sensitivity_value(sensitivity),
-        )
-        resp = self._stub.IngestEvent(req, **self._call_kwargs())
-        return _parse_record_from_response(resp.record)
-
-    def ingest_tool_output(
-        self,
-        tool_name: str,
-        *,
-        args: dict[str, Any] | None = None,
-        result: Any = None,
-        sensitivity: Sensitivity | str = Sensitivity.LOW,
-        source: str = "python-client",
-        depends_on: Sequence[str] | None = None,
-        tags: Sequence[str] | None = None,
-        scope: str = "",
-        timestamp: str | None = None,
-    ) -> MemoryRecord:
-        """Ingest tool output into the memory substrate.
-
-        Args:
-            tool_name: Name of the tool that produced output.
-            args: Arguments passed to the tool.
-            result: Result produced by the tool.
-            sensitivity: Sensitivity classification.
-            source: Source identifier for provenance.
-            depends_on: IDs of records this output depends on.
-            tags: Optional tags for categorization.
-            scope: Visibility scope.
-            timestamp: RFC 3339 timestamp; defaults to now.
-
-        Returns:
-            The created ``MemoryRecord``.
-        """
-        req = membrane_pb2.IngestToolOutputRequest(
-            source=source,
-            tool_name=tool_name,
-            depends_on=list(depends_on) if depends_on else [],
-            timestamp=timestamp or _now_rfc3339(),
-            tags=list(tags) if tags else [],
-            scope=scope,
-            sensitivity=_sensitivity_value(sensitivity),
-        )
-        if args is not None:
-            req.args = _json_bytes(args)
-        if result is not None:
-            req.result = _json_bytes(result)
-        resp = self._stub.IngestToolOutput(req, **self._call_kwargs())
-        return _parse_record_from_response(resp.record)
-
-    def ingest_observation(
-        self,
-        subject: str,
-        predicate: str,
-        obj: Any,
-        *,
-        sensitivity: Sensitivity | str = Sensitivity.LOW,
-        source: str = "python-client",
-        tags: Sequence[str] | None = None,
-        scope: str = "",
-        timestamp: str | None = None,
-    ) -> MemoryRecord:
-        """Ingest an observation (subject-predicate-object triple).
-
-        Args:
-            subject: The subject of the observation.
-            predicate: The predicate relating subject to object.
-            obj: The object of the observation (any JSON-serializable value).
-            sensitivity: Sensitivity classification.
-            source: Source identifier for provenance.
-            tags: Optional tags for categorization.
-            scope: Visibility scope.
-            timestamp: RFC 3339 timestamp; defaults to now.
-
-        Returns:
-            The created ``MemoryRecord``.
-        """
-        req = membrane_pb2.IngestObservationRequest(
-            source=source,
-            subject=subject,
-            predicate=predicate,
-            object=_json_bytes(obj),
-            timestamp=timestamp or _now_rfc3339(),
-            tags=list(tags) if tags else [],
-            scope=scope,
-            sensitivity=_sensitivity_value(sensitivity),
-        )
-        resp = self._stub.IngestObservation(req, **self._call_kwargs())
-        return _parse_record_from_response(resp.record)
-
-    def ingest_outcome(
-        self,
-        target_record_id: str,
-        outcome_status: OutcomeStatus | str,
-        *,
-        source: str = "python-client",
-        timestamp: str | None = None,
-    ) -> MemoryRecord:
-        """Record an outcome for a previously ingested event.
-
-        Args:
-            target_record_id: ID of the record to attach the outcome to.
-            outcome_status: One of ``"success"``, ``"failure"``, ``"partial"``.
-            source: Source identifier for provenance.
-            timestamp: RFC 3339 timestamp; defaults to now.
-
-        Returns:
-            The created ``MemoryRecord``.
-        """
-        req = membrane_pb2.IngestOutcomeRequest(
-            source=source,
-            target_record_id=target_record_id,
-            outcome_status=(
-                outcome_status.value
-                if isinstance(outcome_status, OutcomeStatus)
-                else outcome_status
+            source_kind=(
+                source_kind.value if isinstance(source_kind, SourceKind) else source_kind
             ),
-            timestamp=timestamp or _now_rfc3339(),
-        )
-        resp = self._stub.IngestOutcome(req, **self._call_kwargs())
-        return _parse_record_from_response(resp.record)
-
-    def ingest_working_state(
-        self,
-        thread_id: str,
-        state: str,
-        *,
-        next_actions: Sequence[str] | None = None,
-        open_questions: Sequence[str] | None = None,
-        context_summary: str = "",
-        active_constraints: Sequence[Constraint | dict[str, Any]] | None = None,
-        sensitivity: Sensitivity | str = Sensitivity.LOW,
-        source: str = "python-client",
-        tags: Sequence[str] | None = None,
-        scope: str = "",
-        timestamp: str | None = None,
-    ) -> MemoryRecord:
-        """Ingest a working memory state snapshot.
-
-        Args:
-            thread_id: Identifier for the task thread.
-            state: Current task state (e.g. ``"planning"``, ``"executing"``).
-            next_actions: Planned next steps.
-            open_questions: Unresolved questions.
-            context_summary: Human-readable summary of current context.
-            active_constraints: Active constraints as JSON-serializable dicts.
-            sensitivity: Sensitivity classification.
-            source: Source identifier for provenance.
-            tags: Optional tags for categorization.
-            scope: Visibility scope.
-            timestamp: RFC 3339 timestamp; defaults to now.
-
-        Returns:
-            The created ``MemoryRecord``.
-        """
-        req = membrane_pb2.IngestWorkingStateRequest(
-            source=source,
-            thread_id=thread_id,
-            state=state,
-            next_actions=list(next_actions) if next_actions else [],
-            open_questions=list(open_questions) if open_questions else [],
-            context_summary=context_summary,
-            timestamp=timestamp or _now_rfc3339(),
+            content=_json_bytes(content),
+            reason_to_remember=reason_to_remember,
+            proposed_type=(
+                proposed_type.value
+                if isinstance(proposed_type, MemoryType)
+                else (proposed_type or "")
+            ),
+            summary=summary,
             tags=list(tags) if tags else [],
             scope=scope,
             sensitivity=_sensitivity_value(sensitivity),
+            timestamp=timestamp or _now_rfc3339(),
         )
-        if active_constraints is not None:
-            constraints_data = [
-                dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
-                for c in active_constraints
-            ]
-            req.active_constraints = _json_bytes(constraints_data)
-        resp = self._stub.IngestWorkingState(req, **self._call_kwargs())
-        return _parse_record_from_response(resp.record)
+        if context is not None:
+            req.context = _json_bytes(context)
+        resp = self._stub.CaptureMemory(req, **self._call_kwargs())
+        return _parse_capture_memory_response(resp)
 
     # -- Retrieval -----------------------------------------------------------
-
-    def retrieve(
-        self,
-        task_descriptor: str,
-        *,
-        trust: TrustContext | None = None,
-        memory_types: Sequence[MemoryType | str] | None = None,
-        min_salience: float = 0.0,
-        limit: int = 10,
-    ) -> list[MemoryRecord]:
-        """Retrieve memories relevant to a task descriptor.
-
-        Args:
-            task_descriptor: Natural-language description of the current task.
-            trust: Trust context controlling access. Defaults to a minimal
-                context with ``Sensitivity.LOW``.
-            memory_types: Optional filter for specific memory types.
-            min_salience: Minimum salience threshold (default ``0.0``).
-            limit: Maximum number of records to return (default ``10``).
-
-        Returns:
-            List of matching ``MemoryRecord`` instances.
-        """
-        return self.retrieve_with_selection(
-            task_descriptor,
-            trust=trust,
-            memory_types=memory_types,
-            min_salience=min_salience,
-            limit=limit,
-        ).records
-
-    def retrieve_with_selection(
-        self,
-        task_descriptor: str,
-        *,
-        trust: TrustContext | None = None,
-        memory_types: Sequence[MemoryType | str] | None = None,
-        min_salience: float = 0.0,
-        limit: int = 10,
-    ) -> RetrieveResult:
-        """Retrieve memories plus optional selector metadata.
-
-        This is the backward-compatible opt-in API for callers that need the
-        selector's ranked candidates and confidence details.
-        """
-        if trust is None:
-            trust = TrustContext()
-
-        types_list: list[str] = []
-        if memory_types:
-            for mt in memory_types:
-                types_list.append(
-                    mt.value if isinstance(mt, MemoryType) else mt
-                )
-
-        req = membrane_pb2.RetrieveRequest(
-            task_descriptor=task_descriptor,
-            trust=_trust_context_message(trust),
-            memory_types=types_list,
-            min_salience=min_salience,
-            limit=limit,
-        )
-        resp = self._stub.Retrieve(req, **self._call_kwargs())
-        return RetrieveResult(
-            records=_parse_records_from_response(resp),
-            selection=_parse_selection_from_response(resp.selection),
-        )
 
     def retrieve_by_id(
         self,
@@ -499,6 +278,42 @@ class MembraneClient:
         )
         resp = self._stub.RetrieveByID(req, **self._call_kwargs())
         return _parse_record_from_response(resp.record)
+
+    def retrieve_graph(
+        self,
+        task_descriptor: str,
+        *,
+        trust: TrustContext | None = None,
+        memory_types: Sequence[MemoryType | str] | None = None,
+        min_salience: float = 0.0,
+        root_limit: int = 10,
+        node_limit: int = 25,
+        edge_limit: int = 100,
+        max_hops: int = 1,
+    ) -> RetrieveGraphResult:
+        """Retrieve graph-connected memories rooted in task-relevant matches."""
+        if trust is None:
+            trust = TrustContext()
+
+        types_list: list[str] = []
+        if memory_types:
+            for mt in memory_types:
+                types_list.append(
+                    mt.value if isinstance(mt, MemoryType) else mt
+                )
+
+        req = membrane_pb2.RetrieveGraphRequest(
+            task_descriptor=task_descriptor,
+            trust=_trust_context_message(trust),
+            memory_types=types_list,
+            min_salience=min_salience,
+            root_limit=root_limit,
+            node_limit=node_limit,
+            edge_limit=edge_limit,
+            max_hops=max_hops,
+        )
+        resp = self._stub.RetrieveGraph(req, **self._call_kwargs())
+        return _parse_retrieve_graph_response(resp)
 
     # -- Revision ------------------------------------------------------------
 
@@ -701,10 +516,3 @@ class MembraneClient:
         if self._channel is not None:
             self._channel.close()
             self._channel = None  # type: ignore[assignment]
-
-
-# ---------------------------------------------------------------------------
-# Convenience import so ``from membrane.client import OutcomeStatus`` works
-# when the ingest_outcome method signature references it.
-# ---------------------------------------------------------------------------
-from membrane.types import OutcomeStatus  # noqa: E402, F811

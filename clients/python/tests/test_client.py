@@ -24,57 +24,104 @@ class _FakeStub:
     def __init__(self, response):
         self.response = response
 
-    def Retrieve(self, request, **kwargs):
-        self.request = request
-        self.kwargs = kwargs
-        return self.response
+    def __getattr__(self, name):
+        def _method(request, **kwargs):
+            self.method = name
+            self.request = request
+            self.kwargs = kwargs
+            return self.response
+
+        return _method
 
 
-def test_retrieve_with_selection_parses_selection_metadata():
+def test_capture_memory_parses_created_records_and_edges():
     client = MembraneClient("localhost:0")
     client._stub = _FakeStub(  # type: ignore[method-assign]
         SimpleNamespace(
-            records=[_record_bytes("rec-1")],
+            primary_record=_record_bytes("source-1"),
+            created_records=[_record_bytes("entity-1")],
+            edges=json.dumps(
+                [
+                    {
+                        "source_id": "source-1",
+                        "predicate": "mentions_entity",
+                        "target_id": "entity-1",
+                    }
+                ]
+            ).encode("utf-8"),
+        )
+    )
+
+    result = client.capture_memory(
+        {"text": "Remember Orchid", "project": "Orchid"},
+        context={"thread_id": "thread-1"},
+        reason_to_remember="important niche term",
+    )
+
+    assert client._stub.method == "CaptureMemory"  # type: ignore[attr-defined]
+    assert result.primary_record.id == "source-1"
+    assert [record.id for record in result.created_records] == ["entity-1"]
+    assert result.edges[0].predicate == "mentions_entity"
+
+    client.close()
+
+
+def test_retrieve_graph_parses_nodes_edges_and_selection():
+    client = MembraneClient("localhost:0")
+    client._stub = _FakeStub(  # type: ignore[method-assign]
+        SimpleNamespace(
+            nodes=json.dumps(
+                [
+                    {
+                        "record": {
+                            "id": "root-1",
+                            "type": "entity",
+                            "sensitivity": "low",
+                            "confidence": 1.0,
+                            "salience": 1.0,
+                        },
+                        "root": True,
+                        "hop": 0,
+                    }
+                ]
+            ).encode("utf-8"),
+            edges=json.dumps(
+                [
+                    {
+                        "source_id": "root-1",
+                        "predicate": "mentioned_in",
+                        "target_id": "rec-1",
+                    }
+                ]
+            ).encode("utf-8"),
+            root_ids=["root-1"],
             selection=json.dumps(
                 {
-                    "Selected": [
+                    "selected": [
                         {
-                            "id": "rec-2",
-                            "type": "competence",
+                            "id": "root-1",
+                            "type": "entity",
                             "sensitivity": "low",
-                            "confidence": 0.8,
-                            "salience": 0.7,
+                            "confidence": 1.0,
+                            "salience": 1.0,
                         }
                     ],
-                    "Confidence": 0.33,
-                    "NeedsMore": True,
+                    "confidence": 0.9,
+                    "needs_more": False,
                 }
             ).encode("utf-8"),
         )
     )
 
-    result = client.retrieve_with_selection("debug task")
+    result = client.retrieve_graph("orchid", max_hops=2, root_limit=3)
 
-    assert len(result.records) == 1
-    assert result.records[0].id == "rec-1"
+    assert client._stub.method == "RetrieveGraph"  # type: ignore[attr-defined]
+    assert client._stub.request.max_hops == 2  # type: ignore[attr-defined]
+    assert client._stub.request.root_limit == 3  # type: ignore[attr-defined]
+    assert result.nodes[0].record.id == "root-1"
+    assert result.edges[0].target_id == "rec-1"
+    assert result.root_ids == ["root-1"]
     assert result.selection is not None
-    assert result.selection.confidence == 0.33
-    assert result.selection.needs_more is True
-    assert result.selection.selected[0].id == "rec-2"
-
-    client.close()
-
-
-def test_retrieve_with_selection_handles_absent_selection():
-    client = MembraneClient("localhost:0")
-    client._stub = _FakeStub(  # type: ignore[method-assign]
-        SimpleNamespace(records=[_record_bytes("rec-1")], selection=b"")
-    )
-
-    result = client.retrieve_with_selection("debug task")
-
-    assert len(result.records) == 1
-    assert result.selection is None
-    assert [record.id for record in client.retrieve("debug task")] == ["rec-1"]
+    assert result.selection.confidence == 0.9
 
     client.close()

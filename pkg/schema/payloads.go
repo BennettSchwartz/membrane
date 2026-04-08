@@ -215,6 +215,28 @@ type SemanticPayload struct {
 func (SemanticPayload) PayloadKind() string { return "semantic" }
 func (SemanticPayload) isPayload()          {}
 
+// EntityPayload stores canonical entity metadata used for graph-aware memory
+// resolution and retrieval.
+type EntityPayload struct {
+	// Kind identifies this as an entity payload.
+	Kind string `json:"kind"`
+
+	// CanonicalName is the preferred display/lookup name for the entity.
+	CanonicalName string `json:"canonical_name"`
+
+	// EntityKind is the coarse category for the entity.
+	EntityKind EntityKind `json:"entity_kind,omitempty"`
+
+	// Aliases contains alternate surface forms for the entity.
+	Aliases []string `json:"aliases,omitempty"`
+
+	// Summary is a short description of the entity.
+	Summary string `json:"summary,omitempty"`
+}
+
+func (EntityPayload) PayloadKind() string { return "entity" }
+func (EntityPayload) isPayload()          {}
+
 // Validity defines when a semantic fact is valid.
 // RFC 15A.8: Supports global, conditional, and timeboxed validity.
 type Validity struct {
@@ -492,6 +514,8 @@ func (pw *PayloadWrapper) UnmarshalJSON(data []byte) error {
 		payload = &CompetencePayload{}
 	case "plan_graph":
 		payload = &PlanGraphPayload{}
+	case "entity":
+		payload = &EntityPayload{}
 	default:
 		// Unknown kind - store as raw JSON
 		var raw map[string]any

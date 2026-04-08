@@ -25,6 +25,7 @@ class MemoryType(str, Enum):
     SEMANTIC = "semantic"
     COMPETENCE = "competence"
     PLAN_GRAPH = "plan_graph"
+    ENTITY = "entity"
 
 
 class Sensitivity(str, Enum):
@@ -112,6 +113,34 @@ class EdgeKind(str, Enum):
 
     DATA = "data"
     CONTROL = "control"
+
+
+class EntityKind(str, Enum):
+    """Canonical entity categories for graph-linked memory."""
+
+    PERSON = "person"
+    TOOL = "tool"
+    PROJECT = "project"
+    FILE = "file"
+    CONCEPT = "concept"
+    OTHER = "other"
+
+
+class InterpretationStatus(str, Enum):
+    """State of interpretation metadata attached to a record."""
+
+    TENTATIVE = "tentative"
+    RESOLVED = "resolved"
+
+
+class SourceKind(str, Enum):
+    """Source kinds for rich capture ingestion."""
+
+    EVENT = "event"
+    TOOL_OUTPUT = "tool_output"
+    OBSERVATION = "observation"
+    WORKING_STATE = "working_state"
+    AGENT_TURN = "agent_turn"
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +269,27 @@ class Relation:
 
 
 @dataclass
+class GraphEdge:
+    """A concrete graph edge returned by capture and graph retrieval."""
+
+    source_id: str = ""
+    predicate: str = ""
+    target_id: str = ""
+    weight: float = 1.0
+    created_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphEdge:
+        return cls(
+            source_id=data.get("source_id", ""),
+            predicate=data.get("predicate", ""),
+            target_id=data.get("target_id", ""),
+            weight=data.get("weight", 1.0),
+            created_at=data.get("created_at", ""),
+        )
+
+
+@dataclass
 class AuditEntry:
     """An audit log entry for a memory record."""
 
@@ -255,6 +305,105 @@ class AuditEntry:
             actor=data.get("actor", ""),
             timestamp=data.get("timestamp", ""),
             rationale=data.get("rationale", ""),
+        )
+
+
+@dataclass
+class Mention:
+    """Surface-form entity mention extracted during capture."""
+
+    surface: str = ""
+    entity_kind: Optional[EntityKind | str] = None
+    canonical_entity_id: str = ""
+    confidence: float = 0.0
+    aliases: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Mention:
+        raw_kind = data.get("entity_kind")
+        return cls(
+            surface=data.get("surface", ""),
+            entity_kind=EntityKind(raw_kind) if raw_kind else None,
+            canonical_entity_id=data.get("canonical_entity_id", ""),
+            confidence=float(data.get("confidence", 0.0)),
+            aliases=data.get("aliases", []) or [],
+        )
+
+
+@dataclass
+class RelationCandidate:
+    """Tentative relation extracted during capture interpretation."""
+
+    predicate: str = ""
+    target_record_id: str = ""
+    target_entity_id: str = ""
+    confidence: float = 0.0
+    resolved: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RelationCandidate:
+        return cls(
+            predicate=data.get("predicate", ""),
+            target_record_id=data.get("target_record_id", ""),
+            target_entity_id=data.get("target_entity_id", ""),
+            confidence=float(data.get("confidence", 0.0)),
+            resolved=bool(data.get("resolved", False)),
+        )
+
+
+@dataclass
+class ReferenceCandidate:
+    """Tentative record or entity reference extracted during capture."""
+
+    ref: str = ""
+    target_record_id: str = ""
+    target_entity_id: str = ""
+    confidence: float = 0.0
+    resolved: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReferenceCandidate:
+        return cls(
+            ref=data.get("ref", ""),
+            target_record_id=data.get("target_record_id", ""),
+            target_entity_id=data.get("target_entity_id", ""),
+            confidence=float(data.get("confidence", 0.0)),
+            resolved=bool(data.get("resolved", False)),
+        )
+
+
+@dataclass
+class Interpretation:
+    """Tentative or resolved interpretation metadata on a MemoryRecord."""
+
+    status: InterpretationStatus | str = InterpretationStatus.TENTATIVE
+    summary: str = ""
+    proposed_type: Optional[MemoryType | str] = None
+    topical_labels: list[str] = field(default_factory=list)
+    mentions: list[Mention] = field(default_factory=list)
+    relation_candidates: list[RelationCandidate] = field(default_factory=list)
+    reference_candidates: list[ReferenceCandidate] = field(default_factory=list)
+    extraction_confidence: float = 0.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Interpretation:
+        raw_status = data.get("status", InterpretationStatus.TENTATIVE.value)
+        raw_type = data.get("proposed_type")
+        return cls(
+            status=InterpretationStatus(raw_status) if raw_status else InterpretationStatus.TENTATIVE,
+            summary=data.get("summary", ""),
+            proposed_type=MemoryType(raw_type) if raw_type else None,
+            topical_labels=data.get("topical_labels", []) or [],
+            mentions=[Mention.from_dict(item) for item in data.get("mentions", [])],
+            relation_candidates=[
+                RelationCandidate.from_dict(item)
+                for item in data.get("relation_candidates", [])
+            ],
+            reference_candidates=[
+                ReferenceCandidate.from_dict(item)
+                for item in data.get("reference_candidates", [])
+            ],
+            extraction_confidence=float(data.get("extraction_confidence", 0.0)),
         )
 
 
@@ -278,6 +427,7 @@ class MemoryRecord:
     lifecycle: Optional[Lifecycle] = None
     provenance: Optional[Provenance] = None
     relations: list[Relation] = field(default_factory=list)
+    interpretation: Optional[Interpretation] = None
     payload: Any = field(default_factory=dict)
     audit_log: list[AuditEntry] = field(default_factory=list)
 
@@ -295,6 +445,9 @@ class MemoryRecord:
         relations = [
             Relation.from_dict(r) for r in data.get("relations", [])
         ]
+        interpretation = None
+        if "interpretation" in data and data["interpretation"] is not None:
+            interpretation = Interpretation.from_dict(data["interpretation"])
         audit_log = [
             AuditEntry.from_dict(a) for a in data.get("audit_log", [])
         ]
@@ -317,6 +470,7 @@ class MemoryRecord:
             lifecycle=lifecycle,
             provenance=provenance,
             relations=relations,
+            interpretation=interpretation,
             payload=data.get("payload", {}),
             audit_log=audit_log,
         )
@@ -338,6 +492,8 @@ class MemoryRecord:
             d["created_at"] = self.created_at
         if self.updated_at:
             d["updated_at"] = self.updated_at
+        if self.interpretation is not None:
+            d["interpretation"] = dataclasses.asdict(self.interpretation)
         if self.payload:
             d["payload"] = self.payload
         return d
@@ -371,11 +527,39 @@ class SelectionResult:
 
 
 @dataclass
-class RetrieveResult:
-    """Typed retrieval result with records and optional selector metadata."""
+class GraphNode:
+    """A graph node returned by graph-aware retrieval."""
 
-    records: list[MemoryRecord] = field(default_factory=list)
+    record: MemoryRecord = field(default_factory=MemoryRecord)
+    root: bool = False
+    hop: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphNode:
+        return cls(
+            record=MemoryRecord.from_dict(data.get("record", {})),
+            root=bool(data.get("root", False)),
+            hop=int(data.get("hop", 0)),
+        )
+
+
+@dataclass
+class RetrieveGraphResult:
+    """Graph-aware retrieval result with nodes, edges, and roots."""
+
+    nodes: list[GraphNode] = field(default_factory=list)
+    edges: list[GraphEdge] = field(default_factory=list)
+    root_ids: list[str] = field(default_factory=list)
     selection: Optional[SelectionResult] = None
+
+
+@dataclass
+class CaptureMemoryResult:
+    """Rich capture response including created records and graph edges."""
+
+    primary_record: MemoryRecord = field(default_factory=MemoryRecord)
+    created_records: list[MemoryRecord] = field(default_factory=list)
+    edges: list[GraphEdge] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -802,3 +986,24 @@ class PlanGraphPayload:
             metrics=PlanMetrics.from_dict(metrics_data) if metrics_data else None,
         )
 
+
+@dataclass
+class EntityPayload:
+    """Typed payload for canonical entity records."""
+
+    kind: str = "entity"
+    canonical_name: str = ""
+    entity_kind: EntityKind | str = EntityKind.OTHER
+    aliases: list[str] = field(default_factory=list)
+    summary: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EntityPayload:
+        raw_kind = data.get("entity_kind", EntityKind.OTHER.value)
+        return cls(
+            kind=data.get("kind", "entity"),
+            canonical_name=data.get("canonical_name", ""),
+            entity_kind=EntityKind(raw_kind) if raw_kind else EntityKind.OTHER,
+            aliases=data.get("aliases", []) or [],
+            summary=data.get("summary", ""),
+        )

@@ -23,19 +23,20 @@ pip install -e clients/python[dev]   # includes pytest
 ## Quick Start
 
 ```python
-from membrane import MembraneClient, Sensitivity, TrustContext
+from membrane import MembraneClient, Sensitivity, SourceKind, TrustContext
 
 # Connect to the running Membrane daemon
 client = MembraneClient("localhost:9090")
 
-# Ingest an event
-record = client.ingest_event(
-    event_kind="file_edit",
-    ref="src/main.py",
+# Capture a rich memory candidate
+capture = client.capture_memory(
+    {"ref": "src/main.py", "text": "Refactored authentication module"},
+    source_kind=SourceKind.EVENT,
+    reason_to_remember="Keep the auth refactor available for future debugging",
     summary="Refactored authentication module",
     sensitivity=Sensitivity.LOW,
 )
-print(f"Created record: {record.id}")
+print(f"Created record: {capture.primary_record.id}")
 
 # Retrieve memories relevant to a task
 trust = TrustContext(
@@ -43,12 +44,12 @@ trust = TrustContext(
     authenticated=True,
     actor_id="agent-1",
 )
-records = client.retrieve("fix the login bug", trust=trust, limit=5)
-for r in records:
-    print(f"  [{r.type.value}] {r.id} (salience={r.salience:.2f})")
+graph = client.retrieve_graph("fix the login bug", trust=trust, root_limit=5)
+for node in graph.nodes:
+    print(f"  [{node.record.type.value}] {node.record.id} hop={node.hop}")
 
 # Reinforce a useful memory
-client.reinforce(record.id, actor="agent-1", rationale="Used successfully")
+client.reinforce(capture.primary_record.id, actor="agent-1", rationale="Used successfully")
 
 # Clean up
 client.close()
@@ -58,36 +59,27 @@ client.close()
 
 ```python
 with MembraneClient("localhost:9090") as client:
-    record = client.ingest_observation(
-        subject="user",
-        predicate="prefers",
-        obj={"language": "Python"},
+    capture = client.capture_memory(
+        {"subject": "user", "predicate": "prefers", "object": {"language": "Python"}},
+        source_kind=SourceKind.OBSERVATION,
         sensitivity=Sensitivity.LOW,
     )
 ```
 
 ## API Reference
 
-### Ingestion
+### Capture
 
 | Method | Description |
 |--------|-------------|
-| `ingest_event(event_kind, ref, ...)` | Ingest a raw event |
-| `ingest_tool_output(tool_name, ...)` | Ingest tool invocation output |
-| `ingest_observation(subject, predicate, obj, ...)` | Ingest a semantic triple |
-| `ingest_outcome(target_record_id, outcome_status, ...)` | Attach an outcome to an existing record |
-| `ingest_working_state(thread_id, state, ...)` | Ingest a working memory snapshot |
+| `capture_memory(content, ...)` | Capture a rich memory candidate for interpretation and graph linking |
 
 ### Retrieval
 
 | Method | Description |
 |--------|-------------|
-| `retrieve(task_descriptor, ...)` | Retrieve memories relevant to a task |
-| `retrieve_with_selection(task_descriptor, ...)` | Retrieve memories plus optional selector metadata |
+| `retrieve_graph(task_descriptor, ...)` | Retrieve a rooted graph neighborhood relevant to a task |
 | `retrieve_by_id(record_id, ...)` | Retrieve a single record by ID |
-
-`retrieve()` remains the backward-compatible helper that returns only records.
-Use `retrieve_with_selection()` when you also need `{ records, selection }`.
 
 ### Revision
 

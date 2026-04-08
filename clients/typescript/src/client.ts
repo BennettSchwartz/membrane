@@ -1,22 +1,28 @@
 import {
+  type CaptureMemoryRpcRequest,
   createGrpcTransport,
-  type IngestToolOutputRpcRequest,
-  type IngestWorkingStateRpcRequest,
+  type RetrieveGraphRpcRequest,
   type RetrieveByIdRpcRequest,
-  type RetrieveRpcRequest,
   type RpcTransport
 } from "./internal/grpc";
-import { encodeJsonBytes, parseMetricsEnvelope, parseRecordEnvelope, parseRetrieveEnvelope } from "./internal/json";
+import {
+  encodeJsonBytes,
+  parseCaptureMemoryEnvelope,
+  parseMetricsEnvelope,
+  parseRecordEnvelope,
+  parseRetrieveGraphEnvelope
+} from "./internal/json";
 import { nowRfc3339 } from "./internal/util";
 import {
+  SourceKind,
   createDefaultTrustContext,
-  type Constraint,
+  type CaptureMemoryResult,
   type JsonObject,
   type MemoryRecord,
   type MemoryType,
-  type OutcomeStatus,
-  type RetrieveResult,
+  type RetrieveGraphResult,
   type Sensitivity,
+  type SourceKind as SourceKindValue,
   type TrustContext
 } from "./types";
 
@@ -28,56 +34,27 @@ export interface MembraneClientOptions {
   transport?: RpcTransport;
 }
 
-export interface IngestEventOptions {
+export interface CaptureMemoryOptions {
+  source?: string;
+  sourceKind?: SourceKindValue | string;
+  context?: unknown;
+  reasonToRemember?: string;
+  proposedType?: MemoryType | string;
   summary?: string;
-  sensitivity?: Sensitivity | string;
-  source?: string;
   tags?: string[];
   scope?: string;
-  timestamp?: string;
-}
-
-export interface IngestToolOutputOptions {
-  args?: Record<string, unknown>;
-  result?: unknown;
   sensitivity?: Sensitivity | string;
-  source?: string;
-  dependsOn?: string[];
-  tags?: string[];
-  scope?: string;
   timestamp?: string;
 }
 
-export interface IngestObservationOptions {
-  sensitivity?: Sensitivity | string;
-  source?: string;
-  tags?: string[];
-  scope?: string;
-  timestamp?: string;
-}
-
-export interface IngestOutcomeOptions {
-  source?: string;
-  timestamp?: string;
-}
-
-export interface IngestWorkingStateOptions {
-  nextActions?: string[];
-  openQuestions?: string[];
-  contextSummary?: string;
-  activeConstraints?: Constraint[];
-  sensitivity?: Sensitivity | string;
-  source?: string;
-  tags?: string[];
-  scope?: string;
-  timestamp?: string;
-}
-
-export interface RetrieveOptions {
+export interface RetrieveGraphOptions {
   trust?: TrustContext;
   memoryTypes?: Array<MemoryType | string>;
   minSalience?: number;
-  limit?: number;
+  rootLimit?: number;
+  nodeLimit?: number;
+  edgeLimit?: number;
+  maxHops?: number;
 }
 
 const DEFAULT_ADDR = "localhost:9090";
@@ -98,153 +75,52 @@ export class MembraneClient {
       });
   }
 
-  async ingestEvent(eventKind: string, ref: string, options: IngestEventOptions = {}): Promise<MemoryRecord> {
-    const request = {
+  async captureMemory(content: unknown, options: CaptureMemoryOptions = {}): Promise<CaptureMemoryResult> {
+    const request: CaptureMemoryRpcRequest = {
       source: options.source ?? DEFAULT_SOURCE,
-      event_kind: eventKind,
-      ref,
+      source_kind: options.sourceKind ?? SourceKind.AGENT_TURN,
+      content: encodeJsonBytes(content),
+      reason_to_remember: options.reasonToRemember ?? "",
+      proposed_type: options.proposedType ?? "",
       summary: options.summary ?? "",
-      timestamp: options.timestamp ?? nowRfc3339(),
       tags: options.tags ?? [],
       scope: options.scope ?? "",
-      sensitivity: options.sensitivity ?? "low"
-    };
-
-    const response = await this.transport.unary("IngestEvent", request);
-    return parseRecordEnvelope(response);
-  }
-
-  async ingest_event(eventKind: string, ref: string, options: IngestEventOptions = {}): Promise<MemoryRecord> {
-    return await this.ingestEvent(eventKind, ref, options);
-  }
-
-  async ingestToolOutput(toolName: string, options: IngestToolOutputOptions = {}): Promise<MemoryRecord> {
-    const request: IngestToolOutputRpcRequest = {
-      source: options.source ?? DEFAULT_SOURCE,
-      tool_name: toolName,
-      timestamp: options.timestamp ?? nowRfc3339(),
-      tags: options.tags ?? [],
-      scope: options.scope ?? "",
-      depends_on: options.dependsOn ?? [],
-      sensitivity: options.sensitivity ?? "low"
-    };
-
-    if (options.args !== undefined) {
-      request.args = encodeJsonBytes(options.args);
-    }
-    if (options.result !== undefined) {
-      request.result = encodeJsonBytes(options.result);
-    }
-
-    const response = await this.transport.unary("IngestToolOutput", request);
-    return parseRecordEnvelope(response);
-  }
-
-  async ingest_tool_output(toolName: string, options: IngestToolOutputOptions = {}): Promise<MemoryRecord> {
-    return await this.ingestToolOutput(toolName, options);
-  }
-
-  async ingestObservation(
-    subject: string,
-    predicate: string,
-    obj: unknown,
-    options: IngestObservationOptions = {}
-  ): Promise<MemoryRecord> {
-    const request = {
-      source: options.source ?? DEFAULT_SOURCE,
-      subject,
-      predicate,
-      object: encodeJsonBytes(obj),
-      timestamp: options.timestamp ?? nowRfc3339(),
-      tags: options.tags ?? [],
-      scope: options.scope ?? "",
-      sensitivity: options.sensitivity ?? "low"
-    };
-
-    const response = await this.transport.unary("IngestObservation", request);
-    return parseRecordEnvelope(response);
-  }
-
-  async ingest_observation(
-    subject: string,
-    predicate: string,
-    obj: unknown,
-    options: IngestObservationOptions = {}
-  ): Promise<MemoryRecord> {
-    return await this.ingestObservation(subject, predicate, obj, options);
-  }
-
-  async ingestOutcome(
-    targetRecordId: string,
-    outcomeStatus: OutcomeStatus | string,
-    options: IngestOutcomeOptions = {}
-  ): Promise<MemoryRecord> {
-    const request = {
-      source: options.source ?? DEFAULT_SOURCE,
-      target_record_id: targetRecordId,
-      outcome_status: outcomeStatus,
+      sensitivity: options.sensitivity ?? "low",
       timestamp: options.timestamp ?? nowRfc3339()
     };
 
-    const response = await this.transport.unary("IngestOutcome", request);
-    return parseRecordEnvelope(response);
-  }
-
-  async ingest_outcome(
-    targetRecordId: string,
-    outcomeStatus: OutcomeStatus | string,
-    options: IngestOutcomeOptions = {}
-  ): Promise<MemoryRecord> {
-    return await this.ingestOutcome(targetRecordId, outcomeStatus, options);
-  }
-
-  async ingestWorkingState(threadId: string, state: string, options: IngestWorkingStateOptions = {}): Promise<MemoryRecord> {
-    const request: IngestWorkingStateRpcRequest = {
-      source: options.source ?? DEFAULT_SOURCE,
-      thread_id: threadId,
-      state,
-      next_actions: options.nextActions ?? [],
-      open_questions: options.openQuestions ?? [],
-      context_summary: options.contextSummary ?? "",
-      timestamp: options.timestamp ?? nowRfc3339(),
-      tags: options.tags ?? [],
-      scope: options.scope ?? "",
-      sensitivity: options.sensitivity ?? "low"
-    };
-
-    if (options.activeConstraints !== undefined) {
-      request.active_constraints = encodeJsonBytes(options.activeConstraints);
+    if (options.context !== undefined) {
+      request.context = encodeJsonBytes(options.context);
     }
 
-    const response = await this.transport.unary("IngestWorkingState", request);
-    return parseRecordEnvelope(response);
+    const response = await this.transport.unary("CaptureMemory", request);
+    return parseCaptureMemoryEnvelope(response);
   }
 
-  async ingest_working_state(threadId: string, state: string, options: IngestWorkingStateOptions = {}): Promise<MemoryRecord> {
-    return await this.ingestWorkingState(threadId, state, options);
+  async capture_memory(content: unknown, options: CaptureMemoryOptions = {}): Promise<CaptureMemoryResult> {
+    return await this.captureMemory(content, options);
   }
 
-  async retrieve(taskDescriptor: string, options: RetrieveOptions = {}): Promise<MemoryRecord[]> {
-    return (await this.retrieveWithSelection(taskDescriptor, options)).records;
-  }
-
-  async retrieveWithSelection(taskDescriptor: string, options: RetrieveOptions = {}): Promise<RetrieveResult> {
+  async retrieveGraph(taskDescriptor: string, options: RetrieveGraphOptions = {}): Promise<RetrieveGraphResult> {
     const trust = options.trust ?? createDefaultTrustContext();
 
-    const request: RetrieveRpcRequest = {
+    const request: RetrieveGraphRpcRequest = {
       task_descriptor: taskDescriptor,
       trust,
       memory_types: options.memoryTypes ?? [],
       min_salience: options.minSalience ?? 0,
-      limit: options.limit ?? 10
+      root_limit: options.rootLimit ?? 10,
+      node_limit: options.nodeLimit ?? 25,
+      edge_limit: options.edgeLimit ?? 100,
+      max_hops: options.maxHops ?? 1
     };
 
-    const response = await this.transport.unary("Retrieve", request);
-    return parseRetrieveEnvelope(response);
+    const response = await this.transport.unary("RetrieveGraph", request);
+    return parseRetrieveGraphEnvelope(response);
   }
 
-  async retrieve_with_selection(taskDescriptor: string, options: RetrieveOptions = {}): Promise<RetrieveResult> {
-    return await this.retrieveWithSelection(taskDescriptor, options);
+  async retrieve_graph(taskDescriptor: string, options: RetrieveGraphOptions = {}): Promise<RetrieveGraphResult> {
+    return await this.retrieveGraph(taskDescriptor, options);
   }
 
   async retrieveById(recordId: string, options: { trust?: TrustContext } = {}): Promise<MemoryRecord> {

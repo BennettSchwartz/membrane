@@ -27,12 +27,16 @@ const (
 	// MemoryTypePlanGraph stores reusable solution structures as directed graphs
 	// of actions.
 	MemoryTypePlanGraph MemoryType = "plan_graph"
+
+	// MemoryTypeEntity stores canonical entities and their aliases for
+	// graph-aware memory resolution and retrieval.
+	MemoryTypeEntity MemoryType = "entity"
 )
 
 // IsValidMemoryType reports whether mt is one of the allowed memory types.
 func IsValidMemoryType(mt MemoryType) bool {
 	switch mt {
-	case MemoryTypeEpisodic, MemoryTypeWorking, MemoryTypeSemantic, MemoryTypeCompetence, MemoryTypePlanGraph:
+	case MemoryTypeEpisodic, MemoryTypeWorking, MemoryTypeSemantic, MemoryTypeCompetence, MemoryTypePlanGraph, MemoryTypeEntity:
 		return true
 	default:
 		return false

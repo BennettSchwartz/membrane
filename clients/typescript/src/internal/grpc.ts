@@ -12,6 +12,19 @@ export interface RetrieveEnvelope {
   selection?: unknown;
 }
 
+export interface CaptureMemoryEnvelope {
+  primary_record: unknown;
+  created_records: unknown[];
+  edges: unknown;
+}
+
+export interface RetrieveGraphEnvelope {
+  nodes: unknown;
+  edges: unknown;
+  root_ids: string[];
+  selection?: unknown;
+}
+
 export interface MetricsEnvelope {
   snapshot: unknown;
 }
@@ -26,67 +39,29 @@ export interface TrustContextRpcRequest {
   scopes: string[];
 }
 
-export interface IngestEventRpcRequest {
+export interface CaptureMemoryRpcRequest {
   source: string;
-  event_kind: string;
-  ref: string;
+  source_kind: string;
+  content: JsonBytes;
+  context?: JsonBytes;
+  reason_to_remember: string;
+  proposed_type: string;
   summary: string;
-  timestamp: string;
   tags: string[];
   scope: string;
   sensitivity: string;
-}
-
-export interface IngestToolOutputRpcRequest {
-  source: string;
-  tool_name: string;
-  timestamp: string;
-  tags: string[];
-  scope: string;
-  depends_on: string[];
-  sensitivity: string;
-  args?: JsonBytes;
-  result?: JsonBytes;
-}
-
-export interface IngestObservationRpcRequest {
-  source: string;
-  subject: string;
-  predicate: string;
-  object: JsonBytes;
-  timestamp: string;
-  tags: string[];
-  scope: string;
-  sensitivity: string;
-}
-
-export interface IngestOutcomeRpcRequest {
-  source: string;
-  target_record_id: string;
-  outcome_status: string;
   timestamp: string;
 }
 
-export interface IngestWorkingStateRpcRequest {
-  source: string;
-  thread_id: string;
-  state: string;
-  next_actions: string[];
-  open_questions: string[];
-  context_summary: string;
-  timestamp: string;
-  tags: string[];
-  scope: string;
-  sensitivity: string;
-  active_constraints?: JsonBytes;
-}
-
-export interface RetrieveRpcRequest {
+export interface RetrieveGraphRpcRequest {
   task_descriptor: string;
   trust: TrustContextRpcRequest;
   memory_types: string[];
   min_salience: number;
-  limit: number;
+  root_limit: number;
+  node_limit: number;
+  edge_limit: number;
+  max_hops: number;
 }
 
 export interface RetrieveByIdRpcRequest {
@@ -144,12 +119,8 @@ export interface PenalizeRpcRequest {
 export type GetMetricsRpcRequest = Record<string, never>;
 
 export interface MembraneRpcSchema {
-  IngestEvent: { request: IngestEventRpcRequest; response: RecordEnvelope };
-  IngestToolOutput: { request: IngestToolOutputRpcRequest; response: RecordEnvelope };
-  IngestObservation: { request: IngestObservationRpcRequest; response: RecordEnvelope };
-  IngestOutcome: { request: IngestOutcomeRpcRequest; response: RecordEnvelope };
-  IngestWorkingState: { request: IngestWorkingStateRpcRequest; response: RecordEnvelope };
-  Retrieve: { request: RetrieveRpcRequest; response: RetrieveEnvelope };
+  CaptureMemory: { request: CaptureMemoryRpcRequest; response: CaptureMemoryEnvelope };
+  RetrieveGraph: { request: RetrieveGraphRpcRequest; response: RetrieveGraphEnvelope };
   RetrieveByID: { request: RetrieveByIdRpcRequest; response: RecordEnvelope };
   Supersede: { request: SupersedeRpcRequest; response: RecordEnvelope };
   Fork: { request: ForkRpcRequest; response: RecordEnvelope };
@@ -340,18 +311,8 @@ export function assertMethodBinding<M extends RpcMethodName>(methodName: M, meth
 
 function bindMethodTable(client: MembraneServiceClient): MethodTable {
   return {
-    IngestEvent: assertMethodBinding("IngestEvent", client.IngestEvent).bind(client) as GrpcUnaryMethod<"IngestEvent">,
-    IngestToolOutput: assertMethodBinding("IngestToolOutput", client.IngestToolOutput).bind(
-      client
-    ) as GrpcUnaryMethod<"IngestToolOutput">,
-    IngestObservation: assertMethodBinding("IngestObservation", client.IngestObservation).bind(
-      client
-    ) as GrpcUnaryMethod<"IngestObservation">,
-    IngestOutcome: assertMethodBinding("IngestOutcome", client.IngestOutcome).bind(client) as GrpcUnaryMethod<"IngestOutcome">,
-    IngestWorkingState: assertMethodBinding("IngestWorkingState", client.IngestWorkingState).bind(
-      client
-    ) as GrpcUnaryMethod<"IngestWorkingState">,
-    Retrieve: assertMethodBinding("Retrieve", client.Retrieve).bind(client) as GrpcUnaryMethod<"Retrieve">,
+    CaptureMemory: assertMethodBinding("CaptureMemory", client.CaptureMemory).bind(client) as GrpcUnaryMethod<"CaptureMemory">,
+    RetrieveGraph: assertMethodBinding("RetrieveGraph", client.RetrieveGraph).bind(client) as GrpcUnaryMethod<"RetrieveGraph">,
     RetrieveByID: assertMethodBinding("RetrieveByID", client.RetrieveByID).bind(client) as GrpcUnaryMethod<"RetrieveByID">,
     Supersede: assertMethodBinding("Supersede", client.Supersede).bind(client) as GrpcUnaryMethod<"Supersede">,
     Fork: assertMethodBinding("Fork", client.Fork).bind(client) as GrpcUnaryMethod<"Fork">,

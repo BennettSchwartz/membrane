@@ -83,14 +83,8 @@ func main() {
 	fmt.Println("=== Scenario 1: Retraction ===")
 	fmt.Println("  Setup: Two records about preferred database. Retract the wrong one.")
 
-	wrongDB, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "team", Predicate: "prefers_database", Object: "MySQL",
-		Tags: []string{"database", "preference"}, Scope: "project:alpha", Sensitivity: schema.SensitivityLow,
-	})
-	correctDB, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "team", Predicate: "prefers_database", Object: "PostgreSQL",
-		Tags: []string{"database", "preference"}, Scope: "project:alpha", Sensitivity: schema.SensitivityLow,
-	})
+	wrongDB, _ := captureObservationRecord(ctx, m, "eval", "team", "prefers_database", "MySQL", []string{"database", "preference"}, "project:alpha", schema.SensitivityLow)
+	correctDB, _ := captureObservationRecord(ctx, m, "eval", "team", "prefers_database", "PostgreSQL", []string{"database", "preference"}, "project:alpha", schema.SensitivityLow)
 	// Add some noise records
 	noiseIDs := ingestNoise(ctx, m, []string{
 		"team uses Redis for caching",
@@ -122,7 +116,7 @@ func main() {
 	ragHasCorrect := contains(ragTop, correctDB.ID)
 
 	// Membrane: respects retraction (salience=0, filtered with MinSalience)
-	memResp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	memResp, _ := retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 		TaskDescriptor: query, QueryEmbedding: qVec,
 		Trust:       fullTrust(),
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
@@ -151,14 +145,8 @@ func main() {
 	fmt.Println("\n=== Scenario 2: Reinforcement ===")
 	fmt.Println("  Setup: Two similar debugging procedures. Reinforce the one that worked.")
 
-	proc1, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "debug-oom", Predicate: "procedure", Object: "restart pods and hope for the best",
-		Tags: []string{"debugging", "oom"}, Sensitivity: schema.SensitivityLow,
-	})
-	proc2, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "debug-oom", Predicate: "procedure", Object: "capture pprof heap profile then trace allocations",
-		Tags: []string{"debugging", "oom"}, Sensitivity: schema.SensitivityLow,
-	})
+	proc1, _ := captureObservationRecord(ctx, m, "eval", "debug-oom", "procedure", "restart pods and hope for the best", []string{"debugging", "oom"}, "", schema.SensitivityLow)
+	proc2, _ := captureObservationRecord(ctx, m, "eval", "debug-oom", "procedure", "capture pprof heap profile then trace allocations", []string{"debugging", "oom"}, "", schema.SensitivityLow)
 
 	embedRecord(ctx, embClient, pgStore, proc1.ID, "debugging OOM kill by restarting pods and hoping the problem goes away", *embeddingModel)
 	embedRecord(ctx, embClient, pgStore, proc2.ID, "debugging OOM kill by capturing pprof heap profile and tracing memory allocations to source", *embeddingModel)
@@ -179,7 +167,7 @@ func main() {
 		ragFirst = ragTop[0]
 	}
 
-	memResp, _ = m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	memResp, _ = retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 		TaskDescriptor: query, QueryEmbedding: qVec,
 		Trust:       fullTrust(),
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
@@ -210,10 +198,7 @@ func main() {
 	fmt.Println("\n=== Scenario 3: Supersession ===")
 	fmt.Println("  Setup: Rate limit changed from 50 rps to 200 rps. Old record superseded.")
 
-	oldLimit, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "api", Predicate: "rate_limit", Object: "50 requests per second",
-		Tags: []string{"api", "rate-limit"}, Sensitivity: schema.SensitivityLow,
-	})
+	oldLimit, _ := captureObservationRecord(ctx, m, "eval", "api", "rate_limit", "50 requests per second", []string{"api", "rate-limit"}, "", schema.SensitivityLow)
 	embedRecord(ctx, embClient, pgStore, oldLimit.ID, "API rate limit is 50 requests per second per client", *embeddingModel)
 
 	newLimitRec := schema.NewMemoryRecord(uuid.New().String(), schema.MemoryTypeSemantic, schema.SensitivityLow,
@@ -240,7 +225,7 @@ func main() {
 	ragReturnsOld := contains(ragTop, oldLimit.ID)
 	ragReturnsNew := contains(ragTop, superseded.ID)
 
-	memResp, _ = m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	memResp, _ = retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 		TaskDescriptor: query, QueryEmbedding: qVec,
 		Trust:       fullTrust(),
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
@@ -273,14 +258,8 @@ func main() {
 	fmt.Println("\n=== Scenario 4: Decay ===")
 	fmt.Println("  Setup: Two deployment records. One is fresh, one has decayed salience.")
 
-	staleRec, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "deployment", Predicate: "target", Object: "Heroku (deprecated)",
-		Tags: []string{"deploy"}, Sensitivity: schema.SensitivityLow,
-	})
-	freshRec, _ := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-		Source: "eval", Subject: "deployment", Predicate: "target", Object: "Kubernetes on GKE",
-		Tags: []string{"deploy"}, Sensitivity: schema.SensitivityLow,
-	})
+	staleRec, _ := captureObservationRecord(ctx, m, "eval", "deployment", "target", "Heroku (deprecated)", []string{"deploy"}, "", schema.SensitivityLow)
+	freshRec, _ := captureObservationRecord(ctx, m, "eval", "deployment", "target", "Kubernetes on GKE", []string{"deploy"}, "", schema.SensitivityLow)
 
 	embedRecord(ctx, embClient, pgStore, staleRec.ID, "production deployment targets Heroku platform", *embeddingModel)
 	embedRecord(ctx, embClient, pgStore, freshRec.ID, "production deployment targets Kubernetes on GKE", *embeddingModel)
@@ -299,7 +278,7 @@ func main() {
 		ragFirstDeploy = ragTop[0]
 	}
 
-	memResp, _ = m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	memResp, _ = retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 		TaskDescriptor: query, QueryEmbedding: qVec,
 		Trust:       fullTrust(),
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
@@ -350,10 +329,7 @@ func ingestNoise(ctx context.Context, m *membrane.Membrane, texts []string) []st
 		if len(parts) >= 3 {
 			subj, pred, obj = parts[0], parts[1], strings.Join(parts[2:], " ")
 		}
-		rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-			Source: "eval", Subject: subj, Predicate: pred, Object: obj,
-			Tags: []string{"noise"}, Sensitivity: schema.SensitivityLow,
-		})
+		rec, err := captureObservationRecord(ctx, m, "eval", subj, pred, obj, []string{"noise"}, "", schema.SensitivityLow)
 		if err != nil {
 			fatal("ingest noise", err)
 		}
@@ -420,6 +396,55 @@ func label(id, aID, bID string) string {
 	default:
 		return "other: " + id[:8]
 	}
+}
+
+func captureObservationRecord(ctx context.Context, m *membrane.Membrane, source, subject, predicate string, object any, tags []string, scope string, sensitivity schema.Sensitivity) (*schema.MemoryRecord, error) {
+	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+		Source:           source,
+		SourceKind:       "observation",
+		Content:          map[string]any{"subject": subject, "predicate": predicate, "object": object},
+		ReasonToRemember: fmt.Sprintf("%s %s", subject, predicate),
+		Summary:          fmt.Sprintf("%s %s", subject, predicate),
+		Tags:             tags,
+		Scope:            scope,
+		Sensitivity:      sensitivity,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range resp.CreatedRecords {
+		if rec != nil && rec.Type == schema.MemoryTypeSemantic {
+			return rec, nil
+		}
+	}
+	return nil, fmt.Errorf("capture observation did not produce semantic record")
+}
+
+func retrieveRootRecords(ctx context.Context, m *membrane.Membrane, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error) {
+	rootLimit := req.Limit
+	if rootLimit <= 0 {
+		rootLimit = 10000
+	}
+	graphResp, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+		TaskDescriptor: req.TaskDescriptor,
+		Trust:          req.Trust,
+		MemoryTypes:    req.MemoryTypes,
+		MinSalience:    req.MinSalience,
+		RootLimit:      rootLimit,
+		NodeLimit:      rootLimit,
+		EdgeLimit:      0,
+		MaxHops:        0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]*schema.MemoryRecord, 0, len(graphResp.Nodes))
+	for _, node := range graphResp.Nodes {
+		if node.Root && node.Record != nil {
+			records = append(records, node.Record)
+		}
+	}
+	return &retrieval.RetrieveResponse{Records: records, Selection: graphResp.Selection}, nil
 }
 
 func fatal(action string, err error) {

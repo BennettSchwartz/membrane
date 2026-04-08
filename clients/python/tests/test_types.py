@@ -2,17 +2,25 @@
 
 from membrane.types import (
     AuditEntry,
+    CaptureMemoryResult,
     CompetencePayload,
     Constraint,
     DecayCurve,
     DecayProfile,
     DeletionPolicy,
     EdgeKind,
+    EntityKind,
+    EntityPayload,
     EpisodicPayload,
     EnvironmentSnapshot,
+    GraphEdge,
+    GraphNode,
+    Interpretation,
+    InterpretationStatus,
     Lifecycle,
     MemoryRecord,
     MemoryType,
+    Mention,
     OutcomeStatus,
     PerformanceStats,
     PlanEdge,
@@ -23,8 +31,10 @@ from membrane.types import (
     ProvenanceRef,
     ProvenanceSource,
     RecipeStep,
+    ReferenceCandidate,
     Relation,
-    RetrieveResult,
+    RelationCandidate,
+    RetrieveGraphResult,
     RevisionState,
     RevisionStatus,
     SelectionResult,
@@ -47,6 +57,7 @@ class TestEnums:
         assert MemoryType.SEMANTIC == "semantic"
         assert MemoryType.COMPETENCE == "competence"
         assert MemoryType.PLAN_GRAPH == "plan_graph"
+        assert MemoryType.ENTITY == "entity"
 
     def test_sensitivity_values(self):
         assert Sensitivity.PUBLIC == "public"
@@ -157,6 +168,19 @@ class TestMemoryRecord:
             "relations": [
                 {"target_id": "rec-002", "kind": "depends_on", "weight": 0.8}
             ],
+            "interpretation": {
+                "status": "resolved",
+                "summary": "Linked Orchid mention",
+                "proposed_type": "semantic",
+                "mentions": [
+                    {
+                        "surface": "Orchid",
+                        "entity_kind": "project",
+                        "canonical_entity_id": "entity-1",
+                        "confidence": 0.9,
+                    }
+                ],
+            },
             "payload": {"event_kind": "test", "summary": "A test event"},
             "audit_log": [
                 {
@@ -179,6 +203,9 @@ class TestMemoryRecord:
         assert rec.provenance.sources[0].kind == "event"
         assert len(rec.relations) == 1
         assert rec.relations[0].target_id == "rec-002"
+        assert rec.interpretation is not None
+        assert rec.interpretation.status is InterpretationStatus.RESOLVED
+        assert rec.interpretation.mentions[0].surface == "Orchid"
         assert rec.payload == {"event_kind": "test", "summary": "A test event"}
         assert len(rec.audit_log) == 1
         assert rec.audit_log[0].action == "create"
@@ -258,6 +285,18 @@ class TestSubstructures:
         assert r.target_id == "rec-999"
         assert r.predicate == "supersedes"
 
+    def test_graph_edge_from_dict(self):
+        edge = GraphEdge.from_dict(
+            {
+                "source_id": "rec-1",
+                "predicate": "mentions_entity",
+                "target_id": "entity-1",
+                "weight": 1.0,
+            }
+        )
+        assert edge.source_id == "rec-1"
+        assert edge.target_id == "entity-1"
+
     def test_audit_entry_from_dict(self):
         ae = AuditEntry.from_dict(
             {
@@ -293,10 +332,82 @@ class TestSubstructures:
         assert selection.confidence == 0.42
         assert selection.needs_more is True
 
-    def test_retrieve_result_defaults(self):
-        result = RetrieveResult()
-        assert result.records == []
-        assert result.selection is None
+    def test_graph_and_capture_result_defaults(self):
+        assert RetrieveGraphResult().nodes == []
+        assert CaptureMemoryResult().created_records == []
+
+    def test_interpretation_from_dict(self):
+        interpretation = Interpretation.from_dict(
+            {
+                "status": "tentative",
+                "summary": "Potential Orchid mention",
+                "proposed_type": "semantic",
+                "topical_labels": ["deploy"],
+                "mentions": [
+                    {
+                        "surface": "Orchid",
+                        "entity_kind": "project",
+                        "aliases": ["orchid"],
+                    }
+                ],
+                "relation_candidates": [
+                    {"predicate": "mentions_entity", "confidence": 0.6}
+                ],
+                "reference_candidates": [
+                    {"ref": "rec-123", "confidence": 0.4}
+                ],
+            }
+        )
+        assert interpretation.status is InterpretationStatus.TENTATIVE
+        assert interpretation.proposed_type is MemoryType.SEMANTIC
+        assert interpretation.mentions[0] == Mention(
+            surface="Orchid",
+            entity_kind=EntityKind.PROJECT,
+            canonical_entity_id="",
+            confidence=0.0,
+            aliases=["orchid"],
+        )
+        assert interpretation.relation_candidates[0] == RelationCandidate(
+            predicate="mentions_entity",
+            target_record_id="",
+            target_entity_id="",
+            confidence=0.6,
+            resolved=False,
+        )
+        assert interpretation.reference_candidates[0] == ReferenceCandidate(
+            ref="rec-123",
+            target_record_id="",
+            target_entity_id="",
+            confidence=0.4,
+            resolved=False,
+        )
+
+    def test_graph_node_and_entity_payload_from_dict(self):
+        node = GraphNode.from_dict(
+            {
+                "record": {
+                    "id": "entity-1",
+                    "type": "entity",
+                    "sensitivity": "low",
+                    "confidence": 1.0,
+                    "salience": 1.0,
+                },
+                "root": True,
+                "hop": 0,
+            }
+        )
+        payload = EntityPayload.from_dict(
+            {
+                "kind": "entity",
+                "canonical_name": "Orchid",
+                "entity_kind": "project",
+                "aliases": ["orchid"],
+                "summary": "Staging deploy target",
+            }
+        )
+        assert node.record.type is MemoryType.ENTITY
+        assert payload.entity_kind is EntityKind.PROJECT
+        assert payload.aliases == ["orchid"]
 
 
 class TestDecayProfileExtended:
@@ -634,4 +745,3 @@ class TestPlanGraphPayload:
         assert p.metrics is not None
         assert p.metrics.execution_count == 20
         assert p.metrics.failure_rate == 0.05
-

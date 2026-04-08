@@ -236,45 +236,21 @@ func ingestRecord(ctx context.Context, m *membrane.Membrane, store *postgres.Pos
 
 	switch rec.MemoryType {
 	case "semantic":
-		r, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-			Source:      "eval",
-			Subject:     rec.Subject,
-			Predicate:   rec.Predicate,
-			Object:      rec.Object,
-			Tags:        rec.Tags,
-			Scope:       rec.Scope,
-			Sensitivity: sens,
-		})
+		r, err := captureObservationRecord(ctx, m, "eval", rec.Subject, rec.Predicate, rec.Object, rec.Tags, rec.Scope, sens)
 		if err != nil {
 			return "", err
 		}
 		return r.ID, nil
 
 	case "episodic":
-		r, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-			Source:      "eval",
-			EventKind:   rec.EventKind,
-			Ref:         rec.Ref,
-			Summary:     rec.Summary,
-			Tags:        rec.Tags,
-			Scope:       rec.Scope,
-			Sensitivity: sens,
-		})
+		r, err := captureEventRecord(ctx, m, "eval", rec.EventKind, rec.Ref, rec.Summary, rec.Tags, rec.Scope, sens)
 		if err != nil {
 			return "", err
 		}
 		return r.ID, nil
 
 	case "working":
-		r, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-			Source:      "eval",
-			ThreadID:    rec.ThreadID,
-			State:       schema.TaskState(rec.State),
-			NextActions: rec.NextActions,
-			Tags:        rec.Tags,
-			Scope:       rec.Scope,
-			Sensitivity: sens,
-		})
+		r, err := captureWorkingStateRecord(ctx, m, "eval", rec.ThreadID, schema.TaskState(rec.State), rec.NextActions, rec.Tags, rec.Scope, sens)
 		if err != nil {
 			return "", err
 		}
@@ -357,7 +333,7 @@ func runRAGEval(ctx context.Context, m *membrane.Membrane, pgStore *postgres.Pos
 			memTypes = parseMemoryTypes(q.MemoryTypes)
 		}
 		trust := toTrustContext(q.Trust)
-		resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+		resp, err := retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 			Trust:       trust,
 			MemoryTypes: memTypes,
 			MinSalience: q.MinSalience,
@@ -426,7 +402,7 @@ func runMembraneEval(ctx context.Context, m *membrane.Membrane, data *dataset, i
 		}
 		trust := toTrustContext(q.Trust)
 
-		resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+		resp, err := retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{
 			TaskDescriptor: q.Text,
 			QueryEmbedding: queryEmbeddings[q.Key],
 			Trust:          trust,
@@ -493,6 +469,91 @@ func parseMemoryTypes(raw []string) []schema.MemoryType {
 		out[i] = schema.MemoryType(s)
 	}
 	return out
+}
+
+func captureEventRecord(ctx context.Context, m *membrane.Membrane, source, eventKind, ref, summary string, tags []string, scope string, sensitivity schema.Sensitivity) (*schema.MemoryRecord, error) {
+	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+		Source:           source,
+		SourceKind:       "event",
+		Content:          map[string]any{"ref": ref, "text": summary},
+		ReasonToRemember: summary,
+		Summary:          summary,
+		Tags:             tags,
+		Scope:            scope,
+		Sensitivity:      sensitivity,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.PrimaryRecord, nil
+}
+
+func captureObservationRecord(ctx context.Context, m *membrane.Membrane, source, subject, predicate string, object any, tags []string, scope string, sensitivity schema.Sensitivity) (*schema.MemoryRecord, error) {
+	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+		Source:           source,
+		SourceKind:       "observation",
+		Content:          map[string]any{"subject": subject, "predicate": predicate, "object": object},
+		ReasonToRemember: fmt.Sprintf("%s %s", subject, predicate),
+		Summary:          fmt.Sprintf("%s %s", subject, predicate),
+		Tags:             tags,
+		Scope:            scope,
+		Sensitivity:      sensitivity,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range resp.CreatedRecords {
+		if rec != nil && rec.Type == schema.MemoryTypeSemantic {
+			return rec, nil
+		}
+	}
+	return nil, fmt.Errorf("capture observation did not produce semantic record")
+}
+
+func captureWorkingStateRecord(ctx context.Context, m *membrane.Membrane, source, threadID string, state schema.TaskState, nextActions []string, tags []string, scope string, sensitivity schema.Sensitivity) (*schema.MemoryRecord, error) {
+	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+		Source:     source,
+		SourceKind: "working_state",
+		Content: map[string]any{
+			"thread_id":    threadID,
+			"state":        state,
+			"next_actions": nextActions,
+		},
+		Tags:        tags,
+		Scope:       scope,
+		Sensitivity: sensitivity,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.PrimaryRecord, nil
+}
+
+func retrieveRootRecords(ctx context.Context, m *membrane.Membrane, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error) {
+	rootLimit := req.Limit
+	if rootLimit <= 0 {
+		rootLimit = 10000
+	}
+	graphResp, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+		TaskDescriptor: req.TaskDescriptor,
+		Trust:          req.Trust,
+		MemoryTypes:    req.MemoryTypes,
+		MinSalience:    req.MinSalience,
+		RootLimit:      rootLimit,
+		NodeLimit:      rootLimit,
+		EdgeLimit:      0,
+		MaxHops:        0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]*schema.MemoryRecord, 0, len(graphResp.Nodes))
+	for _, node := range graphResp.Nodes {
+		if node.Root && node.Record != nil {
+			records = append(records, node.Record)
+		}
+	}
+	return &retrieval.RetrieveResponse{Records: records, Selection: graphResp.Selection}, nil
 }
 
 func computeMetrics(got, expected []string, k int) (recall, precision, mrr, ndcg float64) {

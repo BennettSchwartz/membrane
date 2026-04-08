@@ -23,7 +23,7 @@ describe("gRPC transport helpers", () => {
   });
 
   it("fails fast when a required method binding is missing", () => {
-    expect(() => assertMethodBinding("Retrieve", undefined)).toThrow(MembraneError);
-    expect(() => assertMethodBinding("Retrieve", undefined)).toThrow("Missing gRPC method binding: Retrieve");
+    expect(() => assertMethodBinding("CaptureMemory", undefined)).toThrow(MembraneError);
+    expect(() => assertMethodBinding("CaptureMemory", undefined)).toThrow("Missing gRPC method binding: CaptureMemory");
   });
 });

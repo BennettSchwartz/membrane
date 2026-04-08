@@ -135,6 +135,19 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		return fmt.Errorf("insert payloads: %w", err)
 	}
 
+	if rec.Interpretation != nil {
+		interpretationJSON, err := json.Marshal(rec.Interpretation)
+		if err != nil {
+			return fmt.Errorf("marshal interpretation: %w", err)
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO interpretations (record_id, interpretation_json) VALUES (?, ?)`,
+			rec.ID, string(interpretationJSON),
+		); err != nil {
+			return fmt.Errorf("insert interpretations: %w", err)
+		}
+	}
+
 	// Tags.
 	for _, tag := range rec.Tags {
 		if _, err := q.ExecContext(ctx,
@@ -266,6 +279,21 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		rec.Payload = wrapper.Payload
 	}
 
+	var interpretationJSON string
+	err = q.QueryRowContext(ctx,
+		`SELECT interpretation_json FROM interpretations WHERE record_id = ?`, id,
+	).Scan(&interpretationJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("query interpretations: %w", err)
+	}
+	if interpretationJSON != "" {
+		var interpretation schema.Interpretation
+		if err := json.Unmarshal([]byte(interpretationJSON), &interpretation); err != nil {
+			return nil, fmt.Errorf("unmarshal interpretation: %w", err)
+		}
+		rec.Interpretation = &interpretation
+	}
+
 	// Tags.
 	tagRows, err := q.QueryContext(ctx,
 		`SELECT tag FROM tags WHERE record_id = ?`, id)
@@ -392,6 +420,22 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		rec.ID, string(payloadJSON),
 	); err != nil {
 		return fmt.Errorf("upsert payloads: %w", err)
+	}
+
+	if _, err := q.ExecContext(ctx, `DELETE FROM interpretations WHERE record_id = ?`, rec.ID); err != nil {
+		return fmt.Errorf("delete interpretations: %w", err)
+	}
+	if rec.Interpretation != nil {
+		interpretationJSON, err := json.Marshal(rec.Interpretation)
+		if err != nil {
+			return fmt.Errorf("marshal interpretation: %w", err)
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO interpretations (record_id, interpretation_json) VALUES (?, ?)`,
+			rec.ID, string(interpretationJSON),
+		); err != nil {
+			return fmt.Errorf("insert interpretations: %w", err)
+		}
 	}
 
 	// Replace tags.
@@ -650,6 +694,28 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 				return nil, fmt.Errorf("unmarshal payload for %s: %w", recordID, err)
 			}
 			rec.Payload = wrapper.Payload
+		}
+	}
+
+	// 4. Fetch tags.
+	intQuery := fmt.Sprintf(
+		`SELECT record_id, interpretation_json FROM interpretations WHERE record_id IN (%s)`, placeholders)
+	intRows, err := q.QueryContext(ctx, intQuery, idArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("batch query interpretations: %w", err)
+	}
+	defer intRows.Close()
+	for intRows.Next() {
+		var recordID, interpretationJSON string
+		if err := intRows.Scan(&recordID, &interpretationJSON); err != nil {
+			return nil, fmt.Errorf("batch scan interpretations: %w", err)
+		}
+		if rec, ok := recMap[recordID]; ok && interpretationJSON != "" {
+			var interpretation schema.Interpretation
+			if err := json.Unmarshal([]byte(interpretationJSON), &interpretation); err != nil {
+				return nil, fmt.Errorf("unmarshal interpretation for %s: %w", recordID, err)
+			}
+			rec.Interpretation = &interpretation
 		}
 	}
 

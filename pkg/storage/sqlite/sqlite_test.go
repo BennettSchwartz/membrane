@@ -302,6 +302,81 @@ func TestGet(t *testing.T) {
 	}
 }
 
+func TestCreateUpdatePreservesInterpretationAndRelations(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	entity := schema.NewMemoryRecord("entity-001", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		EntityKind:    schema.EntityKindProject,
+		Aliases:       []string{"orchid"},
+		Summary:       "Orchid entity",
+	})
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+
+	rec := newSemanticRecord("interp-001")
+	rec.Interpretation = &schema.Interpretation{
+		Status:               schema.InterpretationStatusTentative,
+		Summary:              "Potential Orchid mention",
+		ProposedType:         schema.MemoryTypeSemantic,
+		TopicalLabels:        []string{"deploy"},
+		ExtractionConfidence: 0.6,
+		Mentions: []schema.Mention{{
+			Surface:    "Orchid",
+			EntityKind: schema.EntityKindProject,
+			Confidence: 0.6,
+			Aliases:    []string{"orchid"},
+		}},
+	}
+	if err := store.Create(ctx, rec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddRelation(ctx, rec.ID, schema.Relation{
+		TargetID:  "entity-001",
+		Predicate: "mentions_entity",
+		Weight:    1.0,
+		CreatedAt: rec.CreatedAt,
+	}); err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	rec.Interpretation.Status = schema.InterpretationStatusResolved
+	rec.Interpretation.Mentions[0].CanonicalEntityID = "entity-001"
+	rec.Relations = []schema.Relation{{
+		TargetID:  "entity-001",
+		Predicate: "mentions_entity",
+		Weight:    1.0,
+		CreatedAt: rec.CreatedAt,
+	}}
+	if err := store.Update(ctx, rec); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := store.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Interpretation == nil {
+		t.Fatalf("Interpretation = nil, want interpretation data")
+	}
+	if got.Interpretation.Status != schema.InterpretationStatusResolved {
+		t.Fatalf("Interpretation.Status = %q, want %q", got.Interpretation.Status, schema.InterpretationStatusResolved)
+	}
+	if got.Interpretation.Mentions[0].CanonicalEntityID != "entity-001" {
+		t.Fatalf("Interpretation canonical_entity_id = %q, want entity-001", got.Interpretation.Mentions[0].CanonicalEntityID)
+	}
+	rels, err := store.GetRelations(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("GetRelations: %v", err)
+	}
+	if len(rels) != 1 || rels[0].Predicate != "mentions_entity" || rels[0].TargetID != "entity-001" {
+		t.Fatalf("Relations = %+v, want mentions_entity -> entity-001", rels)
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

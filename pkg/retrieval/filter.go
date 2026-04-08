@@ -80,6 +80,8 @@ func Redact(record *schema.MemoryRecord) *schema.MemoryRecord {
 		Relations: []schema.Relation{},
 		// Payload is set to nil
 		Payload: nil,
+		// Interpretation is stripped from redacted records.
+		Interpretation: nil,
 		// AuditLog is cleared
 		AuditLog: []schema.AuditEntry{},
 	}

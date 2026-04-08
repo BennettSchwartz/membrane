@@ -70,8 +70,8 @@ describe("validateConfig", () => {
   });
 
   it("filters context_types to valid Membrane memory types only", () => {
-    const result = validateConfig({ context_types: ["episodic", "unsupported", "semantic", "event"] });
-    expect(result.context_types).toEqual(["episodic", "semantic"]);
+    const result = validateConfig({ context_types: ["episodic", "unsupported", "semantic", "entity", "event"] });
+    expect(result.context_types).toEqual(["episodic", "semantic", "entity"]);
   });
 
   it("drops context_types when none are valid Membrane types", () => {
@@ -120,5 +120,94 @@ describe("OpenClawMembranePlugin", () => {
     const event: OpenClawEvent = { hook: "after_agent_reply", response: "Hello" };
     // Should not throw
     await plugin.handleEvent(event);
+  });
+
+  it("handleEvent uses captureMemory for tool output", async () => {
+    const fakeClient = {
+      captureMemory: vi.fn().mockResolvedValue({}),
+    };
+    (plugin as unknown as { client: unknown }).client = fakeClient;
+
+    await plugin.handleEvent({
+      hook: "after_tool_call",
+      agentId: "agent-1",
+      toolName: "bash",
+      toolParams: { cmd: "go test ./..." },
+      toolResult: { exit_code: 0 },
+      timestamp: "2026-04-08T12:00:00Z",
+    });
+
+    expect(fakeClient.captureMemory).toHaveBeenCalledTimes(1);
+    const [, options] = fakeClient.captureMemory.mock.calls[0];
+    expect(options.sourceKind).toBe("tool_output");
+  });
+
+  it("search uses retrieveGraph and flattens roots before neighbors", async () => {
+    const fakeClient = {
+      retrieveGraph: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            root: false,
+            hop: 1,
+            record: { id: "neighbor-1", type: "episodic", sensitivity: "low", confidence: 1, salience: 1 },
+          },
+          {
+            root: true,
+            hop: 0,
+            record: { id: "root-1", type: "entity", sensitivity: "low", confidence: 1, salience: 1 },
+          },
+        ],
+      }),
+    };
+    (plugin as unknown as { client: unknown }).client = fakeClient;
+
+    const result = await plugin.search("orchid", { limit: 3, memoryTypes: ["entity", "episodic"] });
+
+    expect(fakeClient.retrieveGraph).toHaveBeenCalledTimes(1);
+    expect(result.map((record) => record.id)).toEqual(["root-1", "neighbor-1"]);
+  });
+
+  it("getContext formats root and neighbor sections from graph retrieval", async () => {
+    const fakeClient = {
+      retrieveGraph: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            root: true,
+            hop: 0,
+            record: {
+              id: "root-1",
+              type: "entity",
+              sensitivity: "low",
+              confidence: 1,
+              salience: 1,
+              interpretation: { summary: "Orchid deploy target" },
+              payload: {},
+            },
+          },
+          {
+            root: false,
+            hop: 1,
+            record: {
+              id: "neighbor-1",
+              type: "episodic",
+              sensitivity: "low",
+              confidence: 1,
+              salience: 1,
+              payload: { summary: "Used Orchid during rollout verification" },
+            },
+          },
+        ],
+      }),
+    };
+    (plugin as unknown as { client: unknown }).client = fakeClient;
+
+    const context = await plugin.getContext("agent-1");
+
+    expect(fakeClient.retrieveGraph).toHaveBeenCalledTimes(1);
+    expect(context).toContain("Membrane graph context:");
+    expect(context).toContain("Roots:");
+    expect(context).toContain("Neighbors:");
+    expect(context).toContain("Orchid deploy target");
+    expect(context).toContain("Used Orchid during rollout verification");
   });
 });

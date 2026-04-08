@@ -5,7 +5,7 @@ import warnings
 
 from membrane.v1 import membrane_pb2 as membrane_dot_v1_dot_membrane__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -34,35 +34,15 @@ class MembraneServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.IngestEvent = channel.unary_unary(
-                '/membrane.v1.MembraneService/IngestEvent',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.IngestEventRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
+        self.CaptureMemory = channel.unary_unary(
+                '/membrane.v1.MembraneService/CaptureMemory',
+                request_serializer=membrane_dot_v1_dot_membrane__pb2.CaptureMemoryRequest.SerializeToString,
+                response_deserializer=membrane_dot_v1_dot_membrane__pb2.CaptureMemoryResponse.FromString,
                 _registered_method=True)
-        self.IngestToolOutput = channel.unary_unary(
-                '/membrane.v1.MembraneService/IngestToolOutput',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.IngestToolOutputRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-                _registered_method=True)
-        self.IngestObservation = channel.unary_unary(
-                '/membrane.v1.MembraneService/IngestObservation',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.IngestObservationRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-                _registered_method=True)
-        self.IngestOutcome = channel.unary_unary(
-                '/membrane.v1.MembraneService/IngestOutcome',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.IngestOutcomeRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-                _registered_method=True)
-        self.IngestWorkingState = channel.unary_unary(
-                '/membrane.v1.MembraneService/IngestWorkingState',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.IngestWorkingStateRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-                _registered_method=True)
-        self.Retrieve = channel.unary_unary(
-                '/membrane.v1.MembraneService/Retrieve',
-                request_serializer=membrane_dot_v1_dot_membrane__pb2.RetrieveRequest.SerializeToString,
-                response_deserializer=membrane_dot_v1_dot_membrane__pb2.RetrieveResponse.FromString,
+        self.RetrieveGraph = channel.unary_unary(
+                '/membrane.v1.MembraneService/RetrieveGraph',
+                request_serializer=membrane_dot_v1_dot_membrane__pb2.RetrieveGraphRequest.SerializeToString,
+                response_deserializer=membrane_dot_v1_dot_membrane__pb2.RetrieveGraphResponse.FromString,
                 _registered_method=True)
         self.RetrieveByID = channel.unary_unary(
                 '/membrane.v1.MembraneService/RetrieveByID',
@@ -114,37 +94,13 @@ class MembraneServiceStub(object):
 class MembraneServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def IngestEvent(self, request, context):
+    def CaptureMemory(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def IngestToolOutput(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def IngestObservation(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def IngestOutcome(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def IngestWorkingState(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def Retrieve(self, request, context):
+    def RetrieveGraph(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -207,35 +163,15 @@ class MembraneServiceServicer(object):
 
 def add_MembraneServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'IngestEvent': grpc.unary_unary_rpc_method_handler(
-                    servicer.IngestEvent,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestEventRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.SerializeToString,
+            'CaptureMemory': grpc.unary_unary_rpc_method_handler(
+                    servicer.CaptureMemory,
+                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.CaptureMemoryRequest.FromString,
+                    response_serializer=membrane_dot_v1_dot_membrane__pb2.CaptureMemoryResponse.SerializeToString,
             ),
-            'IngestToolOutput': grpc.unary_unary_rpc_method_handler(
-                    servicer.IngestToolOutput,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestToolOutputRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.SerializeToString,
-            ),
-            'IngestObservation': grpc.unary_unary_rpc_method_handler(
-                    servicer.IngestObservation,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestObservationRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.SerializeToString,
-            ),
-            'IngestOutcome': grpc.unary_unary_rpc_method_handler(
-                    servicer.IngestOutcome,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestOutcomeRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.SerializeToString,
-            ),
-            'IngestWorkingState': grpc.unary_unary_rpc_method_handler(
-                    servicer.IngestWorkingState,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.IngestWorkingStateRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.IngestResponse.SerializeToString,
-            ),
-            'Retrieve': grpc.unary_unary_rpc_method_handler(
-                    servicer.Retrieve,
-                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.RetrieveRequest.FromString,
-                    response_serializer=membrane_dot_v1_dot_membrane__pb2.RetrieveResponse.SerializeToString,
+            'RetrieveGraph': grpc.unary_unary_rpc_method_handler(
+                    servicer.RetrieveGraph,
+                    request_deserializer=membrane_dot_v1_dot_membrane__pb2.RetrieveGraphRequest.FromString,
+                    response_serializer=membrane_dot_v1_dot_membrane__pb2.RetrieveGraphResponse.SerializeToString,
             ),
             'RetrieveByID': grpc.unary_unary_rpc_method_handler(
                     servicer.RetrieveByID,
@@ -294,7 +230,7 @@ class MembraneService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def IngestEvent(request,
+    def CaptureMemory(request,
             target,
             options=(),
             channel_credentials=None,
@@ -307,9 +243,9 @@ class MembraneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/membrane.v1.MembraneService/IngestEvent',
-            membrane_dot_v1_dot_membrane__pb2.IngestEventRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
+            '/membrane.v1.MembraneService/CaptureMemory',
+            membrane_dot_v1_dot_membrane__pb2.CaptureMemoryRequest.SerializeToString,
+            membrane_dot_v1_dot_membrane__pb2.CaptureMemoryResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -321,7 +257,7 @@ class MembraneService(object):
             _registered_method=True)
 
     @staticmethod
-    def IngestToolOutput(request,
+    def RetrieveGraph(request,
             target,
             options=(),
             channel_credentials=None,
@@ -334,117 +270,9 @@ class MembraneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/membrane.v1.MembraneService/IngestToolOutput',
-            membrane_dot_v1_dot_membrane__pb2.IngestToolOutputRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def IngestObservation(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/membrane.v1.MembraneService/IngestObservation',
-            membrane_dot_v1_dot_membrane__pb2.IngestObservationRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def IngestOutcome(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/membrane.v1.MembraneService/IngestOutcome',
-            membrane_dot_v1_dot_membrane__pb2.IngestOutcomeRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def IngestWorkingState(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/membrane.v1.MembraneService/IngestWorkingState',
-            membrane_dot_v1_dot_membrane__pb2.IngestWorkingStateRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.IngestResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def Retrieve(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/membrane.v1.MembraneService/Retrieve',
-            membrane_dot_v1_dot_membrane__pb2.RetrieveRequest.SerializeToString,
-            membrane_dot_v1_dot_membrane__pb2.RetrieveResponse.FromString,
+            '/membrane.v1.MembraneService/RetrieveGraph',
+            membrane_dot_v1_dot_membrane__pb2.RetrieveGraphRequest.SerializeToString,
+            membrane_dot_v1_dot_membrane__pb2.RetrieveGraphResponse.FromString,
             options,
             channel_credentials,
             insecure,

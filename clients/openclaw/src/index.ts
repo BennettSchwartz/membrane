@@ -2,13 +2,20 @@
  * @vainplex/openclaw-membrane — Membrane bridge plugin for OpenClaw
  *
  * Provides:
- * - Event ingestion (write path) via @gustycube/membrane client
- * - `membrane_search` tool for episodic memory queries
+ * - Event ingestion (write path) via rich capture on @gustycube/membrane client
+ * - `membrane_search` tool for graph-aware memory queries
  * - `before_agent_start` hook for auto-context injection
  * - `/membrane` command for status and stats
  */
 
-import { MembraneClient, type MemoryRecord, type MemoryType, type RetrieveOptions } from "@gustycube/membrane";
+import {
+  MembraneClient,
+  SourceKind,
+  type GraphNode,
+  type MemoryRecord,
+  type MemoryType,
+  type RetrieveGraphOptions,
+} from "@gustycube/membrane";
 import { mapSensitivity, mapEventKind, summarize, buildTags } from "./mapping.js";
 import type { PluginConfig, PluginApi, PluginLogger, OpenClawEvent } from "./types.js";
 import { DEFAULT_CONFIG, VALID_MEMORY_TYPES } from "./types.js";
@@ -43,7 +50,7 @@ export function validateConfig(raw: Record<string, unknown> | undefined): Partia
 // ── Plugin Class ──
 
 /**
- * OpenClaw plugin bridge to Membrane episodic memory.
+ * OpenClaw plugin bridge to Membrane graph-aware memory.
  * Each instance owns its own client and config — no module-level singletons.
  */
 export class OpenClawMembranePlugin {
@@ -84,35 +91,73 @@ export class OpenClawMembranePlugin {
     const source = event.agentId ?? "openclaw";
 
     try {
+      const summary = summarize(event);
+      const context = {
+        agent_id: event.agentId,
+        session_key: event.sessionKey,
+        hook: event.hook,
+      };
+
       if (kind === "tool_output" && event.toolName) {
-        await this.client.ingestToolOutput(event.toolName, {
-          args: (event.toolParams ?? {}) as Record<string, unknown>,
-          result: event.toolResult ?? null,
-          sensitivity,
-          source,
-          tags,
-        });
+        await this.client.captureMemory(
+          {
+            tool_name: event.toolName,
+            args: (event.toolParams ?? {}) as Record<string, unknown>,
+            result: event.toolResult ?? null,
+            text: summary,
+          },
+          {
+            sourceKind: SourceKind.TOOL_OUTPUT,
+            context,
+            reasonToRemember: summary,
+            summary,
+            sensitivity,
+            source,
+            tags,
+          },
+        );
       } else if (kind === "observation") {
-        // Observation: subject=agentId, predicate=hook, obj=summary
-        await this.client.ingestObservation(
-          source,
-          event.hook,
-          summarize(event),
-          { sensitivity, source, tags },
+        await this.client.captureMemory(
+          {
+            subject: source,
+            predicate: event.hook,
+            object: summarize(event),
+            text: summary,
+          },
+          {
+            sourceKind: SourceKind.OBSERVATION,
+            context,
+            reasonToRemember: summary,
+            summary,
+            sensitivity,
+            source,
+            tags,
+          },
         );
       } else {
-        // Event: ref must be unique per ingestion to avoid collisions
         const ref = [
           event.sessionKey ?? source,
           event.hook,
           event.timestamp ?? String(Date.now()),
         ].join(":");
-        await this.client.ingestEvent(event.hook, ref, {
-          summary: summarize(event),
-          sensitivity,
-          source,
-          tags,
-        });
+        await this.client.captureMemory(
+          {
+            ref,
+            hook: event.hook,
+            text: summary,
+            message: event.message,
+            response: event.response,
+          },
+          {
+            sourceKind: SourceKind.EVENT,
+            context,
+            reasonToRemember: summary,
+            summary,
+            sensitivity,
+            source,
+            tags,
+          },
+        );
       }
     } catch (err) {
       this.log.warn(`[membrane] Ingestion failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -137,8 +182,11 @@ export class OpenClawMembranePlugin {
       const effectiveMinSalience =
         options?.minSalience ?? options?.min_salience ?? this.config.min_salience;
 
-      const retrieveOpts: RetrieveOptions = {
-        limit: options?.limit ?? this.config.context_limit,
+      const retrieveOpts: RetrieveGraphOptions = {
+        rootLimit: options?.limit ?? this.config.context_limit,
+        nodeLimit: Math.max((options?.limit ?? this.config.context_limit) * 2, options?.limit ?? this.config.context_limit),
+        edgeLimit: Math.max((options?.limit ?? this.config.context_limit) * 4, 10),
+        maxHops: 1,
         minSalience: effectiveMinSalience,
       };
       if (effectiveMemoryTypes) {
@@ -151,7 +199,8 @@ export class OpenClawMembranePlugin {
         }
         retrieveOpts.memoryTypes = validTypes as MemoryType[];
       }
-      return await this.client.retrieve(query, retrieveOpts);
+      const graph = await this.client.retrieveGraph(query, retrieveOpts);
+      return flattenGraphNodes(graph.nodes);
     } catch (err) {
       this.log.warn(`[membrane] Search failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -163,29 +212,33 @@ export class OpenClawMembranePlugin {
     if (!this.config.auto_context || !this.client) return null;
 
     try {
-      const records = await this.client.retrieve(`context for agent ${agentId}`, {
-        limit: this.config.context_limit,
+      const graph = await this.client.retrieveGraph(`context for agent ${agentId}`, {
+        rootLimit: this.config.context_limit,
+        nodeLimit: Math.max(this.config.context_limit * 2, this.config.context_limit),
+        edgeLimit: Math.max(this.config.context_limit * 4, 10),
+        maxHops: 1,
         memoryTypes: this.config.context_types as MemoryType[],
         minSalience: this.config.min_salience,
       });
 
-      if (records.length === 0) return null;
+      if (graph.nodes.length === 0) return null;
 
-      const lines = records.map((r: MemoryRecord, i: number) => {
-        // Extract human-readable summary from payload when available
-        const payload = r.payload as Record<string, unknown> | undefined;
-        // Episodic records store summaries in payload.timeline[].summary
-        let summary: unknown = undefined;
-        if (Array.isArray(payload?.timeline)) {
-          const entry = (payload.timeline as Array<Record<string, unknown>>).find(
-            (e) => typeof e?.summary === "string" && e.summary.length > 0,
-          );
-          if (entry) summary = entry.summary;
-        }
-        summary = summary ?? payload?.summary ?? payload?.content ?? r.id;
-        return `${i + 1}. [${r.type}] ${String(summary)}`;
-      });
-      return `Episodic memory from Membrane:\n${lines.join("\n")}`;
+      const roots = graph.nodes.filter((node) => node.root);
+      const neighbors = graph.nodes.filter((node) => !node.root);
+      const sections: string[] = [];
+      if (roots.length > 0) {
+        sections.push(
+          "Roots:",
+          ...roots.map((node, i) => `${i + 1}. [${node.record.type}] ${extractContextSummary(node.record)}`),
+        );
+      }
+      if (neighbors.length > 0) {
+        sections.push(
+          "Neighbors:",
+          ...neighbors.map((node, i) => `${i + 1}. [hop=${node.hop}] [${node.record.type}] ${extractContextSummary(node.record)}`),
+        );
+      }
+      return `Membrane graph context:\n${sections.join("\n")}`;
     } catch (err) {
       this.log.debug(`[membrane] Context injection skipped: ${err instanceof Error ? err.message : String(err)}`);
       return null;
@@ -212,3 +265,42 @@ export class OpenClawMembranePlugin {
 export type { PluginConfig, PluginApi, PluginLogger, OpenClawEvent } from "./types.js";
 export { DEFAULT_CONFIG, VALID_MEMORY_TYPES } from "./types.js";
 export { mapSensitivity, mapEventKind, summarize, buildTags } from "./mapping.js";
+
+function flattenGraphNodes(nodes: GraphNode[]): MemoryRecord[] {
+  const seen = new Set<string>();
+  const ordered = [...nodes].sort((a, b) => {
+    if (a.root !== b.root) return a.root ? -1 : 1;
+    if (a.hop !== b.hop) return a.hop - b.hop;
+    return a.record.id.localeCompare(b.record.id);
+  });
+  const records: MemoryRecord[] = [];
+  for (const node of ordered) {
+    if (seen.has(node.record.id)) continue;
+    seen.add(node.record.id);
+    records.push(node.record);
+  }
+  return records;
+}
+
+function extractContextSummary(record: MemoryRecord): string {
+  const payload = (record.payload ?? {}) as Record<string, unknown>;
+  const interpretation = record.interpretation;
+  if (interpretation?.summary) {
+    return interpretation.summary;
+  }
+  if (typeof payload.summary === "string" && payload.summary.length > 0) {
+    return payload.summary;
+  }
+  if (typeof payload.canonical_name === "string" && payload.canonical_name.length > 0) {
+    return payload.canonical_name;
+  }
+  if (Array.isArray(payload.timeline)) {
+    const entry = (payload.timeline as Array<Record<string, unknown>>).find(
+      (item) => typeof item?.summary === "string" && item.summary.length > 0,
+    );
+    if (entry?.summary) {
+      return String(entry.summary);
+    }
+  }
+  return record.id;
+}

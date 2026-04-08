@@ -19,6 +19,7 @@ import (
 	grpcapi "github.com/GustyCube/membrane/api/grpc"
 	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
 	"github.com/GustyCube/membrane/pkg/membrane"
+	"github.com/GustyCube/membrane/pkg/retrieval"
 	"github.com/GustyCube/membrane/pkg/schema"
 )
 
@@ -113,6 +114,27 @@ func decodeRecord(t *testing.T, data []byte) *schema.MemoryRecord {
 		t.Fatalf("unmarshal record: %v", err)
 	}
 	return &rec
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return data
+}
+
+func requireCreatedRecordOfType(t *testing.T, resp *pb.CaptureMemoryResponse, recordType schema.MemoryType) *schema.MemoryRecord {
+	t.Helper()
+	for _, raw := range resp.CreatedRecords {
+		rec := decodeRecord(t, raw)
+		if rec.Type == recordType {
+			return rec
+		}
+	}
+	t.Fatalf("capture response missing created record of type %q", recordType)
+	return nil
 }
 
 func requireGRPCError(t *testing.T, err error, code codes.Code, messageContains string) {
@@ -250,76 +272,64 @@ func TestEvalGRPCSurface(t *testing.T) {
 	env := newGRPCEnv(t, "", 0)
 	ctx := env.ctx()
 
-	eventResp, err := env.client.IngestEvent(ctx, &pb.IngestEventRequest{
-		Source:      "eval",
-		EventKind:   "build",
-		Ref:         "evt-1",
-		Summary:     "ran build",
-		Tags:        []string{"eval"},
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	eventResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "event",
+		Content:          mustMarshalJSON(t, map[string]any{"ref": "evt-1", "text": "ran build"}),
+		ReasonToRemember: "Keep build execution history",
+		Summary:          "ran build",
+		Tags:             []string{"eval"},
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestEvent: %v", err)
+		t.Fatalf("CaptureMemory event: %v", err)
 	}
-	eventRec := decodeRecord(t, eventResp.Record)
+	eventRec := decodeRecord(t, eventResp.PrimaryRecord)
 
-	argsJSON, _ := json.Marshal(map[string]any{"cmd": "go test ./..."})
-	resultJSON, _ := json.Marshal(map[string]any{"status": "ok"})
-	toolResp, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
-		Source:      "eval",
-		ToolName:    "bash",
-		Args:        argsJSON,
-		Result:      resultJSON,
-		Tags:        []string{"eval"},
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	toolResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "tool_output",
+		Content:          mustMarshalJSON(t, map[string]any{"tool_name": "bash", "args": map[string]any{"cmd": "go test ./..."}, "result": map[string]any{"status": "ok"}}),
+		ReasonToRemember: "Keep tool execution output",
+		Tags:             []string{"eval"},
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestToolOutput: %v", err)
+		t.Fatalf("CaptureMemory tool_output: %v", err)
 	}
-	toolRec := decodeRecord(t, toolResp.Record)
+	toolRec := decodeRecord(t, toolResp.PrimaryRecord)
 
-	obsObj, _ := json.Marshal("Go")
-	obsResp, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-		Source:      "eval",
-		Subject:     "user",
-		Predicate:   "prefers",
-		Object:      obsObj,
-		Tags:        []string{"eval"},
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	obsResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "observation",
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "user", "predicate": "prefers", "object": "Go"}),
+		ReasonToRemember: "User language preference should be queryable",
+		Summary:          "user prefers Go",
+		Tags:             []string{"eval"},
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation: %v", err)
+		t.Fatalf("CaptureMemory observation: %v", err)
 	}
-	obsRec := decodeRecord(t, obsResp.Record)
+	obsRec := requireCreatedRecordOfType(t, obsResp, schema.MemoryTypeSemantic)
 
-	_, err = env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
-		Source:         "eval",
-		TargetRecordId: eventRec.ID,
-		OutcomeStatus:  string(schema.OutcomeStatusSuccess),
+	workingResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "working_state",
+		Content:          mustMarshalJSON(t, map[string]any{"thread_id": "thread-1", "state": string(schema.TaskStateExecuting), "next_actions": []string{"run tests"}, "context_summary": "testing", "active_constraints": []schema.Constraint{{Type: "eq", Key: "region", Value: "us", Required: true}}}),
+		ReasonToRemember: "Preserve active task state",
+		Summary:          "thread is executing",
+		Tags:             []string{"eval"},
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestOutcome: %v", err)
+		t.Fatalf("CaptureMemory working_state: %v", err)
 	}
-
-	constraintsJSON, _ := json.Marshal([]schema.Constraint{{Type: "eq", Key: "region", Value: "us", Required: true}})
-	workingResp, err := env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
-		Source:            "eval",
-		ThreadId:          "thread-1",
-		State:             string(schema.TaskStateExecuting),
-		NextActions:       []string{"run tests"},
-		ContextSummary:    "testing",
-		ActiveConstraints: constraintsJSON,
-		Tags:              []string{"eval"},
-		Scope:             "project:alpha",
-		Sensitivity:       "low",
-	})
-	if err != nil {
-		t.Fatalf("IngestWorkingState: %v", err)
-	}
-	workingRec := decodeRecord(t, workingResp.Record)
+	workingRec := decodeRecord(t, workingResp.PrimaryRecord)
 
 	trust := &pb.TrustContext{
 		MaxSensitivity: "high",
@@ -328,16 +338,20 @@ func TestEvalGRPCSurface(t *testing.T) {
 		Scopes:         []string{"project:alpha"},
 	}
 
-	retrieveResp, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{
-		Trust:       trust,
-		MemoryTypes: []string{string(schema.MemoryTypeSemantic)},
-		Limit:       10,
+	retrieveResp, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		TaskDescriptor: "user prefers Go",
+		Trust:          trust,
+		MemoryTypes:    []string{string(schema.MemoryTypeSemantic)},
+		RootLimit:      10,
+		NodeLimit:      20,
+		EdgeLimit:      20,
+		MaxHops:        1,
 	})
 	if err != nil {
-		t.Fatalf("Retrieve: %v", err)
+		t.Fatalf("RetrieveGraph: %v", err)
 	}
-	if len(retrieveResp.Records) == 0 {
-		t.Fatalf("expected retrieve records")
+	if len(retrieveResp.RootIds) == 0 {
+		t.Fatalf("expected retrieve graph roots")
 	}
 
 	_, err = env.client.RetrieveByID(ctx, &pb.RetrieveByIDRequest{Id: obsRec.ID, Trust: trust})
@@ -374,18 +388,18 @@ func TestEvalGRPCSurface(t *testing.T) {
 	}
 	_ = decodeRecord(t, supResp.Record)
 
-	forkSource, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-		Source:      "eval",
-		Subject:     "service",
-		Predicate:   "uses_cache",
-		Object:      obsObj,
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	forkSource, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "observation",
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "service", "predicate": "uses_cache", "object": "Go"}),
+		ReasonToRemember: "capture fork source",
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation fork source: %v", err)
+		t.Fatalf("CaptureMemory fork source: %v", err)
 	}
-	forkSourceRec := decodeRecord(t, forkSource.Record)
+	forkSourceRec := requireCreatedRecordOfType(t, forkSource, schema.MemoryTypeSemantic)
 
 	forked := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
@@ -410,30 +424,30 @@ func TestEvalGRPCSurface(t *testing.T) {
 	}
 	forkRec := decodeRecord(t, forkResp.Record)
 
-	mergeLeft, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-		Source:      "eval",
-		Subject:     "db",
-		Predicate:   "uses",
-		Object:      obsObj,
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	mergeLeft, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "observation",
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "Go"}),
+		ReasonToRemember: "left merge source",
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation merge left: %v", err)
+		t.Fatalf("CaptureMemory merge left: %v", err)
 	}
-	mergeRight, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-		Source:      "eval",
-		Subject:     "db",
-		Predicate:   "uses",
-		Object:      obsObj,
-		Scope:       "project:alpha",
-		Sensitivity: "low",
+	mergeRight, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "eval",
+		SourceKind:       "observation",
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "Go"}),
+		ReasonToRemember: "right merge source",
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation merge right: %v", err)
+		t.Fatalf("CaptureMemory merge right: %v", err)
 	}
-	mergeLeftRec := decodeRecord(t, mergeLeft.Record)
-	mergeRightRec := decodeRecord(t, mergeRight.Record)
+	mergeLeftRec := requireCreatedRecordOfType(t, mergeLeft, schema.MemoryTypeSemantic)
+	mergeRightRec := requireCreatedRecordOfType(t, mergeRight, schema.MemoryTypeSemantic)
 
 	merged := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
 		&schema.SemanticPayload{
@@ -476,48 +490,159 @@ func TestEvalGRPCSurface(t *testing.T) {
 	}
 }
 
+func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
+	env := newGRPCEnv(t, "", 0)
+	ctx := env.ctx()
+
+	content, err := json.Marshal(map[string]any{
+		"ref":     "evt-capture-1",
+		"text":    "Remember Orchid as the staging deploy target",
+		"project": "Orchid",
+	})
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	contextBytes, err := json.Marshal(map[string]any{"thread_id": "thread-1"})
+	if err != nil {
+		t.Fatalf("marshal context: %v", err)
+	}
+
+	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "grpc-test",
+		SourceKind:       "event",
+		Content:          content,
+		Context:          contextBytes,
+		ReasonToRemember: "Deployment jargon should be recoverable",
+		Summary:          "Remember Orchid",
+		Tags:             []string{"grpc", "orchid"},
+		Scope:            "project:alpha",
+		Sensitivity:      "low",
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	primary := decodeRecord(t, captureResp.PrimaryRecord)
+	if primary.Type != schema.MemoryTypeEpisodic {
+		t.Fatalf("PrimaryRecord.Type = %q, want episodic", primary.Type)
+	}
+	if len(captureResp.CreatedRecords) != 1 {
+		t.Fatalf("CreatedRecords len = %d, want 1", len(captureResp.CreatedRecords))
+	}
+	entity := decodeRecord(t, captureResp.CreatedRecords[0])
+	if entity.Type != schema.MemoryTypeEntity {
+		t.Fatalf("Created entity type = %q, want entity", entity.Type)
+	}
+	var captureEdges []schema.GraphEdge
+	if err := json.Unmarshal(captureResp.Edges, &captureEdges); err != nil {
+		t.Fatalf("unmarshal capture edges: %v", err)
+	}
+	if len(captureEdges) != 2 {
+		t.Fatalf("capture edges len = %d, want 2", len(captureEdges))
+	}
+
+	graphResp, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		TaskDescriptor: "Orchid deploy target",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "low",
+			Authenticated:  true,
+			ActorId:        "grpc-test",
+			Scopes:         []string{"project:alpha"},
+		},
+		RootLimit: 10,
+		NodeLimit: 20,
+		EdgeLimit: 20,
+		MaxHops:   1,
+	})
+	if err != nil {
+		t.Fatalf("RetrieveGraph: %v", err)
+	}
+
+	var nodes []retrieval.GraphNode
+	if err := json.Unmarshal(graphResp.Nodes, &nodes); err != nil {
+		t.Fatalf("unmarshal graph nodes: %v", err)
+	}
+	var edges []schema.GraphEdge
+	if err := json.Unmarshal(graphResp.Edges, &edges); err != nil {
+		t.Fatalf("unmarshal graph edges: %v", err)
+	}
+	if len(graphResp.RootIds) == 0 {
+		t.Fatalf("RootIds = empty, want at least one root")
+	}
+	foundPrimary := false
+	foundEntity := false
+	for _, node := range nodes {
+		if node.Record != nil && node.Record.ID == primary.ID {
+			foundPrimary = true
+		}
+		if node.Record != nil && node.Record.ID == entity.ID {
+			foundEntity = true
+		}
+	}
+	if !foundPrimary || !foundEntity {
+		t.Fatalf("graph nodes missing primary/entity: foundPrimary=%v foundEntity=%v nodes=%+v", foundPrimary, foundEntity, nodes)
+	}
+	hasMentionEdge := false
+	for _, edge := range edges {
+		if edge.Predicate == "mentions_entity" {
+			hasMentionEdge = true
+			break
+		}
+	}
+	if !hasMentionEdge {
+		t.Fatalf("expected mentions_entity edge, got %+v", edges)
+	}
+}
+
 func TestEvalGRPCValidation(t *testing.T) {
 	env := newGRPCEnv(t, "", 0)
 	ctx := env.ctx()
 
 	trust := &pb.TrustContext{MaxSensitivity: "low", Authenticated: true}
-	_, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{Trust: trust, Limit: 20000})
+	_, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{Trust: trust, RootLimit: 20000})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for limit, got %v", err)
+		t.Fatalf("expected invalid argument for root_limit, got %v", err)
 	}
 
-	_, err = env.client.Retrieve(ctx, &pb.RetrieveRequest{Limit: 1})
+	_, err = env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{RootLimit: 1})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for missing trust, got %v", err)
 	}
 
-	_, err = env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{Source: "eval", ToolName: "bash", Args: []byte("{"), Result: []byte("{}")})
+	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: []byte("{")})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for bad args JSON, got %v", err)
+		t.Fatalf("expected invalid argument for bad content JSON, got %v", err)
 	}
 
 	longTag := strings.Repeat("a", 300)
-	_, err = env.client.IngestEvent(ctx, &pb.IngestEventRequest{Source: "eval", EventKind: "evt", Ref: "r1", Tags: []string{longTag}})
+	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:      "eval",
+		SourceKind:  "event",
+		Content:     mustMarshalJSON(t, map[string]any{"ref": "r1"}),
+		Tags:        []string{longTag},
+		Sensitivity: "low",
+	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for long tag, got %v", err)
 	}
 
-	_, err = env.client.IngestEvent(ctx, &pb.IngestEventRequest{
+	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
 		Source:      "eval",
-		EventKind:   "evt",
-		Ref:         "r2",
+		SourceKind:  "event",
+		Content:     mustMarshalJSON(t, map[string]any{"ref": "r2"}),
 		Sensitivity: "anything",
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for invalid sensitivity, got %v", err)
 	}
 
-	_, err = env.client.Retrieve(ctx, &pb.RetrieveRequest{
+	_, err = env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
 		Trust: &pb.TrustContext{
 			MaxSensitivity: "anything",
 			Authenticated:  true,
 		},
-		Limit: 1,
+		RootLimit: 1,
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for invalid trust sensitivity, got %v", err)
@@ -534,52 +659,40 @@ func TestEvalGRPCValidation(t *testing.T) {
 		t.Fatalf("expected invalid argument for invalid RetrieveByID trust sensitivity, got %v", err)
 	}
 
-	_, err = env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
-		Source:         "eval",
-		TargetRecordId: "rec-1",
-		OutcomeStatus:  "anything",
+	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:       "eval",
+		SourceKind:   "event",
+		Content:      mustMarshalJSON(t, map[string]any{"ref": "rec-1"}),
+		ProposedType: "anything",
 	})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for invalid outcome_status, got %v", err)
+		t.Fatalf("expected invalid argument for invalid proposed_type, got %v", err)
 	}
 
-	_, err = env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
-		Source:   "eval",
-		ThreadId: "thread-1",
-		State:    "anything",
-	})
+	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: mustMarshalJSON(t, map[string]any{"ref": "rec-2"}), Context: []byte("{")})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for invalid state, got %v", err)
+		t.Fatalf("expected invalid argument for invalid context JSON, got %v", err)
 	}
 
-	_, err = env.client.Retrieve(ctx, &pb.RetrieveRequest{
+	_, err = env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
 		Trust:       trust,
 		MemoryTypes: []string{"anything"},
-		Limit:       1,
+		RootLimit:   1,
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for invalid memory_types, got %v", err)
 	}
 
-	semanticResp, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-		Source:    "eval",
-		Subject:   "service",
-		Predicate: "mode",
-		Object:    []byte(`"active"`),
+	semanticResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:      "eval",
+		SourceKind:  "observation",
+		Content:     mustMarshalJSON(t, map[string]any{"subject": "service", "predicate": "mode", "object": "active"}),
+		Sensitivity: "low",
 	})
 	if err != nil {
-		t.Fatalf("IngestObservation: %v", err)
+		t.Fatalf("CaptureMemory: %v", err)
 	}
-	semanticRec := decodeRecord(t, semanticResp.Record)
-
-	_, err = env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
-		Source:         "eval",
-		TargetRecordId: semanticRec.ID,
-		OutcomeStatus:  string(schema.OutcomeStatusSuccess),
-	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for outcome on non-episodic record, got %v", err)
-	}
+	semanticRec := requireCreatedRecordOfType(t, semanticResp, schema.MemoryTypeSemantic)
 
 	_, err = env.client.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
 		Id: "missing-record",
@@ -626,10 +739,10 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 		{
 			name: "invalid-sensitivity-enum",
 			call: func() error {
-				_, err := env.client.IngestEvent(ctx, &pb.IngestEventRequest{
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
 					Source:      "eval",
-					EventKind:   "evt",
-					Ref:         "bad-sensitivity",
+					SourceKind:  "event",
+					Content:     mustMarshalJSON(t, map[string]any{"ref": "bad-sensitivity"}),
 					Sensitivity: "anything",
 				})
 				return err
@@ -638,121 +751,63 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 			messageContains: "sensitivity must be one of: public, low, medium, high, hyper",
 		},
 		{
-			name: "invalid-outcome-status-enum",
+			name: "invalid-proposed-type",
 			call: func() error {
-				_, err := env.client.IngestOutcome(ctx, &pb.IngestOutcomeRequest{
-					Source:         "eval",
-					TargetRecordId: "rec-1",
-					OutcomeStatus:  "anything",
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+					Source:       "eval",
+					SourceKind:   "event",
+					Content:      mustMarshalJSON(t, map[string]any{"ref": "rec-1"}),
+					ProposedType: "anything",
 				})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "outcome_status must be one of: success, failure, partial",
-		},
-		{
-			name: "invalid-working-state-enum",
-			call: func() error {
-				_, err := env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
-					Source:   "eval",
-					ThreadId: "thread-1",
-					State:    "anything",
-				})
-				return err
-			},
-			code:            codes.InvalidArgument,
-			messageContains: "state must be one of: planning, executing, blocked, waiting, done",
+			messageContains: "proposed_type must be one of: episodic, working, semantic, competence, plan_graph, entity",
 		},
 		{
 			name: "invalid-memory-type-enum",
 			call: func() error {
-				_, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{
-					Trust:       trust,
-					MemoryTypes: []string{"anything"},
-					Limit:       1,
-				})
+				_, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{Trust: trust, MemoryTypes: []string{"anything"}, RootLimit: 1})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "memory_types[0] must be one of: episodic, working, semantic, competence, plan_graph",
+			messageContains: "memory_types[0] must be one of: episodic, working, semantic, competence, plan_graph, entity",
 		},
 		{
-			name: "malformed-tool-args-json",
+			name: "malformed-content-json",
 			call: func() error {
-				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
-					Source:   "eval",
-					ToolName: "bash",
-					Args:     []byte("{"),
-					Result:   []byte("{}"),
-				})
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: []byte("{")})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "invalid args JSON:",
+			messageContains: "invalid content JSON:",
 		},
 		{
-			name: "malformed-tool-result-json",
+			name: "malformed-context-json",
 			call: func() error {
-				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
-					Source:   "eval",
-					ToolName: "bash",
-					Args:     []byte("{}"),
-					Result:   []byte("{"),
-				})
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: mustMarshalJSON(t, map[string]any{"ref": "ctx"}), Context: []byte("{")})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "invalid result JSON:",
+			messageContains: "invalid context JSON:",
 		},
 		{
-			name: "malformed-observation-json",
+			name: "oversized-content-payload",
 			call: func() error {
-				_, err := env.client.IngestObservation(ctx, &pb.IngestObservationRequest{
-					Source:    "eval",
-					Subject:   "service",
-					Predicate: "mode",
-					Object:    []byte("{"),
-				})
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: oversized})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "invalid object JSON:",
+			messageContains: "content exceeds maximum payload size of 10485760 bytes",
 		},
 		{
-			name: "malformed-active-constraints-json",
+			name: "retrieve-root-limit-too-large",
 			call: func() error {
-				_, err := env.client.IngestWorkingState(ctx, &pb.IngestWorkingStateRequest{
-					Source:            "eval",
-					ThreadId:          "thread-1",
-					State:             string(schema.TaskStateExecuting),
-					ActiveConstraints: []byte("{"),
-				})
+				_, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{Trust: trust, RootLimit: 20000})
 				return err
 			},
 			code:            codes.InvalidArgument,
-			messageContains: "invalid active_constraints JSON:",
-		},
-		{
-			name: "oversized-tool-args-payload",
-			call: func() error {
-				_, err := env.client.IngestToolOutput(ctx, &pb.IngestToolOutputRequest{
-					Source:   "eval",
-					ToolName: "bash",
-					Args:     oversized,
-				})
-				return err
-			},
-			code:            codes.InvalidArgument,
-			messageContains: "args exceeds maximum payload size of 10485760 bytes",
-		},
-		{
-			name: "retrieve-limit-too-large",
-			call: func() error {
-				_, err := env.client.Retrieve(ctx, &pb.RetrieveRequest{Trust: trust, Limit: 20000})
-				return err
-			},
-			code:            codes.InvalidArgument,
-			messageContains: "limit must be between 0 and 10000",
+			messageContains: "root_limit must be between 0 and 10000",
 		},
 		{
 			name: "penalize-negative-amount",
@@ -783,13 +838,13 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 			messageContains: "amount must be non-negative and finite",
 		},
 		{
-			name: "invalid-event-timestamp",
+			name: "invalid-capture-timestamp",
 			call: func() error {
-				_, err := env.client.IngestEvent(ctx, &pb.IngestEventRequest{
-					Source:    "eval",
-					EventKind: "evt",
-					Ref:       "bad-time",
-					Timestamp: "not-a-time",
+				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+					Source:     "eval",
+					SourceKind: "event",
+					Content:    mustMarshalJSON(t, map[string]any{"ref": "bad-time"}),
+					Timestamp:  "not-a-time",
 				})
 				return err
 			},

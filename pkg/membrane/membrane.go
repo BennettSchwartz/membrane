@@ -81,7 +81,20 @@ func New(cfg *Config) (*Membrane, error) {
 	policyDefaults := ingestion.DefaultPolicyDefaults()
 	policyDefaults.Sensitivity = schema.Sensitivity(cfg.DefaultSensitivity)
 	policyEngine := ingestion.NewPolicyEngine(policyDefaults)
-	ingestionSvc := ingestion.NewService(store, classifier, policyEngine)
+	var interpreter ingestion.Interpreter
+	if cfg.IngestLLMEnabled && cfg.IngestLLMEndpoint != "" && cfg.IngestLLMModel != "" {
+		apiKey := cfg.IngestLLMAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("MEMBRANE_INGEST_LLM_API_KEY")
+		}
+		interpreter = ingestion.NewHTTPInterpreter(cfg.IngestLLMEndpoint, cfg.IngestLLMModel, apiKey)
+	}
+	var ingestionSvc *ingestion.Service
+	if interpreter != nil {
+		ingestionSvc = ingestion.NewServiceWithInterpreter(store, classifier, policyEngine, interpreter)
+	} else {
+		ingestionSvc = ingestion.NewService(store, classifier, policyEngine)
+	}
 
 	var embService *embedding.Service
 	if pgStore != nil && cfg.EmbeddingEndpoint != "" && cfg.EmbeddingModel != "" {
@@ -181,47 +194,39 @@ func (m *Membrane) Stop() error {
 	return m.store.Close()
 }
 
-// ---------------------------------------------------------------------------
-// Ingestion delegates
-// ---------------------------------------------------------------------------
-
-// IngestEvent creates an episodic memory record from an event.
-func (m *Membrane) IngestEvent(ctx context.Context, req ingestion.IngestEventRequest) (*schema.MemoryRecord, error) {
-	return m.ingestion.IngestEvent(ctx, req)
+// CaptureMemory creates a graph-aware source record and any linked entity records.
+func (m *Membrane) CaptureMemory(ctx context.Context, req ingestion.CaptureMemoryRequest) (*ingestion.CaptureMemoryResponse, error) {
+	return m.ingestion.CaptureMemory(ctx, req)
 }
 
-// IngestToolOutput creates an episodic memory record from a tool invocation.
-func (m *Membrane) IngestToolOutput(ctx context.Context, req ingestion.IngestToolOutputRequest) (*schema.MemoryRecord, error) {
-	return m.ingestion.IngestToolOutput(ctx, req)
-}
-
-// IngestObservation creates a semantic memory record from an observation.
-func (m *Membrane) IngestObservation(ctx context.Context, req ingestion.IngestObservationRequest) (*schema.MemoryRecord, error) {
-	return m.ingestion.IngestObservation(ctx, req)
-}
-
-// IngestOutcome updates an existing episodic record with outcome data.
-func (m *Membrane) IngestOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error) {
+// RecordOutcome attaches an outcome to an existing episodic record.
+func (m *Membrane) RecordOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error) {
 	return m.ingestion.IngestOutcome(ctx, req)
-}
-
-// IngestWorkingState creates a working memory record from a working state snapshot.
-func (m *Membrane) IngestWorkingState(ctx context.Context, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error) {
-	return m.ingestion.IngestWorkingState(ctx, req)
-}
-
-// ---------------------------------------------------------------------------
-// Retrieval delegates
-// ---------------------------------------------------------------------------
-
-// Retrieve performs layered retrieval as specified in RFC 15.8.
-func (m *Membrane) Retrieve(ctx context.Context, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error) {
-	return m.retrieval.Retrieve(ctx, req)
 }
 
 // RetrieveByID fetches a single record by ID with trust context gating.
 func (m *Membrane) RetrieveByID(ctx context.Context, id string, trust *retrieval.TrustContext) (*schema.MemoryRecord, error) {
 	return m.retrieval.RetrieveByID(ctx, id, trust)
+}
+
+// RetrieveGraph returns a graph-expanded retrieval response rooted at ranked records.
+func (m *Membrane) RetrieveGraph(ctx context.Context, req *retrieval.RetrieveGraphRequest) (*retrieval.RetrieveGraphResponse, error) {
+	if req == nil {
+		req = &retrieval.RetrieveGraphRequest{}
+	}
+	if req.RootLimit <= 0 {
+		req.RootLimit = m.config.GraphDefaultRootLimit
+	}
+	if req.NodeLimit <= 0 {
+		req.NodeLimit = m.config.GraphDefaultNodeLimit
+	}
+	if req.EdgeLimit <= 0 {
+		req.EdgeLimit = m.config.GraphDefaultEdgeLimit
+	}
+	if req.MaxHops <= 0 {
+		req.MaxHops = m.config.GraphDefaultMaxHops
+	}
+	return m.retrieval.RetrieveGraph(ctx, req)
 }
 
 // ---------------------------------------------------------------------------

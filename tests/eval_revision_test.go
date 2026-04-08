@@ -14,7 +14,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 	m := newTestMembrane(t)
 	trust := fullTrust()
 
-	base, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	base, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "project",
 		Predicate: "uses_database",
@@ -70,7 +70,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 		}
 	}
 
-	toRetract, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	toRetract, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses_queue",
@@ -93,7 +93,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 		t.Fatalf("expected retracted salience 0, got %.2f", retracted.Salience)
 	}
 
-	resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 		MinSalience: 0.01,
@@ -106,7 +106,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 	}
 
 	// Fork creates a conditional variant without retracting the original.
-	source, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	source, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses_cache",

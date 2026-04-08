@@ -182,15 +182,47 @@ describe("MembraneClient integration", () => {
     }
   });
 
-  it("supports ingest, retrieve, reinforce, penalize, and metrics", async () => {
+  it("supports capture, graph retrieval, reinforce, penalize, and metrics", async () => {
     const client = new MembraneClient(daemonAddr, { apiKey: API_KEY, timeoutMs: 2_000 });
     try {
-      const ingested = await client.ingestEvent("user_input", "session-1", {
-        summary: "User asked for deployment help",
-        tags: ["integration", "typescript"]
-      });
+      const captured = await client.captureMemory(
+        {
+          text: "Membrane should remember the Orchid deploy target for the staging cluster.",
+          project: "Orchid"
+        },
+        {
+          reasonToRemember: "Deployment jargon should be recoverable later",
+          summary: "Remember Orchid as the staging deploy target",
+          tags: ["integration", "typescript", "orchid"],
+          scope: "ts-integration"
+        }
+      );
 
-      expect(ingested.id.length).toBeGreaterThan(0);
+      expect(captured.primary_record.id.length).toBeGreaterThan(0);
+      expect(captured.created_records.some((record) => record.type === "entity")).toBe(true);
+
+      const ingested = captured.primary_record;
+
+      const secondCapture = await client.captureMemory(
+        {
+          text: "Use Orchid for rollout verification before production deploys.",
+          project: "Orchid"
+        },
+        {
+          reasonToRemember: "Repeated niche term should converge on the same entity",
+          tags: ["integration", "orchid"],
+          scope: "ts-integration"
+        }
+      );
+
+      const secondEntity = secondCapture.created_records.find((record) => record.type === "entity");
+      const firstEntity = captured.created_records.find((record) => record.type === "entity");
+      expect(firstEntity?.id).toBeDefined();
+      expect(secondEntity).toBeUndefined();
+      expect(
+        secondCapture.edges.find((edge) => edge.predicate === "mentions_entity" && edge.source_id === secondCapture.primary_record.id)
+          ?.target_id
+      ).toBe(firstEntity?.id);
 
       const byId = await client.retrieveById(ingested.id, {
         trust: {
@@ -202,16 +234,22 @@ describe("MembraneClient integration", () => {
       });
       expect(byId.id).toBe(ingested.id);
 
-      const results = await client.retrieve("deployment help", {
+      const graph = await client.retrieveGraph("Orchid deploy target", {
         trust: {
           max_sensitivity: Sensitivity.MEDIUM,
           authenticated: true,
           actor_id: "ts-test",
           scopes: []
         },
-        limit: 20
+        rootLimit: 10,
+        nodeLimit: 20,
+        edgeLimit: 20,
+        maxHops: 1
       });
-      expect(results.some((record) => record.id === ingested.id)).toBe(true);
+      expect(graph.root_ids.length).toBeGreaterThan(0);
+      expect(graph.nodes.some((node) => node.record.id === ingested.id)).toBe(true);
+      expect(graph.nodes.some((node) => node.record.type === "entity")).toBe(true);
+      expect(graph.edges.some((edge) => edge.predicate === "mentions_entity")).toBe(true);
 
       await client.reinforce(ingested.id, "ts-test", "validated in integration test");
       await client.penalize(ingested.id, 0.05, "ts-test", "exercise penalize path");

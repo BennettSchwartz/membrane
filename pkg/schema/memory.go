@@ -64,6 +64,9 @@ type MemoryRecord struct {
 	// RFC 15A.2: Required field, one of the five payload types.
 	Payload Payload `json:"payload"`
 
+	// Interpretation stores ingest-side extracted metadata and candidate links.
+	Interpretation *Interpretation `json:"interpretation,omitempty"`
+
 	// AuditLog tracks all actions performed on this record.
 	// RFC 15A.8: Required for auditability.
 	AuditLog []AuditEntry `json:"audit_log"`
@@ -84,6 +87,7 @@ type memoryRecordJSON struct {
 	Provenance  Provenance      `json:"provenance"`
 	Relations   []Relation      `json:"relations,omitempty"`
 	Payload     json.RawMessage `json:"payload"`
+	Interpretation *Interpretation `json:"interpretation,omitempty"`
 	AuditLog    []AuditEntry    `json:"audit_log"`
 }
 
@@ -108,6 +112,7 @@ func (mr MemoryRecord) MarshalJSON() ([]byte, error) {
 		Provenance:  mr.Provenance,
 		Relations:   mr.Relations,
 		Payload:     payloadBytes,
+		Interpretation: mr.Interpretation,
 		AuditLog:    mr.AuditLog,
 	})
 }
@@ -131,6 +136,7 @@ func (mr *MemoryRecord) UnmarshalJSON(data []byte) error {
 	mr.Lifecycle = raw.Lifecycle
 	mr.Provenance = raw.Provenance
 	mr.Relations = raw.Relations
+	mr.Interpretation = raw.Interpretation
 	mr.AuditLog = raw.AuditLog
 
 	// Unmarshal payload based on type
@@ -168,6 +174,7 @@ func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, pay
 		},
 		Relations: []Relation{},
 		Payload:   payload,
+		Interpretation: nil,
 		AuditLog: []AuditEntry{
 			{
 				Action:    AuditActionCreate,

@@ -90,7 +90,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Step 1: Ingest several events and tool outputs (episodic).
 	// -----------------------------------------------------------------------
 
-	event1, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+	event1, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
 		Source:    "test-user",
 		EventKind: "user_input",
 		Ref:       "ref-001",
@@ -104,7 +104,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("expected episodic, got %s", event1.Type)
 	}
 
-	event2, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+	event2, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
 		Source:    "test-user",
 		EventKind: "error",
 		Ref:       "ref-002",
@@ -115,7 +115,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("IngestEvent 2: %v", err)
 	}
 
-	tool1, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+	tool1, err := captureToolOutputRecord(ctx, m, ingestion.IngestToolOutputRequest{
 		Source:   "agent",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go build ./..."},
@@ -133,7 +133,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Step 2: Ingest observations (semantic).
 	// -----------------------------------------------------------------------
 
-	obs1, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	obs1, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "agent",
 		Subject:   "user",
 		Predicate: "prefers",
@@ -147,7 +147,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("expected semantic, got %s", obs1.Type)
 	}
 
-	obs2, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	obs2, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:    "agent",
 		Subject:   "project",
 		Predicate: "uses",
@@ -176,7 +176,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	trust := fullTrust()
 
-	resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeEpisodic},
 	})
@@ -198,7 +198,7 @@ func TestFullLifecycle(t *testing.T) {
 		}
 	}
 
-	resp, err = m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err = retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust:       trust,
 		MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 	})
@@ -268,7 +268,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Step 7: Verify retrieval with limit.
 	// -----------------------------------------------------------------------
 
-	resp, err = m.Retrieve(ctx, &retrieval.RetrieveRequest{
+	resp, err = retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 		Trust: trust,
 		Limit: 2,
 	})

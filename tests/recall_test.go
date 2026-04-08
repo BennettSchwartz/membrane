@@ -62,7 +62,7 @@ func TestRetrievalRecallAtK(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+			resp, err := retrieveRecords(ctx, m, &retrieval.RetrieveRequest{
 				Trust:       tc.trust,
 				MemoryTypes: []schema.MemoryType{schema.MemoryTypeSemantic},
 				MinSalience: tc.minSalience,
@@ -92,7 +92,7 @@ func TestRetrievalRecallAtK(t *testing.T) {
 
 func mustIngestObservation(t *testing.T, ctx context.Context, m *membrane.Membrane, scope string, sensitivity schema.Sensitivity) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+	rec, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
 		Source:      "test",
 		Subject:     "system",
 		Predicate:   "observed",

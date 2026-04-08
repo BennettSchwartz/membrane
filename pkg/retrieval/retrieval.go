@@ -78,6 +78,7 @@ type RetrieveResponse struct {
 // working -> semantic -> competence -> plan_graph -> episodic.
 var layerOrder = []schema.MemoryType{
 	schema.MemoryTypeWorking,
+	schema.MemoryTypeEntity,
 	schema.MemoryTypeSemantic,
 	schema.MemoryTypeCompetence,
 	schema.MemoryTypePlanGraph,

@@ -6,16 +6,15 @@ import (
 	"testing"
 
 	"github.com/GustyCube/membrane/pkg/ingestion"
+	"github.com/GustyCube/membrane/pkg/membrane"
 	"github.com/GustyCube/membrane/pkg/revision"
 	"github.com/GustyCube/membrane/pkg/schema"
 )
 
 // ingestSemanticRecord is a helper that ingests an observation and returns the record.
-func ingestSemanticRecord(t *testing.T, m interface {
-	IngestObservation(context.Context, ingestion.IngestObservationRequest) (*schema.MemoryRecord, error)
-}, subject, predicate string, object any) *schema.MemoryRecord {
+func ingestSemanticRecord(t *testing.T, m *membrane.Membrane, subject, predicate string, object any) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := m.IngestObservation(context.Background(), ingestion.IngestObservationRequest{
+	rec, err := captureObservationRecord(context.Background(), m, ingestion.IngestObservationRequest{
 		Source:    "test",
 		Subject:   subject,
 		Predicate: predicate,
@@ -29,11 +28,9 @@ func ingestSemanticRecord(t *testing.T, m interface {
 }
 
 // ingestEpisodicRecord is a helper that ingests an event and returns the record.
-func ingestEpisodicRecord(t *testing.T, m interface {
-	IngestEvent(context.Context, ingestion.IngestEventRequest) (*schema.MemoryRecord, error)
-}) *schema.MemoryRecord {
+func ingestEpisodicRecord(t *testing.T, m *membrane.Membrane) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := m.IngestEvent(context.Background(), ingestion.IngestEventRequest{
+	rec, err := captureEventRecord(context.Background(), m, ingestion.IngestEventRequest{
 		Source:    "test",
 		EventKind: "test_event",
 		Ref:       "test-ref",
