@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // RetrieveGraphRequest expands ranked root memories into a bounded graph.

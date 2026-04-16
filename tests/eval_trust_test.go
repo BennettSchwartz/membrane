@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 func TestEvalTrustGating(t *testing.T) {

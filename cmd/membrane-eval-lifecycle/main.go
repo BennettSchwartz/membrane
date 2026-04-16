@@ -18,12 +18,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/GustyCube/membrane/pkg/embedding"
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/membrane"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage/postgres"
+	"github.com/BennettSchwartz/membrane/pkg/embedding"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage/postgres"
 )
 
 func main() {

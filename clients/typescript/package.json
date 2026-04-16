@@ -1,17 +1,17 @@
 {
-  "name": "@gustycube/membrane",
+  "name": "@bennettschwartz/membrane",
   "version": "0.2.0",
   "description": "TypeScript client for the Membrane memory substrate",
   "license": "MIT",
   "author": "Bennett Schwartz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GustyCube/membrane.git",
+    "url": "https://github.com/BennettSchwartz/membrane.git",
     "directory": "clients/typescript"
   },
-  "homepage": "https://github.com/GustyCube/membrane",
+  "homepage": "https://github.com/BennettSchwartz/membrane",
   "bugs": {
-    "url": "https://github.com/GustyCube/membrane/issues"
+    "url": "https://github.com/BennettSchwartz/membrane/issues"
   },
   "type": "module",
   "main": "./dist/index.cjs",

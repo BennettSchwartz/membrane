@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/GustyCube/membrane/pkg/consolidation"
-	"github.com/GustyCube/membrane/pkg/decay"
-	"github.com/GustyCube/membrane/pkg/embedding"
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/metrics"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/revision"
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
-	"github.com/GustyCube/membrane/pkg/storage/postgres"
-	"github.com/GustyCube/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/consolidation"
+	"github.com/BennettSchwartz/membrane/pkg/decay"
+	"github.com/BennettSchwartz/membrane/pkg/embedding"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/metrics"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/revision"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
+	"github.com/BennettSchwartz/membrane/pkg/storage/postgres"
+	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 // Membrane wires all subsystems together and exposes the unified API surface.

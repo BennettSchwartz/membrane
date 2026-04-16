@@ -2,7 +2,7 @@
  * @vainplex/openclaw-membrane — Membrane bridge plugin for OpenClaw
  *
  * Provides:
- * - Event ingestion (write path) via rich capture on @gustycube/membrane client
+ * - Event ingestion (write path) via rich capture on @bennettschwartz/membrane client
  * - `membrane_search` tool for graph-aware memory queries
  * - `before_agent_start` hook for auto-context injection
  * - `/membrane` command for status and stats
@@ -15,7 +15,7 @@ import {
   type MemoryRecord,
   type MemoryType,
   type RetrieveGraphOptions,
-} from "@gustycube/membrane";
+} from "@bennettschwartz/membrane";
 import { mapSensitivity, mapEventKind, summarize, buildTags } from "./mapping.js";
 import type { PluginConfig, PluginApi, PluginLogger, OpenClawEvent } from "./types.js";
 import { DEFAULT_CONFIG, VALID_MEMORY_TYPES } from "./types.js";

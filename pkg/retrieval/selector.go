@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // SelectionResult holds the outcome of multi-solution selection per RFC 15A.11.

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
 // ---------------------------------------------------------------------------

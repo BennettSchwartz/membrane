@@ -30,7 +30,7 @@ This example shows the complete pattern using the TypeScript client SDK and the 
 
 ```typescript
 import OpenAI from "openai";
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
 const llm = new OpenAI({

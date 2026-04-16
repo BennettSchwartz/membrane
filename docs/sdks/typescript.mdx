@@ -8,15 +8,15 @@ description: "TypeScript/Node client for the Membrane memory substrate. Communic
 <CodeGroup>
 
 ```bash npm
-npm install @gustycube/membrane
+npm install @bennettschwartz/membrane
 ```
 
 ```bash yarn
-yarn add @gustycube/membrane
+yarn add @bennettschwartz/membrane
 ```
 
 ```bash pnpm
-pnpm add @gustycube/membrane
+pnpm add @bennettschwartz/membrane
 ```
 
 </CodeGroup>
@@ -28,7 +28,7 @@ Requires Node.js 20+ and a running Membrane daemon (default: `localhost:9090`).
 ## Quick start
 
 ```typescript
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", {
   apiKey: "your-api-key"
@@ -56,7 +56,7 @@ client.close();
 
 ## Exports
 
-The package exports the following from the top-level `@gustycube/membrane` entry point:
+The package exports the following from the top-level `@bennettschwartz/membrane` entry point:
 
 | Export | Kind | Description |
 |--------|------|-------------|
@@ -280,7 +280,7 @@ async ingestOutcome(
 </ParamField>
 
 ```typescript
-import { OutcomeStatus } from "@gustycube/membrane";
+import { OutcomeStatus } from "@bennettschwartz/membrane";
 
 await client.ingestOutcome(record.id, OutcomeStatus.SUCCESS);
 ```
@@ -322,7 +322,7 @@ async ingestWorkingState(
 </ParamField>
 
 ```typescript
-import { TaskState } from "@gustycube/membrane";
+import { TaskState } from "@bennettschwartz/membrane";
 
 await client.ingestWorkingState("session-001", TaskState.EXECUTING, {
   nextActions: ["run tests", "deploy"],
@@ -666,7 +666,7 @@ interface MemoryRecord {
 Failed RPCs throw `MembraneError`. It exposes a stable shape regardless of the underlying gRPC status.
 
 ```typescript
-import { MembraneClient, MembraneError } from "@gustycube/membrane";
+import { MembraneClient, MembraneError } from "@bennettschwartz/membrane";
 
 try {
   const record = await client.retrieveById("nonexistent-id");
@@ -688,7 +688,7 @@ The common runtime pattern is: ingest execution traces, retrieve relevant memory
 
 ```typescript
 import OpenAI from "openai";
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const memory = new MembraneClient("localhost:9090", {
   apiKey: process.env.MEMBRANE_API_KEY

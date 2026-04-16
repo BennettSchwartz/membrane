@@ -5,7 +5,7 @@ package ingestion
 import (
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // CandidateKind identifies the source type of a MemoryCandidate.
