@@ -1,4 +1,4 @@
-module github.com/GustyCube/membrane
+module github.com/BennettSchwartz/membrane
 
 go 1.24.0
 

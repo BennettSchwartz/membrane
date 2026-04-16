@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	grpcapi "github.com/GustyCube/membrane/api/grpc"
-	"github.com/GustyCube/membrane/pkg/membrane"
+	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
 )
 
 var version = "dev"

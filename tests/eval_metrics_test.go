@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/GustyCube/membrane/pkg/metrics"
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/metrics"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 func TestEvalMetricsSnapshot(t *testing.T) {

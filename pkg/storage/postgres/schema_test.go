@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 func newTestStore(t *testing.T) *PostgresStore {

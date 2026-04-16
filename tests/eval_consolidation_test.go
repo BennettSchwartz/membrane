@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/GustyCube/membrane/pkg/consolidation"
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
-	"github.com/GustyCube/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/consolidation"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
+	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 func TestEvalConsolidationSemantic(t *testing.T) {

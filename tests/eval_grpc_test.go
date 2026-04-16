@@ -16,11 +16,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	grpcapi "github.com/GustyCube/membrane/api/grpc"
-	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
-	"github.com/GustyCube/membrane/pkg/membrane"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
+	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
+	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 type grpcEnv struct {

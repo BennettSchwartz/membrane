@@ -3,7 +3,7 @@
 GO := go
 NPM := npm
 BINARY := bin/membraned
-MODULE := github.com/GustyCube/membrane
+MODULE := github.com/BennettSchwartz/membrane
 PROTO_DIR := api/proto/membrane/v1
 TS_DIR := clients/typescript
 

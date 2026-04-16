@@ -6,8 +6,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
 // EmbeddingStore is the narrow vector-storage interface needed by Service.

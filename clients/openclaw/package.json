@@ -6,12 +6,12 @@
   "author": "Vainplex <dev@vainplex.de>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GustyCube/membrane.git",
+    "url": "https://github.com/BennettSchwartz/membrane.git",
     "directory": "clients/openclaw"
   },
-  "homepage": "https://github.com/GustyCube/membrane",
+  "homepage": "https://github.com/BennettSchwartz/membrane",
   "bugs": {
-    "url": "https://github.com/GustyCube/membrane/issues"
+    "url": "https://github.com/BennettSchwartz/membrane/issues"
   },
   "type": "module",
   "main": "./dist/index.js",
@@ -32,7 +32,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gustycube/membrane": "^0.2.0"
+    "@bennettschwartz/membrane": "^0.2.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

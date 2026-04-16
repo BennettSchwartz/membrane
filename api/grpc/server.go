@@ -19,8 +19,8 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
-	"github.com/GustyCube/membrane/pkg/membrane"
+	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
 )
 
 // Server wraps a gRPC server wired to a Membrane instance.
