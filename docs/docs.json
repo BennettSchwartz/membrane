@@ -10,12 +10,12 @@
   "navbar": {
     "primary": {
       "type": "github",
-      "href": "https://github.com/gustycube/membrane"
+      "href": "https://github.com/bennettschwartz/membrane"
     }
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/gustycube/membrane"
+      "github": "https://github.com/bennettschwartz/membrane"
     }
   },
   "navigation": {

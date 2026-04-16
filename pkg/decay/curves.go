@@ -5,7 +5,7 @@ package decay
 import (
 	"math"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // DecayFunc takes current salience, elapsed seconds since last reinforcement,

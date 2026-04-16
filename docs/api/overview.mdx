@@ -69,11 +69,11 @@ When TLS is enabled, use `-insecure` instead of `-plaintext` with grpcurl, or su
 Install the official TypeScript client:
 
 ```bash
-npm install @gustycube/membrane
+npm install @bennettschwartz/membrane
 ```
 
 ```typescript typescript client
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
 
@@ -165,7 +165,7 @@ grpcurl \
 
 ## Proto definition
 
-The full service definition is at `api/proto/membrane/v1/membrane.proto`. The Go package is `github.com/GustyCube/membrane/api/grpc/gen/membranev1`.
+The full service definition is at `api/proto/membrane/v1/membrane.proto`. The Go package is `github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1`.
 
 ```protobuf membrane.proto
 syntax = "proto3";

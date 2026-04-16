@@ -1,6 +1,6 @@
 # Membrane Python Client
 
-Python client library for the [Membrane](https://github.com/GustyCube/membrane) memory substrate.
+Python client library for the [Membrane](https://github.com/BennettSchwartz/membrane) memory substrate.
 
 Communicates with the Membrane daemon over gRPC using the protobuf-defined
 `membrane.v1.MembraneService` contract.

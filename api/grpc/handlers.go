@@ -12,13 +12,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/membrane"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/revision"
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
+	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/revision"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
 // ---------------------------------------------------------------------------

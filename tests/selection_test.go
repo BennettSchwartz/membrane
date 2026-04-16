@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // makeCompetenceRecord builds a competence MemoryRecord with the given parameters.

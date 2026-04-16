@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
-	sqlitestore "github.com/GustyCube/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stubInterpreter struct {

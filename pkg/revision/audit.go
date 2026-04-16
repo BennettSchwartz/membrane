@@ -5,7 +5,7 @@ package revision
 import (
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // newAuditEntry creates an AuditEntry with the given action, actor, rationale, and timestamp.

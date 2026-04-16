@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
 // Fork creates a new record derived from an existing source record.
