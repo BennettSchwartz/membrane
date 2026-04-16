@@ -3,7 +3,7 @@ package retrieval
 import (
 	"testing"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 func TestTrustAllowsRejectsInvalidRecordSensitivity(t *testing.T) {

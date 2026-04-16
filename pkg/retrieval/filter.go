@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // FilterBySalience returns only records whose salience is at or above the

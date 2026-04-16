@@ -1,18 +1,18 @@
 # Membrane
 
-[![CI](https://github.com/GustyCube/membrane/actions/workflows/ci.yml/badge.svg)](https://github.com/GustyCube/membrane/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/GustyCube/membrane)](https://goreportcard.com/report/github.com/GustyCube/membrane)
-[![Go Reference](https://pkg.go.dev/badge/github.com/GustyCube/membrane.svg)](https://pkg.go.dev/github.com/GustyCube/membrane)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/GustyCube/membrane)](https://go.dev/)
-[![License: MIT](https://img.shields.io/github/license/GustyCube/membrane)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/GustyCube/membrane?include_prereleases&sort=semver)](https://github.com/GustyCube/membrane/releases)
+[![CI](https://github.com/BennettSchwartz/membrane/actions/workflows/ci.yml/badge.svg)](https://github.com/BennettSchwartz/membrane/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/BennettSchwartz/membrane)](https://goreportcard.com/report/github.com/BennettSchwartz/membrane)
+[![Go Reference](https://pkg.go.dev/badge/github.com/BennettSchwartz/membrane.svg)](https://pkg.go.dev/github.com/BennettSchwartz/membrane)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/BennettSchwartz/membrane)](https://go.dev/)
+[![License: MIT](https://img.shields.io/github/license/BennettSchwartz/membrane)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/BennettSchwartz/membrane?include_prereleases&sort=semver)](https://github.com/BennettSchwartz/membrane/releases)
 
-[![GitHub Stars](https://img.shields.io/github/stars/GustyCube/membrane?style=flat)](https://github.com/GustyCube/membrane/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/GustyCube/membrane?style=flat)](https://github.com/GustyCube/membrane/network/members)
-[![GitHub Issues](https://img.shields.io/github/issues/GustyCube/membrane)](https://github.com/GustyCube/membrane/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/GustyCube/membrane)](https://github.com/GustyCube/membrane/pulls)
-[![Last Commit](https://img.shields.io/github/last-commit/GustyCube/membrane)](https://github.com/GustyCube/membrane/commits)
-[![Contributors](https://img.shields.io/github/contributors/GustyCube/membrane)](https://github.com/GustyCube/membrane/graphs/contributors)
+[![GitHub Stars](https://img.shields.io/github/stars/BennettSchwartz/membrane?style=flat)](https://github.com/BennettSchwartz/membrane/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/BennettSchwartz/membrane?style=flat)](https://github.com/BennettSchwartz/membrane/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/BennettSchwartz/membrane)](https://github.com/BennettSchwartz/membrane/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/BennettSchwartz/membrane)](https://github.com/BennettSchwartz/membrane/pulls)
+[![Last Commit](https://img.shields.io/github/last-commit/BennettSchwartz/membrane)](https://github.com/BennettSchwartz/membrane/commits)
+[![Contributors](https://img.shields.io/github/contributors/BennettSchwartz/membrane)](https://github.com/BennettSchwartz/membrane/graphs/contributors)
 
 **A general-purpose selective learning and memory substrate for LLM and agentic systems.**
 
@@ -96,7 +96,7 @@ Each memory type has its own schema, lifecycle rules, and consolidation behavior
 ### Build and Run
 
 ```bash
-git clone https://github.com/GustyCube/membrane.git
+git clone https://github.com/BennettSchwartz/membrane.git
 cd membrane
 
 # Build the daemon
@@ -130,10 +130,10 @@ import (
     "fmt"
     "log"
 
-    "github.com/GustyCube/membrane/pkg/ingestion"
-    "github.com/GustyCube/membrane/pkg/membrane"
-    "github.com/GustyCube/membrane/pkg/retrieval"
-    "github.com/GustyCube/membrane/pkg/schema"
+    "github.com/BennettSchwartz/membrane/pkg/ingestion"
+    "github.com/BennettSchwartz/membrane/pkg/membrane"
+    "github.com/BennettSchwartz/membrane/pkg/retrieval"
+    "github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 func main() {
@@ -471,11 +471,11 @@ The `GetMetrics` endpoint returns a point-in-time snapshot:
 Install the TypeScript client SDK:
 
 ```bash
-npm install @gustycube/membrane
+npm install @bennettschwartz/membrane
 ```
 
 ```ts
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
 
@@ -514,7 +514,7 @@ When Postgres plus an LLM endpoint are configured, Membrane can also run a backg
 
 ```ts
 import OpenAI from "openai";
-import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
 const llm = new OpenAI({
@@ -619,7 +619,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=GustyCube/membrane&type=Date)](https://star-history.com/#GustyCube/membrane&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=BennettSchwartz/membrane&type=Date)](https://star-history.com/#BennettSchwartz/membrane&Date)
 
 ## License
 
@@ -627,4 +627,4 @@ Membrane is released under the [MIT License](LICENSE).
 
 ---
 
-**Author:** Bennett Schwartz | **Repository:** [github.com/GustyCube/membrane](https://github.com/GustyCube/membrane)
+**Author:** Bennett Schwartz | **Repository:** [github.com/BennettSchwartz/membrane](https://github.com/BennettSchwartz/membrane)

@@ -1,19 +1,19 @@
 # Membrane TypeScript Client
 
-TypeScript/Node SDK for the [Membrane](https://github.com/GustyCube/membrane) memory substrate.
+TypeScript/Node SDK for the [Membrane](https://github.com/BennettSchwartz/membrane) memory substrate.
 
 Communicates with the Membrane daemon over gRPC using the protobuf service contract.
 
 ## Installation
 
 ```bash
-npm install @gustycube/membrane
+npm install @bennettschwartz/membrane
 ```
 
 ## Quick Start
 
 ```ts
-import { MembraneClient, Sensitivity, SourceKind } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity, SourceKind } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", {
   apiKey: "your-api-key"
@@ -109,7 +109,7 @@ The common runtime pattern is: capture execution traces or observations, retriev
 
 ```ts
 import OpenAI from "openai";
-import { MembraneClient, Sensitivity, SourceKind } from "@gustycube/membrane";
+import { MembraneClient, Sensitivity, SourceKind } from "@bennettschwartz/membrane";
 
 const memory = new MembraneClient("localhost:9090", {
   apiKey: process.env.MEMBRANE_API_KEY

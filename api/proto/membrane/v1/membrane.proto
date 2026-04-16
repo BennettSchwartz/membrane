@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package membrane.v1;
 
-option go_package = "github.com/GustyCube/membrane/api/grpc/gen/membranev1";
+option go_package = "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1";
 
 service MembraneService {
     rpc CaptureMemory(CaptureMemoryRequest) returns (CaptureMemoryResponse);

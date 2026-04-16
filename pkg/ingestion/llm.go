@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 const interpreterPrompt = "You are a memory-ingest interpretation system. Given a candidate memory capture, return a JSON object with keys: status, summary, proposed_type, topical_labels, mentions, relation_candidates, reference_candidates, extraction_confidence. Use only the allowed memory types: episodic, working, semantic, competence, plan_graph, entity. Each mention must use keys: surface, entity_kind, canonical_entity_id, confidence, aliases. Each relation candidate must use keys: predicate, target_record_id, target_entity_id, confidence, resolved. Each reference candidate must use keys: ref, target_record_id, target_entity_id, confidence, resolved. If something is unknown, leave it empty. Return only JSON."

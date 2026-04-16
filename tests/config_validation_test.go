@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GustyCube/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
 )
 
 func TestMembraneNewRejectsInvalidDefaultSensitivity(t *testing.T) {

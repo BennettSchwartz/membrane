@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // Common storage errors.

@@ -9,10 +9,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/membrane"
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // truncatePostgres removes all rows from every application table so that each

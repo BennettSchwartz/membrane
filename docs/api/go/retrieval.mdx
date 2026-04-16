@@ -3,7 +3,7 @@ title: "retrieval"
 description: "Layered memory retrieval service with trust-context gating and multi-solution selection."
 ---
 
-Import path: `github.com/GustyCube/membrane/pkg/retrieval`
+Import path: `github.com/BennettSchwartz/membrane/pkg/retrieval`
 
 The `retrieval` package implements layered memory retrieval per RFC 15.8. Records are queried in canonical layer order (`working → semantic → competence → plan_graph → episodic`), filtered by trust context and salience. With Postgres + pgvector configured (recommended), results are ranked using hybrid vector+salience scoring. Competence and plan-graph candidates go through an additional multi-solution selector. Without embeddings, results fall back to salience-only ranking.
 

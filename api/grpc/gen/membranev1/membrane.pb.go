@@ -1324,7 +1324,7 @@ const file_membrane_proto_rawDesc = "" +
 	"\bPenalize\x12\x1c.membrane.v1.PenalizeRequest\x1a\x1d.membrane.v1.PenalizeResponse\x12J\n" +
 	"\n" +
 	"GetMetrics\x12\x1e.membrane.v1.GetMetricsRequest\x1a\x1c.membrane.v1.MetricsResponse\x12D\n" +
-	"\aContest\x12\x1b.membrane.v1.ContestRequest\x1a\x1c.membrane.v1.ContestResponseB7Z5github.com/GustyCube/membrane/api/grpc/gen/membranev1b\x06proto3"
+	"\aContest\x12\x1b.membrane.v1.ContestRequest\x1a\x1c.membrane.v1.ContestResponseB7Z5github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1b\x06proto3"
 
 var (
 	file_membrane_proto_rawDescOnce sync.Once

@@ -2,7 +2,7 @@
 // as specified in RFC 15.8 and RFC 15A.11.
 package retrieval
 
-import "github.com/GustyCube/membrane/pkg/schema"
+import "github.com/BennettSchwartz/membrane/pkg/schema"
 
 // sensitivityOrder maps sensitivity levels to a numeric ordering.
 // Higher values indicate more sensitive content.

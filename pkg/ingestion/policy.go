@@ -3,7 +3,7 @@ package ingestion
 import (
 	"fmt"
 
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // PolicyDefaults holds configurable default values for policy decisions.

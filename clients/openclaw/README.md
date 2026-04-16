@@ -1,6 +1,6 @@
 # OpenClaw Membrane Plugin
 
-[OpenClaw](https://github.com/openclaw/openclaw) plugin that bridges to [Membrane](https://github.com/GustyCube/membrane) — giving your AI agents episodic memory.
+[OpenClaw](https://github.com/openclaw/openclaw) plugin that bridges to [Membrane](https://github.com/BennettSchwartz/membrane) — giving your AI agents episodic memory.
 
 ## What it does
 
@@ -24,7 +24,7 @@ npx brainplex init  # Auto-detects and configures all plugins
 
 ## Prerequisites
 
-- A running [Membrane](https://github.com/GustyCube/membrane) instance (the `membraned` daemon)
+- A running [Membrane](https://github.com/BennettSchwartz/membrane) instance (the `membraned` daemon)
 - OpenClaw v0.10+
 
 ## Configuration

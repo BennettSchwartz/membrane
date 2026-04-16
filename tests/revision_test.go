@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/GustyCube/membrane/pkg/ingestion"
-	"github.com/GustyCube/membrane/pkg/membrane"
-	"github.com/GustyCube/membrane/pkg/revision"
-	"github.com/GustyCube/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/revision"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
 // ingestSemanticRecord is a helper that ingests an observation and returns the record.

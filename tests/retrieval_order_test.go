@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GustyCube/membrane/pkg/retrieval"
-	"github.com/GustyCube/membrane/pkg/schema"
-	"github.com/GustyCube/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
+	"github.com/BennettSchwartz/membrane/pkg/schema"
+	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stubEmbeddingService struct {
