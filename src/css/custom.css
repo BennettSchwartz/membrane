@@ -182,8 +182,10 @@
 }
 
 .membrane-card__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
   color: var(--ifm-color-primary);
-  font-size: 1.1rem;
+  line-height: 1;
 }
 
 @media (max-width: 720px) {
