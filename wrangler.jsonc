@@ -3,6 +3,12 @@
   "name": "membrane-docs",
   "account_id": "776e99cad6263022ce616ccd9c25663e",
   "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "membrane.gustycube.com/*",
+      "zone_name": "gustycube.com"
+    }
+  ],
   "compatibility_date": "2026-04-30",
   "assets": {
     "directory": "./build",

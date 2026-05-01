@@ -278,7 +278,8 @@ are useful, instead of forcing tool calls in the harness.
 
 ## Documentation
 
-The docs site lives in [docs](docs) and is built with Docusaurus.
+The docs site lives in [docs](docs), is built with Docusaurus, and is deployed
+to Cloudflare Workers at <https://membrane.gustycube.com>.
 
 ```bash
 npm install
@@ -289,9 +290,12 @@ npm run docs:build
 npm run docs:deploy
 ```
 
-Cloudflare configuration is in [wrangler.jsonc](wrangler.jsonc). Sidebar and
-theme configuration live in [sidebars.js](sidebars.js) and
-[docusaurus.config.js](docusaurus.config.js).
+Cloudflare configuration is in [wrangler.jsonc](wrangler.jsonc). The GitHub
+Actions deploy workflow runs when docs files change and deploys when
+`CLOUDFLARE_API_TOKEN` is present as a repository secret. The
+`membrane.gustycube.com` DNS record must be proxied through Cloudflare for the
+Worker route to receive production traffic. Sidebar and theme configuration live
+in [sidebars.js](sidebars.js) and [docusaurus.config.js](docusaurus.config.js).
 
 ## API Surface
 
