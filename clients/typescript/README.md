@@ -146,7 +146,7 @@ const graph = await memory.retrieveGraph("how should I handle this auth incident
 const memoryContext = graph.nodes.map((node) => JSON.stringify(node)).join("\n");
 
 const completion = await llm.chat.completions.create({
-  model: "gpt-5.2",
+  model: "gpt-5.5",
   messages: [
     { role: "system", content: "Use the memory context as evidence. Cite record ids." },
     { role: "user", content: `Incident task:\n...\n\nMemory:\n${memoryContext}` },

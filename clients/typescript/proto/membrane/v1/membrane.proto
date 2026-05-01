@@ -4,6 +4,8 @@ package membrane.v1;
 
 option go_package = "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1";
 
+import "google/protobuf/struct.proto";
+
 service MembraneService {
     rpc CaptureMemory(CaptureMemoryRequest) returns (CaptureMemoryResponse);
     rpc RetrieveGraph(RetrieveGraphRequest) returns (RetrieveGraphResponse);
@@ -25,8 +27,8 @@ service MembraneService {
 message CaptureMemoryRequest {
     string source = 1;
     string source_kind = 2;
-    bytes content = 3;           // JSON-encoded arbitrary content
-    bytes context = 4;           // JSON-encoded local context
+    google.protobuf.Value content = 3;
+    google.protobuf.Value context = 4;
     string reason_to_remember = 5;
     string proposed_type = 6;
     string summary = 7;
@@ -37,9 +39,9 @@ message CaptureMemoryRequest {
 }
 
 message CaptureMemoryResponse {
-    bytes primary_record = 1;    // JSON-encoded MemoryRecord
-    repeated bytes created_records = 2; // JSON-encoded MemoryRecord array
-    bytes edges = 3;             // JSON-encoded []GraphEdge
+    MemoryRecord primary_record = 1;
+    repeated MemoryRecord created_records = 2;
+    repeated GraphEdge edges = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,10 +67,10 @@ message RetrieveGraphRequest {
 }
 
 message RetrieveGraphResponse {
-    bytes nodes = 1;             // JSON-encoded []GraphNode
-    bytes edges = 2;             // JSON-encoded []GraphEdge
+    repeated GraphNode nodes = 1;
+    repeated GraphEdge edges = 2;
     repeated string root_ids = 3;
-    bytes selection = 4;         // JSON-encoded SelectionResult, optional
+    SelectionResult selection = 4;
 }
 
 message RetrieveByIDRequest {
@@ -77,7 +79,7 @@ message RetrieveByIDRequest {
 }
 
 message MemoryRecordResponse {
-    bytes record = 1;            // JSON-encoded MemoryRecord
+    MemoryRecord record = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,14 +88,14 @@ message MemoryRecordResponse {
 
 message SupersedeRequest {
     string old_id = 1;
-    bytes new_record = 2;        // JSON-encoded MemoryRecord
+    MemoryRecord new_record = 2;
     string actor = 3;
     string rationale = 4;
 }
 
 message ForkRequest {
     string source_id = 1;
-    bytes forked_record = 2;     // JSON-encoded MemoryRecord
+    MemoryRecord forked_record = 2;
     string actor = 3;
     string rationale = 4;
 }
@@ -108,7 +110,7 @@ message RetractResponse {}
 
 message MergeRequest {
     repeated string ids = 1;
-    bytes merged_record = 2;     // JSON-encoded MemoryRecord
+    MemoryRecord merged_record = 2;
     string actor = 3;
     string rationale = 4;
 }
@@ -150,5 +152,303 @@ message PenalizeResponse {}
 message GetMetricsRequest {}
 
 message MetricsResponse {
-    bytes snapshot = 1;          // JSON-encoded metrics.Snapshot
+    google.protobuf.Value snapshot = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Typed memory graph messages
+// ---------------------------------------------------------------------------
+
+message MemoryRecord {
+    string id = 1;
+    string type = 2;
+    string sensitivity = 3;
+    double confidence = 4;
+    double salience = 5;
+    string scope = 6;
+    repeated string tags = 7;
+    string created_at = 8;
+    string updated_at = 9;
+    Lifecycle lifecycle = 10;
+    Provenance provenance = 11;
+    repeated Relation relations = 12;
+    Payload payload = 13;
+    Interpretation interpretation = 14;
+    repeated AuditEntry audit_log = 15;
+}
+
+message Lifecycle {
+    DecayProfile decay = 1;
+    string last_reinforced_at = 2;
+    bool pinned = 3;
+    string deletion_policy = 4;
+}
+
+message DecayProfile {
+    string curve = 1;
+    int64 half_life_seconds = 2;
+    double min_salience = 3;
+    int64 max_age_seconds = 4;
+    double reinforcement_gain = 5;
+}
+
+message Provenance {
+    repeated ProvenanceSource sources = 1;
+    string created_by = 2;
+}
+
+message ProvenanceSource {
+    string kind = 1;
+    string ref = 2;
+    string timestamp = 3;
+    string hash = 4;
+    string created_by = 5;
+}
+
+message Relation {
+    string predicate = 1;
+    string target_id = 2;
+    double weight = 3;
+    string created_at = 4;
+}
+
+message GraphEdge {
+    string source_id = 1;
+    string predicate = 2;
+    string target_id = 3;
+    double weight = 4;
+    string created_at = 5;
+}
+
+message GraphNode {
+    MemoryRecord record = 1;
+    bool root = 2;
+    int32 hop = 3;
+}
+
+message AuditEntry {
+    string action = 1;
+    string actor = 2;
+    string timestamp = 3;
+    string rationale = 4;
+}
+
+message Interpretation {
+    string status = 1;
+    string summary = 2;
+    string proposed_type = 3;
+    repeated string topical_labels = 4;
+    repeated Mention mentions = 5;
+    repeated RelationCandidate relation_candidates = 6;
+    repeated ReferenceCandidate reference_candidates = 7;
+    double extraction_confidence = 8;
+}
+
+message Mention {
+    string surface = 1;
+    string entity_kind = 2;
+    string canonical_entity_id = 3;
+    double confidence = 4;
+    repeated string aliases = 5;
+}
+
+message RelationCandidate {
+    string predicate = 1;
+    string target_record_id = 2;
+    string target_entity_id = 3;
+    double confidence = 4;
+    bool resolved = 5;
+}
+
+message ReferenceCandidate {
+    string ref = 1;
+    string target_record_id = 2;
+    string target_entity_id = 3;
+    double confidence = 4;
+    bool resolved = 5;
+}
+
+message Payload {
+    oneof kind {
+        EpisodicPayload episodic = 1;
+        WorkingPayload working = 2;
+        SemanticPayload semantic = 3;
+        CompetencePayload competence = 4;
+        PlanGraphPayload plan_graph = 5;
+        EntityPayload entity = 6;
+    }
+}
+
+message EpisodicPayload {
+    string kind = 1;
+    repeated TimelineEvent timeline = 2;
+    repeated ToolNode tool_graph = 3;
+    EnvironmentSnapshot environment = 4;
+    string outcome = 5;
+    repeated string artifacts = 6;
+    string tool_graph_ref = 7;
+}
+
+message TimelineEvent {
+    string t = 1;
+    string event_kind = 2;
+    string ref = 3;
+    string summary = 4;
+}
+
+message ToolNode {
+    string id = 1;
+    string tool = 2;
+    map<string, google.protobuf.Value> args = 3;
+    google.protobuf.Value result = 4;
+    string timestamp = 5;
+    repeated string depends_on = 6;
+}
+
+message EnvironmentSnapshot {
+    string os = 1;
+    string os_version = 2;
+    map<string, string> tool_versions = 3;
+    string working_directory = 4;
+    map<string, google.protobuf.Value> context = 5;
+}
+
+message WorkingPayload {
+    string kind = 1;
+    string thread_id = 2;
+    string state = 3;
+    repeated Constraint active_constraints = 4;
+    repeated string next_actions = 5;
+    repeated string open_questions = 6;
+    string context_summary = 7;
+}
+
+message Constraint {
+    string type = 1;
+    string key = 2;
+    google.protobuf.Value value = 3;
+    bool required = 4;
+}
+
+message SemanticPayload {
+    string kind = 1;
+    string subject = 2;
+    string predicate = 3;
+    google.protobuf.Value object = 4;
+    Validity validity = 5;
+    repeated ProvenanceRef evidence = 6;
+    string revision_policy = 7;
+    RevisionState revision = 8;
+}
+
+message Validity {
+    string mode = 1;
+    map<string, google.protobuf.Value> conditions = 2;
+    string start = 3;
+    string end = 4;
+}
+
+message ProvenanceRef {
+    string source_type = 1;
+    string source_id = 2;
+    string timestamp = 3;
+}
+
+message RevisionState {
+    string supersedes = 1;
+    string superseded_by = 2;
+    string status = 3;
+}
+
+message EntityPayload {
+    string kind = 1;
+    string canonical_name = 2;
+    string primary_type = 3;
+    repeated string types = 4;
+    repeated EntityAlias aliases = 5;
+    repeated EntityIdentifier identifiers = 6;
+    string summary = 7;
+}
+
+message EntityAlias {
+    string value = 1;
+    string kind = 2;
+    string locale = 3;
+}
+
+message EntityIdentifier {
+    string namespace = 1;
+    string value = 2;
+}
+
+message CompetencePayload {
+    string kind = 1;
+    string skill_name = 2;
+    repeated Trigger triggers = 3;
+    repeated RecipeStep recipe = 4;
+    repeated string required_tools = 5;
+    repeated string failure_modes = 6;
+    repeated string fallbacks = 7;
+    PerformanceStats performance = 8;
+    string version = 9;
+}
+
+message Trigger {
+    string signal = 1;
+    map<string, google.protobuf.Value> conditions = 2;
+}
+
+message RecipeStep {
+    string step = 1;
+    string tool = 2;
+    map<string, google.protobuf.Value> args_schema = 3;
+    string validation = 4;
+}
+
+message PerformanceStats {
+    int64 success_count = 1;
+    int64 failure_count = 2;
+    double success_rate = 3;
+    double avg_latency_ms = 4;
+    string last_used_at = 5;
+}
+
+message PlanGraphPayload {
+    string kind = 1;
+    string plan_id = 2;
+    string version = 3;
+    string intent = 4;
+    map<string, google.protobuf.Value> constraints = 5;
+    map<string, google.protobuf.Value> inputs_schema = 6;
+    map<string, google.protobuf.Value> outputs_schema = 7;
+    repeated PlanNode nodes = 8;
+    repeated PlanEdge edges = 9;
+    PlanMetrics metrics = 10;
+}
+
+message PlanNode {
+    string id = 1;
+    string op = 2;
+    map<string, google.protobuf.Value> params = 3;
+    map<string, google.protobuf.Value> guards = 4;
+}
+
+message PlanEdge {
+    string from = 1;
+    string to = 2;
+    string kind = 3;
+}
+
+message PlanMetrics {
+    double avg_latency_ms = 1;
+    double failure_rate = 2;
+    int64 execution_count = 3;
+    string last_executed_at = 4;
+}
+
+message SelectionResult {
+    repeated MemoryRecord selected = 1;
+    double confidence = 2;
+    bool needs_more = 3;
+    map<string, double> scores = 4;
 }

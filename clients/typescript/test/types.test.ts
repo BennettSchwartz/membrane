@@ -1,5 +1,8 @@
 import {
+  BuiltinEntityTypes,
   EdgeKind,
+  EntityType,
+  GraphPredicate,
   MemoryType,
   OutcomeStatus,
   RevisionStatus,
@@ -9,6 +12,9 @@ import {
   createDefaultTrustContext,
   type CompetencePayload,
   type Constraint,
+  type EntityAlias,
+  type EntityIdentifier,
+  type EntityPayload,
   type EpisodicPayload,
   type PlanEdge,
   type PlanGraphPayload,
@@ -46,6 +52,14 @@ describe("types", () => {
   it("EdgeKind enum has data and control values", () => {
     expect(EdgeKind.DATA).toBe("data");
     expect(EdgeKind.CONTROL).toBe("control");
+  });
+
+  it("EntityType and graph predicates expose grounded graph values", () => {
+    expect(EntityType.PROJECT).toBe("Project");
+    expect(EntityType.PULL_REQUEST).toBe("PullRequest");
+    expect(EntityType.OTHER).toBe("Other");
+    expect(BuiltinEntityTypes).toContain("Other");
+    expect(GraphPredicate.SUBJECT_ENTITY).toBe("subject_entity");
   });
 
   it("ValidityMode enum has all values", () => {
@@ -168,5 +182,23 @@ describe("payload types are structurally correct", () => {
     expect(p.plan_id).toBe("plan-1");
     expect(p.nodes).toHaveLength(1);
     expect(p.metrics?.execution_count).toBe(20);
+  });
+
+  it("EntityPayload interface accepts ontology-backed identity data", () => {
+    const alias: EntityAlias = { value: "Membrane", kind: "surface" };
+    const identifier: EntityIdentifier = { namespace: "github", value: "GustyCube/membrane" };
+    const p: EntityPayload = {
+      kind: "entity",
+      canonical_name: "Membrane",
+      primary_type: EntityType.PROJECT,
+      types: [EntityType.PROJECT, EntityType.REPOSITORY],
+      aliases: [alias],
+      identifiers: [identifier],
+      summary: "Memory substrate repository"
+    };
+
+    expect(p.primary_type).toBe("Project");
+    expect(p.aliases?.[0]?.value).toBe("Membrane");
+    expect(p.identifiers?.[0]?.namespace).toBe("github");
   });
 });
