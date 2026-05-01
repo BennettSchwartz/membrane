@@ -15,12 +15,12 @@ export interface RetrieveEnvelope {
 export interface CaptureMemoryEnvelope {
   primary_record: unknown;
   created_records: unknown[];
-  edges: unknown;
+  edges: unknown[];
 }
 
 export interface RetrieveGraphEnvelope {
-  nodes: unknown;
-  edges: unknown;
+  nodes: unknown[];
+  edges: unknown[];
   root_ids: string[];
   selection?: unknown;
 }
@@ -30,7 +30,7 @@ export interface MetricsEnvelope {
 }
 
 export type EmptyEnvelope = Record<string, never>;
-export type JsonBytes = Uint8Array;
+export type ProtoValue = Record<string, unknown>;
 
 export interface TrustContextRpcRequest {
   max_sensitivity: string;
@@ -42,8 +42,8 @@ export interface TrustContextRpcRequest {
 export interface CaptureMemoryRpcRequest {
   source: string;
   source_kind: string;
-  content: JsonBytes;
-  context?: JsonBytes;
+  content: ProtoValue;
+  context?: ProtoValue;
   reason_to_remember: string;
   proposed_type: string;
   summary: string;
@@ -71,14 +71,14 @@ export interface RetrieveByIdRpcRequest {
 
 export interface SupersedeRpcRequest {
   old_id: string;
-  new_record: JsonBytes;
+  new_record: unknown;
   actor: string;
   rationale: string;
 }
 
 export interface ForkRpcRequest {
   source_id: string;
-  forked_record: JsonBytes;
+  forked_record: unknown;
   actor: string;
   rationale: string;
 }
@@ -91,7 +91,7 @@ export interface RetractRpcRequest {
 
 export interface MergeRpcRequest {
   ids: string[];
-  merged_record: JsonBytes;
+  merged_record: unknown;
   actor: string;
   rationale: string;
 }

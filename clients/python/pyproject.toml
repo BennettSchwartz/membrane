@@ -8,10 +8,10 @@ version = "0.2.0"
 description = "Python client for the Membrane memory substrate"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["grpcio>=1.78.0", "protobuf>=6.31.1"]
+dependencies = ["grpcio>=1.80.0", "protobuf>=6.31.1"]
 
 [project.optional-dependencies]
-dev = ["pytest", "grpcio-tools"]
+dev = ["pytest", "grpcio-tools>=1.80.0"]
 
 [tool.setuptools.packages.find]
 include = ["membrane*"]

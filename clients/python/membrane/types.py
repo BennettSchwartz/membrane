@@ -7,6 +7,7 @@ levels, trust contexts, and related structures.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -126,6 +127,96 @@ class EntityKind(str, Enum):
     OTHER = "other"
 
 
+class EntityType:
+    """Built-in ontology type names for entity records.
+
+    The ontology is open: callers may use these constants or provide any
+    project-specific string type.
+    """
+
+    PERSON = "Person"
+    ORGANIZATION = "Organization"
+    TEAM = "Team"
+    AGENT = "Agent"
+    PROJECT = "Project"
+    REPOSITORY = "Repository"
+    FILE = "File"
+    DIRECTORY = "Directory"
+    SYMBOL = "Symbol"
+    API = "API"
+    SERVICE = "Service"
+    DATABASE = "Database"
+    PACKAGE = "Package"
+    DEPENDENCY = "Dependency"
+    TOOL = "Tool"
+    COMMAND = "Command"
+    RUNTIME = "Runtime"
+    ENVIRONMENT = "Environment"
+    TASK = "Task"
+    ISSUE = "Issue"
+    PULL_REQUEST = "PullRequest"
+    DECISION = "Decision"
+    REQUIREMENT = "Requirement"
+    INCIDENT = "Incident"
+    DOCUMENT = "Document"
+    URL = "URL"
+    DATASET = "Dataset"
+    METRIC = "Metric"
+    CONCEPT = "Concept"
+    EVENT = "Event"
+    OTHER = "Other"
+
+
+BUILTIN_ENTITY_TYPES: tuple[str, ...] = (
+    EntityType.PERSON,
+    EntityType.ORGANIZATION,
+    EntityType.TEAM,
+    EntityType.AGENT,
+    EntityType.PROJECT,
+    EntityType.REPOSITORY,
+    EntityType.FILE,
+    EntityType.DIRECTORY,
+    EntityType.SYMBOL,
+    EntityType.API,
+    EntityType.SERVICE,
+    EntityType.DATABASE,
+    EntityType.PACKAGE,
+    EntityType.DEPENDENCY,
+    EntityType.TOOL,
+    EntityType.COMMAND,
+    EntityType.RUNTIME,
+    EntityType.ENVIRONMENT,
+    EntityType.TASK,
+    EntityType.ISSUE,
+    EntityType.PULL_REQUEST,
+    EntityType.DECISION,
+    EntityType.REQUIREMENT,
+    EntityType.INCIDENT,
+    EntityType.DOCUMENT,
+    EntityType.URL,
+    EntityType.DATASET,
+    EntityType.METRIC,
+    EntityType.CONCEPT,
+    EntityType.EVENT,
+    EntityType.OTHER,
+)
+
+
+class GraphPredicate:
+    """Structural predicates used by graph/entity memory."""
+
+    MENTIONS_ENTITY = "mentions_entity"
+    MENTIONED_IN = "mentioned_in"
+    SUBJECT_ENTITY = "subject_entity"
+    FACT_SUBJECT_OF = "fact_subject_of"
+    OBJECT_ENTITY = "object_entity"
+    FACT_OBJECT_OF = "fact_object_of"
+    DERIVED_FROM = "derived_from"
+    DERIVED_SEMANTIC = "derived_semantic"
+    REFERENCES_RECORD = "references_record"
+    REFERENCED_BY = "referenced_by"
+
+
 class InterpretationStatus(str, Enum):
     """State of interpretation metadata attached to a record."""
 
@@ -141,6 +232,62 @@ class SourceKind(str, Enum):
     OBSERVATION = "observation"
     WORKING_STATE = "working_state"
     AGENT_TURN = "agent_turn"
+
+
+_PAYLOAD_ONEOF_KEYS = {
+    "episodic",
+    "working",
+    "semantic",
+    "competence",
+    "plan_graph",
+    "entity",
+}
+
+_LEGACY_ENTITY_TYPE_MAP = {
+    "person": EntityType.PERSON,
+    "tool": EntityType.TOOL,
+    "project": EntityType.PROJECT,
+    "file": EntityType.FILE,
+    "concept": EntityType.CONCEPT,
+    "other": EntityType.OTHER,
+}
+
+
+def _as_enum_value(value: Any) -> Any:
+    return value.value if isinstance(value, Enum) else value
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if dataclasses.is_dataclass(value):
+        out: dict[str, Any] = {}
+        for item in dataclasses.fields(value):
+            key = "from" if item.name == "from_" else item.name
+            out[key] = _plain(getattr(value, item.name))
+        return out
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _plain(item) for key, item in value.items()}
+    return value
+
+
+def _unwrap_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        for key in _PAYLOAD_ONEOF_KEYS:
+            if key in payload:
+                return payload[key]
+    return payload
+
+
+def _legacy_entity_type(value: Any) -> str:
+    raw = _as_enum_value(value)
+    if raw is None:
+        return EntityType.CONCEPT
+    return _LEGACY_ENTITY_TYPE_MAP.get(str(raw), str(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +310,7 @@ class TrustContext:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "max_sensitivity": self.max_sensitivity.value,
+            "max_sensitivity": _as_enum_value(self.max_sensitivity),
             "authenticated": self.authenticated,
             "actor_id": self.actor_id,
             "scopes": self.scopes,
@@ -321,9 +468,15 @@ class Mention:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Mention:
         raw_kind = data.get("entity_kind")
+        entity_kind: EntityKind | str | None = None
+        if raw_kind:
+            try:
+                entity_kind = EntityKind(raw_kind)
+            except ValueError:
+                entity_kind = str(raw_kind)
         return cls(
             surface=data.get("surface", ""),
-            entity_kind=EntityKind(raw_kind) if raw_kind else None,
+            entity_kind=entity_kind,
             canonical_entity_id=data.get("canonical_entity_id", ""),
             confidence=float(data.get("confidence", 0.0)),
             aliases=data.get("aliases", []) or [],
@@ -471,7 +624,7 @@ class MemoryRecord:
             provenance=provenance,
             relations=relations,
             interpretation=interpretation,
-            payload=data.get("payload", {}),
+            payload=_unwrap_payload(data.get("payload", {})),
             audit_log=audit_log,
         )
 
@@ -479,8 +632,8 @@ class MemoryRecord:
         """Serialize to a dictionary matching the JSON wire format."""
         d: dict[str, Any] = {
             "id": self.id,
-            "type": self.type.value,
-            "sensitivity": self.sensitivity.value,
+            "type": _as_enum_value(self.type),
+            "sensitivity": _as_enum_value(self.sensitivity),
             "confidence": self.confidence,
             "salience": self.salience,
         }
@@ -492,10 +645,18 @@ class MemoryRecord:
             d["created_at"] = self.created_at
         if self.updated_at:
             d["updated_at"] = self.updated_at
+        if self.lifecycle is not None:
+            d["lifecycle"] = _plain(self.lifecycle)
+        if self.provenance is not None:
+            d["provenance"] = _plain(self.provenance)
+        if self.relations:
+            d["relations"] = _plain(self.relations)
         if self.interpretation is not None:
-            d["interpretation"] = dataclasses.asdict(self.interpretation)
+            d["interpretation"] = _plain(self.interpretation)
         if self.payload:
-            d["payload"] = self.payload
+            d["payload"] = _plain(self.payload)
+        if self.audit_log:
+            d["audit_log"] = _plain(self.audit_log)
         return d
 
 
@@ -506,16 +667,19 @@ class SelectionResult:
     selected: list[MemoryRecord] = field(default_factory=list)
     confidence: float = 0.0
     needs_more: bool = False
+    scores: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SelectionResult:
         selected = data.get("selected", data.get("Selected", []))
         confidence = data.get("confidence", data.get("Confidence", 0.0))
         needs_more = data.get("needs_more", data.get("NeedsMore", False))
+        scores = data.get("scores", data.get("Scores", {})) or {}
         return cls(
             selected=[MemoryRecord.from_dict(item) for item in selected or []],
             confidence=float(confidence),
             needs_more=bool(needs_more),
+            scores={str(key): float(value) for key, value in scores.items()},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -523,6 +687,7 @@ class SelectionResult:
             "selected": [item.to_dict() for item in self.selected],
             "confidence": self.confidence,
             "needs_more": self.needs_more,
+            "scores": self.scores,
         }
 
 
@@ -988,22 +1153,73 @@ class PlanGraphPayload:
 
 
 @dataclass
+class EntityAlias:
+    """Alternate surface form for an entity."""
+
+    value: str = ""
+    kind: str = ""
+    locale: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | str) -> EntityAlias:
+        if isinstance(data, str):
+            return cls(value=data)
+        return cls(
+            value=data.get("value", ""),
+            kind=data.get("kind", ""),
+            locale=data.get("locale", ""),
+        )
+
+
+@dataclass
+class EntityIdentifier:
+    """External or scoped identifier for an entity."""
+
+    namespace: str = ""
+    value: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EntityIdentifier:
+        return cls(
+            namespace=data.get("namespace", ""),
+            value=data.get("value", ""),
+        )
+
+
+@dataclass
 class EntityPayload:
     """Typed payload for canonical entity records."""
 
     kind: str = "entity"
     canonical_name: str = ""
-    entity_kind: EntityKind | str = EntityKind.OTHER
-    aliases: list[str] = field(default_factory=list)
+    primary_type: str = ""
+    types: list[str] = field(default_factory=list)
+    aliases: list[EntityAlias] = field(default_factory=list)
+    identifiers: list[EntityIdentifier] = field(default_factory=list)
     summary: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntityPayload:
-        raw_kind = data.get("entity_kind", EntityKind.OTHER.value)
+        primary_type = data.get("primary_type", "")
+        if not primary_type and "entity_kind" in data:
+            primary_type = _legacy_entity_type(data.get("entity_kind"))
+
+        types = [str(item) for item in data.get("types", []) or []]
+        if primary_type and primary_type not in types:
+            types.insert(0, primary_type)
+
         return cls(
             kind=data.get("kind", "entity"),
             canonical_name=data.get("canonical_name", ""),
-            entity_kind=EntityKind(raw_kind) if raw_kind else EntityKind.OTHER,
-            aliases=data.get("aliases", []) or [],
+            primary_type=primary_type,
+            types=types,
+            aliases=[
+                EntityAlias.from_dict(item)
+                for item in data.get("aliases", []) or []
+            ],
+            identifiers=[
+                EntityIdentifier.from_dict(item)
+                for item in data.get("identifiers", []) or []
+            ],
             summary=data.get("summary", ""),
         )
