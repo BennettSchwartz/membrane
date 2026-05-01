@@ -2,7 +2,7 @@ import "dotenv/config";
 
 import assert from "node:assert/strict";
 
-import { MembraneClient, MemoryType } from "@gustycube/membrane";
+import { MembraneClient, MemoryType } from "@bennettschwartz/membrane";
 
 import { runAgentTurn } from "./agent.js";
 import { createLlmClient } from "./llm.js";

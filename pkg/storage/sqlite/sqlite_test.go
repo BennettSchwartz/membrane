@@ -1037,7 +1037,7 @@ func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
 		PrimaryType:   schema.EntityTypeProject,
 		Types:         []string{schema.EntityTypeProject, schema.EntityTypeRepository},
 		Aliases:       []schema.EntityAlias{{Value: "Project Orchid", Kind: "surface"}},
-		Identifiers:   []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/orchid"}},
+		Identifiers:   []schema.EntityIdentifier{{Namespace: "github", Value: "BennettSchwartz/orchid"}},
 		Summary:       "Orchid repository",
 	})
 	entity.Scope = "project:alpha"
@@ -1052,7 +1052,7 @@ func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
 	if len(byAlias) != 1 || byAlias[0].ID != entity.ID {
 		t.Fatalf("FindEntitiesByTerm alias = %+v, want %s", byAlias, entity.ID)
 	}
-	byIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/orchid", "project:alpha")
+	byIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "BennettSchwartz/orchid", "project:alpha")
 	if err != nil {
 		t.Fatalf("FindEntityByIdentifier: %v", err)
 	}
@@ -1063,7 +1063,7 @@ func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
 	payload := entity.Payload.(*schema.EntityPayload)
 	payload.CanonicalName = "Lotus"
 	payload.Aliases = []schema.EntityAlias{{Value: "Project Lotus"}}
-	payload.Identifiers = []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/lotus"}}
+	payload.Identifiers = []schema.EntityIdentifier{{Namespace: "github", Value: "BennettSchwartz/lotus"}}
 	if err := store.Update(ctx, entity); err != nil {
 		t.Fatalf("Update entity: %v", err)
 	}
@@ -1075,7 +1075,7 @@ func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
 	if len(oldAlias) != 0 {
 		t.Fatalf("Old alias lookup = %+v, want none after reindex", oldAlias)
 	}
-	newIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/lotus", "project:alpha")
+	newIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "BennettSchwartz/lotus", "project:alpha")
 	if err != nil {
 		t.Fatalf("FindEntityByIdentifier new: %v", err)
 	}

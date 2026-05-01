@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { MembraneClient } from "@gustycube/membrane";
+import { MembraneClient } from "@bennettschwartz/membrane";
 
 import { runAgentTurn } from "./agent.js";
 import { createLlmClient, hasLlmCredentials } from "./llm.js";

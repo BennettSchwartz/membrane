@@ -38,7 +38,7 @@ export function createLlmClient(): LlmConfig {
     maxRetries,
     defaultHeaders: openRouterKey
       ? {
-          "HTTP-Referer": "https://github.com/GustyCube/membrane",
+          "HTTP-Referer": "https://github.com/BennettSchwartz/membrane",
           "X-OpenRouter-Title": "Membrane Agent Harness"
         }
       : undefined

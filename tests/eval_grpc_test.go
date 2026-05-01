@@ -20,7 +20,6 @@ import (
 	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
-	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
