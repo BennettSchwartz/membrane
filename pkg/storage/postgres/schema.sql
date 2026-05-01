@@ -55,7 +55,30 @@ CREATE TABLE IF NOT EXISTS relations (
     predicate TEXT NOT NULL,
     target_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
     weight REAL DEFAULT 1.0 CHECK(weight >= 0 AND weight <= 1),
-    created_at TIMESTAMPTZ NOT NULL
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(source_id, predicate, target_id)
+);
+
+CREATE TABLE IF NOT EXISTS entity_terms (
+    record_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
+    normalized_term TEXT NOT NULL,
+    term_kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(record_id, normalized_term, term_kind)
+);
+
+CREATE TABLE IF NOT EXISTS entity_types (
+    record_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
+    entity_type TEXT NOT NULL,
+    PRIMARY KEY(record_id, entity_type)
+);
+
+CREATE TABLE IF NOT EXISTS entity_identifiers (
+    record_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    value TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(record_id, namespace, value)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -99,6 +122,9 @@ CREATE INDEX IF NOT EXISTS idx_records_scope_sensitivity ON memory_records(scope
 CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate);
+CREATE INDEX IF NOT EXISTS idx_entity_terms_lookup ON entity_terms(normalized_term, scope);
+CREATE INDEX IF NOT EXISTS idx_entity_types_type ON entity_types(entity_type);
+CREATE INDEX IF NOT EXISTS idx_entity_identifiers_lookup ON entity_identifiers(namespace, value, scope);
 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_log(record_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);

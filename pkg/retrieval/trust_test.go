@@ -30,6 +30,20 @@ func TestTrustAllowsRejectsInvalidMaxSensitivity(t *testing.T) {
 	}
 }
 
+func TestTrustAllowsRedactedHonorsScope(t *testing.T) {
+	trust := NewTrustContext(schema.SensitivityLow, true, "actor", []string{"project:a"})
+
+	inScope := &schema.MemoryRecord{Sensitivity: schema.SensitivityMedium, Scope: "project:a"}
+	if !trust.AllowsRedacted(inScope) {
+		t.Fatalf("expected one-level-higher in-scope record to allow redacted access")
+	}
+
+	outOfScope := &schema.MemoryRecord{Sensitivity: schema.SensitivityMedium, Scope: "project:b"}
+	if trust.AllowsRedacted(outOfScope) {
+		t.Fatalf("expected out-of-scope record to deny redacted access")
+	}
+}
+
 func TestFilterBySensitivitySkipsInvalidValues(t *testing.T) {
 	records := []*schema.MemoryRecord{
 		{ID: "ok-low", Sensitivity: schema.SensitivityLow},

@@ -284,3 +284,60 @@ func TestExtractionLog(t *testing.T) {
 		t.Fatalf("FindSemanticExact mismatch = %#v, want nil", miss)
 	}
 }
+
+func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	entity := schema.NewMemoryRecord("entity-lookup", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject, schema.EntityTypeRepository},
+		Aliases:       []schema.EntityAlias{{Value: "Project Orchid", Kind: "surface"}},
+		Identifiers:   []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/orchid"}},
+		Summary:       "Orchid repository",
+	})
+	entity.Scope = "project:alpha"
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+
+	byAlias, err := store.FindEntitiesByTerm(ctx, "project orchid", "project:alpha", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm alias: %v", err)
+	}
+	if len(byAlias) != 1 || byAlias[0].ID != entity.ID {
+		t.Fatalf("FindEntitiesByTerm alias = %+v, want %s", byAlias, entity.ID)
+	}
+	byIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/orchid", "project:alpha")
+	if err != nil {
+		t.Fatalf("FindEntityByIdentifier: %v", err)
+	}
+	if byIdentifier.ID != entity.ID {
+		t.Fatalf("FindEntityByIdentifier ID = %q, want %q", byIdentifier.ID, entity.ID)
+	}
+
+	payload := entity.Payload.(*schema.EntityPayload)
+	payload.CanonicalName = "Lotus"
+	payload.Aliases = []schema.EntityAlias{{Value: "Project Lotus"}}
+	payload.Identifiers = []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/lotus"}}
+	if err := store.Update(ctx, entity); err != nil {
+		t.Fatalf("Update entity: %v", err)
+	}
+
+	oldAlias, err := store.FindEntitiesByTerm(ctx, "project orchid", "project:alpha", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm old alias: %v", err)
+	}
+	if len(oldAlias) != 0 {
+		t.Fatalf("Old alias lookup = %+v, want none after reindex", oldAlias)
+	}
+	newIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/lotus", "project:alpha")
+	if err != nil {
+		t.Fatalf("FindEntityByIdentifier new: %v", err)
+	}
+	if newIdentifier.ID != entity.ID {
+		t.Fatalf("New identifier ID = %q, want %q", newIdentifier.ID, entity.ID)
+	}
+}
