@@ -28,8 +28,9 @@ func TestRetrieveGraphReranksEntityRootsAndExpandsNeighbors(t *testing.T) {
 	entity := schema.NewMemoryRecord("entity-1", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
 		Kind:          "entity",
 		CanonicalName: "Orchid",
-		EntityKind:    schema.EntityKindProject,
-		Aliases:       []string{"staging deploy target"},
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "staging deploy target"}},
 		Summary:       "Orchid entity",
 	})
 	entity.CreatedAt = now
@@ -95,8 +96,9 @@ func TestRetrieveGraphRedactsNeighborPayloadAndInterpretation(t *testing.T) {
 	entity := schema.NewMemoryRecord("entity-2", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
 		Kind:          "entity",
 		CanonicalName: "Orchid",
-		EntityKind:    schema.EntityKindProject,
-		Aliases:       []string{"orchid"},
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "orchid"}},
 		Summary:       "Orchid entity",
 	})
 	entity.CreatedAt = now
@@ -155,5 +157,86 @@ func TestRetrieveGraphRedactsNeighborPayloadAndInterpretation(t *testing.T) {
 	}
 	if redacted.Interpretation != nil {
 		t.Fatalf("Interpretation = %+v, want nil after redaction", redacted.Interpretation)
+	}
+}
+
+func TestRetrieveGraphBoostsSemanticRootsThroughLinkedEntity(t *testing.T) {
+	svc, store := newGraphTestService(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+
+	entity := schema.NewMemoryRecord("entity-3", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "orchid deploy target"}},
+		Summary:       "Orchid project entity",
+	})
+	entity.CreatedAt = now
+	entity.UpdatedAt = now
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+
+	semantic := schema.NewMemoryRecord("semantic-entity-linked", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   entity.ID,
+		Predicate: "deploy_target_for",
+		Object:    "staging",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	semantic.CreatedAt = now
+	semantic.UpdatedAt = now
+	semantic.Salience = 0.2
+	if err := store.Create(ctx, semantic); err != nil {
+		t.Fatalf("Create semantic: %v", err)
+	}
+	if err := store.AddRelation(ctx, semantic.ID, schema.Relation{TargetID: entity.ID, Predicate: "subject_entity", Weight: 1.0, CreatedAt: now}); err != nil {
+		t.Fatalf("AddRelation semantic->entity: %v", err)
+	}
+	if err := store.AddRelation(ctx, entity.ID, schema.Relation{TargetID: semantic.ID, Predicate: "fact_subject_of", Weight: 1.0, CreatedAt: now}); err != nil {
+		t.Fatalf("AddRelation entity->semantic: %v", err)
+	}
+
+	unrelated := schema.NewMemoryRecord("semantic-unrelated", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "billing",
+		Predicate: "owned_by",
+		Object:    "finance",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	unrelated.CreatedAt = now
+	unrelated.UpdatedAt = now
+	unrelated.Salience = 1.0
+	if err := store.Create(ctx, unrelated); err != nil {
+		t.Fatalf("Create unrelated semantic: %v", err)
+	}
+
+	resp, err := svc.RetrieveGraph(ctx, &RetrieveGraphRequest{
+		TaskDescriptor: "Orchid deploy target",
+		Trust:          NewTrustContext(schema.SensitivityLow, true, "tester", nil),
+		MemoryTypes:    []schema.MemoryType{schema.MemoryTypeSemantic},
+		RootLimit:      1,
+		NodeLimit:      3,
+		EdgeLimit:      4,
+		MaxHops:        1,
+	})
+	if err != nil {
+		t.Fatalf("RetrieveGraph: %v", err)
+	}
+
+	if len(resp.RootIDs) != 1 || resp.RootIDs[0] != semantic.ID {
+		t.Fatalf("RootIDs = %v, want [%s]", resp.RootIDs, semantic.ID)
+	}
+	foundEntityNeighbor := false
+	for _, node := range resp.Nodes {
+		if node.Record != nil && node.Record.ID == entity.ID && node.Hop == 1 {
+			foundEntityNeighbor = true
+			break
+		}
+	}
+	if !foundEntityNeighbor {
+		t.Fatalf("Nodes = %+v, want linked entity neighbor", resp.Nodes)
 	}
 }

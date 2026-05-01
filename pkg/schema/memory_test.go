@@ -97,9 +97,13 @@ func TestMemoryRecordJSONRoundTripPreservesInterpretationAndEntityPayload(t *tes
 	rec := NewMemoryRecord("entity-1", MemoryTypeEntity, SensitivityLow, &EntityPayload{
 		Kind:          "entity",
 		CanonicalName: "Orchid",
-		EntityKind:    EntityKindProject,
-		Aliases:       []string{"orchid", "staging target"},
-		Summary:       "Staging deploy target",
+		PrimaryType:   EntityTypeProject,
+		Types:         []string{EntityTypeProject},
+		Aliases: []EntityAlias{
+			{Value: "orchid"},
+			{Value: "staging target"},
+		},
+		Summary: "Staging deploy target",
 	})
 	rec.Interpretation = &Interpretation{
 		Status:               InterpretationStatusResolved,

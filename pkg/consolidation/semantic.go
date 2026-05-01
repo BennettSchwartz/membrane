@@ -155,6 +155,7 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, int, error
 				},
 			}
 
+			entityEdges := canonicalizeSemanticRecordEntities(ctx, c.store, newRec)
 			err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
 				if err := tx.Create(ctx, newRec); err != nil {
 					return err
@@ -165,7 +166,23 @@ func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, int, error
 					Weight:    1.0,
 					CreatedAt: now,
 				}
-				return tx.AddRelation(ctx, newRec.ID, rel)
+				if err := tx.AddRelation(ctx, newRec.ID, rel); err != nil {
+					return err
+				}
+				for _, edge := range entityEdges {
+					if edge.SourceID == newRec.ID {
+						continue
+					}
+					if err := tx.AddRelation(ctx, edge.SourceID, schema.Relation{
+						Predicate: edge.Predicate,
+						TargetID:  edge.TargetID,
+						Weight:    edge.Weight,
+						CreatedAt: edge.CreatedAt,
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
 			})
 			if err != nil {
 				return created, reinforced, err

@@ -184,6 +184,7 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 			},
 		}
 
+		entityEdges := linkRecordToEntityTerms(ctx, c.store, newRec, g.tools, "uses", "used_by", now)
 		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
 			if err := tx.Create(ctx, newRec); err != nil {
 				return err
@@ -196,6 +197,19 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 					CreatedAt: now,
 				}
 				if err := tx.AddRelation(ctx, newRec.ID, rel); err != nil {
+					return err
+				}
+			}
+			for _, edge := range entityEdges {
+				if edge.SourceID == newRec.ID {
+					continue
+				}
+				if err := tx.AddRelation(ctx, edge.SourceID, schema.Relation{
+					Predicate: edge.Predicate,
+					TargetID:  edge.TargetID,
+					Weight:    edge.Weight,
+					CreatedAt: edge.CreatedAt,
+				}); err != nil {
 					return err
 				}
 			}

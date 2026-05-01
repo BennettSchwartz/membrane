@@ -309,8 +309,9 @@ func TestCreateUpdatePreservesInterpretationAndRelations(t *testing.T) {
 	entity := schema.NewMemoryRecord("entity-001", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
 		Kind:          "entity",
 		CanonicalName: "Orchid",
-		EntityKind:    schema.EntityKindProject,
-		Aliases:       []string{"orchid"},
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "orchid"}},
 		Summary:       "Orchid entity",
 	})
 	if err := store.Create(ctx, entity); err != nil {
@@ -755,6 +756,21 @@ func TestAddRelation(t *testing.T) {
 		t.Errorf("Relation.Weight = %v, want 0.75", r.Weight)
 	}
 
+	rel.Weight = 0.5
+	if err := store.AddRelation(ctx, "rel-src", rel); err != nil {
+		t.Fatalf("AddRelation duplicate: %v", err)
+	}
+	gotRelations, err := store.GetRelations(ctx, "rel-src")
+	if err != nil {
+		t.Fatalf("GetRelations duplicate: %v", err)
+	}
+	if len(gotRelations) != 1 {
+		t.Fatalf("Relations len after duplicate add = %d, want 1", len(gotRelations))
+	}
+	if gotRelations[0].Weight != 0.5 {
+		t.Fatalf("Duplicate relation weight = %v, want updated weight 0.5", gotRelations[0].Weight)
+	}
+
 	// AddRelation on non-existent source.
 	err = store.AddRelation(ctx, "nonexistent", rel)
 	if !errors.Is(err, storage.ErrNotFound) {
@@ -1008,5 +1024,62 @@ func TestCascadeDelete(t *testing.T) {
 	}
 	if len(rels) != 0 {
 		t.Errorf("GetRelations cascade-tgt = %d, want 0 (target had no outgoing rels)", len(rels))
+	}
+}
+
+func TestEntityLookupIndexesTermsTypesAndIdentifiers(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	entity := schema.NewMemoryRecord("entity-lookup", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject, schema.EntityTypeRepository},
+		Aliases:       []schema.EntityAlias{{Value: "Project Orchid", Kind: "surface"}},
+		Identifiers:   []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/orchid"}},
+		Summary:       "Orchid repository",
+	})
+	entity.Scope = "project:alpha"
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+
+	byAlias, err := store.FindEntitiesByTerm(ctx, "project orchid", "project:alpha", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm alias: %v", err)
+	}
+	if len(byAlias) != 1 || byAlias[0].ID != entity.ID {
+		t.Fatalf("FindEntitiesByTerm alias = %+v, want %s", byAlias, entity.ID)
+	}
+	byIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/orchid", "project:alpha")
+	if err != nil {
+		t.Fatalf("FindEntityByIdentifier: %v", err)
+	}
+	if byIdentifier.ID != entity.ID {
+		t.Fatalf("FindEntityByIdentifier ID = %q, want %q", byIdentifier.ID, entity.ID)
+	}
+
+	payload := entity.Payload.(*schema.EntityPayload)
+	payload.CanonicalName = "Lotus"
+	payload.Aliases = []schema.EntityAlias{{Value: "Project Lotus"}}
+	payload.Identifiers = []schema.EntityIdentifier{{Namespace: "github", Value: "GustyCube/lotus"}}
+	if err := store.Update(ctx, entity); err != nil {
+		t.Fatalf("Update entity: %v", err)
+	}
+
+	oldAlias, err := store.FindEntitiesByTerm(ctx, "project orchid", "project:alpha", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm old alias: %v", err)
+	}
+	if len(oldAlias) != 0 {
+		t.Fatalf("Old alias lookup = %+v, want none after reindex", oldAlias)
+	}
+	newIdentifier, err := store.FindEntityByIdentifier(ctx, "github", "GustyCube/lotus", "project:alpha")
+	if err != nil {
+		t.Fatalf("FindEntityByIdentifier new: %v", err)
+	}
+	if newIdentifier.ID != entity.ID {
+		t.Fatalf("New identifier ID = %q, want %q", newIdentifier.ID, entity.ID)
 	}
 }

@@ -159,16 +159,33 @@ func (e *SemanticExtractor) upsertTriple(ctx context.Context, source *schema.Mem
 
 	now := time.Now().UTC()
 	newRec := newExtractedSemanticRecord(source, triple, now)
+	entityEdges := canonicalizeSemanticRecordEntities(ctx, e.store, newRec)
 	if err := storage.WithTransaction(ctx, e.store, func(tx storage.Transaction) error {
 		if err := tx.Create(ctx, newRec); err != nil {
 			return err
 		}
-		return tx.AddRelation(ctx, newRec.ID, schema.Relation{
+		if err := tx.AddRelation(ctx, newRec.ID, schema.Relation{
 			Predicate: "derived_from",
 			TargetID:  source.ID,
 			Weight:    1.0,
 			CreatedAt: now,
-		})
+		}); err != nil {
+			return err
+		}
+		for _, edge := range entityEdges {
+			if edge.SourceID == newRec.ID {
+				continue
+			}
+			if err := tx.AddRelation(ctx, edge.SourceID, schema.Relation{
+				Predicate: edge.Predicate,
+				TargetID:  edge.TargetID,
+				Weight:    edge.Weight,
+				CreatedAt: edge.CreatedAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return false, fmt.Errorf("create semantic record: %w", err)
 	}

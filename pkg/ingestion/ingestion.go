@@ -330,11 +330,80 @@ func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRe
 
 	record := s.buildRecord(candidate, memType, policyResult, &payload)
 
-	if err := s.store.Create(ctx, record); err != nil {
+	semanticEntityEdges := s.canonicalizeSemanticEntities(ctx, record)
+	if err := storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+		if err := tx.Create(ctx, record); err != nil {
+			return err
+		}
+		for _, edge := range semanticEntityEdges {
+			if edge.SourceID == record.ID {
+				continue
+			}
+			if err := tx.AddRelation(ctx, edge.SourceID, schema.Relation{
+				Predicate: edge.Predicate,
+				TargetID:  edge.TargetID,
+				Weight:    edge.Weight,
+				CreatedAt: edge.CreatedAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("ingestion: store observation: %w", err)
 	}
 
 	return record, nil
+}
+
+func (s *Service) canonicalizeSemanticEntities(ctx context.Context, record *schema.MemoryRecord) []schema.GraphEdge {
+	payload, ok := record.Payload.(*schema.SemanticPayload)
+	if !ok || payload == nil {
+		return nil
+	}
+	now := record.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	edges := make([]schema.GraphEdge, 0, 4)
+	if entity := s.lookupEntityByTerm(ctx, payload.Subject, record.Scope); entity != nil {
+		payload.Subject = entity.ID
+		record.Relations = append(record.Relations, schema.Relation{
+			Predicate: "subject_entity",
+			TargetID:  entity.ID,
+			Weight:    1.0,
+			CreatedAt: now,
+		})
+		edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: "subject_entity", TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
+		edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: "fact_subject_of", TargetID: record.ID, Weight: 1.0, CreatedAt: now})
+	}
+	if object, ok := payload.Object.(string); ok {
+		if entity := s.lookupEntityByTerm(ctx, object, record.Scope); entity != nil {
+			payload.Object = entity.ID
+			record.Relations = append(record.Relations, schema.Relation{
+				Predicate: "object_entity",
+				TargetID:  entity.ID,
+				Weight:    1.0,
+				CreatedAt: now,
+			})
+			edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: "object_entity", TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
+			edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: "fact_object_of", TargetID: record.ID, Weight: 1.0, CreatedAt: now})
+		}
+	}
+	record.Payload = payload
+	return edges
+}
+
+func (s *Service) lookupEntityByTerm(ctx context.Context, term, scope string) *schema.MemoryRecord {
+	lookup, ok := s.store.(storage.EntityLookup)
+	if !ok {
+		return nil
+	}
+	matches, err := lookup.FindEntitiesByTerm(ctx, term, scope, 1)
+	if err != nil || len(matches) == 0 || matches[0] == nil || matches[0].Type != schema.MemoryTypeEntity {
+		return nil
+	}
+	return matches[0]
 }
 
 // IngestOutcome updates an existing episodic record with outcome data.
