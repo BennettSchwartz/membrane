@@ -181,7 +181,7 @@ episodicPayload := &schema.EpisodicPayload{
 //    - Intent: "setup_project" (from first timeline event kind)
 
 // 3. Retrieve plan graphs for a task
-resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+resp, _ := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
     TaskDescriptor: "set up a new project",
     Trust: &retrieval.TrustContext{
         MaxSensitivity: schema.SensitivityLow,
@@ -190,9 +190,13 @@ resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
     MemoryTypes: []schema.MemoryType{
         schema.MemoryTypePlanGraph,
     },
+    RootLimit: 5,
+    NodeLimit: 10,
+    MaxHops:   0,
 })
 
-for _, r := range resp.Records {
+for _, node := range resp.Nodes {
+    r := node.Record
     if p, ok := r.Payload.(*schema.PlanGraphPayload); ok {
         fmt.Printf("Plan: %s (intent=%s, executions=%d, failure_rate=%.2f)\n",
             p.PlanID,
@@ -210,7 +214,9 @@ for _, r := range resp.Records {
 }
 
 // 4. Reinforce the plan after a successful run
-m.Reinforce(ctx, r.ID, "project-agent", "plan completed successfully")
+if len(resp.RootIDs) > 0 {
+    m.Reinforce(ctx, resp.RootIDs[0], "project-agent", "plan completed successfully")
+}
 ```
 
 ---

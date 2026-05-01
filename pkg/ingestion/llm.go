@@ -14,6 +14,7 @@ import (
 )
 
 const interpreterPrompt = "You are a memory-ingest interpretation system. Given a candidate memory capture, return a JSON object with keys: status, summary, proposed_type, topical_labels, mentions, relation_candidates, reference_candidates, extraction_confidence. Use only the allowed memory types: episodic, working, semantic, competence, plan_graph, entity. Each mention must use keys: surface, entity_kind, canonical_entity_id, confidence, aliases. Each relation candidate must use keys: predicate, target_record_id, target_entity_id, confidence, resolved. Each reference candidate must use keys: ref, target_record_id, target_entity_id, confidence, resolved. If something is unknown, leave it empty. Return only JSON."
+const resolverPrompt = "You are a memory-resolution system. You will receive an existing interpretation plus a bounded candidate set of known memory records. Resolve mention canonical_entity_id values and relation/reference target_record_id or target_entity_id values only when directly supported by the candidate set. Prefer leaving fields unresolved over guessing. Preserve the existing summary, proposed_type, topical_labels, mentions, relation_candidates, reference_candidates, and extraction_confidence shape. Return only JSON."
 
 // HTTPInterpreter calls an OpenAI-compatible endpoint for ingest interpretation.
 type HTTPInterpreter struct {
@@ -37,22 +38,46 @@ func NewHTTPInterpreter(endpoint, model, apiKey string) *HTTPInterpreter {
 
 // Interpret extracts ingest interpretation metadata for a capture request.
 func (c *HTTPInterpreter) Interpret(ctx context.Context, req InterpretRequest) (*schema.Interpretation, error) {
+	return c.callInterpretationEndpoint(ctx, interpreterPrompt, map[string]any{
+		"source":             req.Source,
+		"source_kind":        req.SourceKind,
+		"content":            req.Content,
+		"context":            req.Context,
+		"reason_to_remember": req.ReasonToRemember,
+		"proposed_type":      req.ProposedType,
+		"summary":            req.Summary,
+		"tags":               req.Tags,
+		"scope":              req.Scope,
+		"timestamp":          req.Timestamp.UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// Resolve performs a bounded second-pass resolution against candidate records.
+func (c *HTTPInterpreter) Resolve(ctx context.Context, req ResolveRequest) (*schema.Interpretation, error) {
+	return c.callInterpretationEndpoint(ctx, resolverPrompt, map[string]any{
+		"capture": map[string]any{
+			"source":             req.Capture.Source,
+			"source_kind":        req.Capture.SourceKind,
+			"content":            req.Capture.Content,
+			"context":            req.Capture.Context,
+			"reason_to_remember": req.Capture.ReasonToRemember,
+			"proposed_type":      req.Capture.ProposedType,
+			"summary":            req.Capture.Summary,
+			"tags":               req.Capture.Tags,
+			"scope":              req.Capture.Scope,
+			"timestamp":          req.Capture.Timestamp.UTC().Format(time.RFC3339Nano),
+		},
+		"interpretation": req.Interpretation,
+		"candidates":     req.Candidates,
+	})
+}
+
+func (c *HTTPInterpreter) callInterpretationEndpoint(ctx context.Context, prompt string, payload map[string]any) (*schema.Interpretation, error) {
 	body := map[string]any{
 		"model": c.model,
 		"messages": []map[string]string{
-			{"role": "system", "content": interpreterPrompt},
-			{"role": "user", "content": mustJSON(map[string]any{
-				"source":             req.Source,
-				"source_kind":        req.SourceKind,
-				"content":            req.Content,
-				"context":            req.Context,
-				"reason_to_remember": req.ReasonToRemember,
-				"proposed_type":      req.ProposedType,
-				"summary":            req.Summary,
-				"tags":               req.Tags,
-				"scope":              req.Scope,
-				"timestamp":          req.Timestamp.UTC().Format(time.RFC3339Nano),
-			})},
+			{"role": "system", "content": prompt},
+			{"role": "user", "content": mustJSON(payload)},
 		},
 		"temperature": 0,
 	}

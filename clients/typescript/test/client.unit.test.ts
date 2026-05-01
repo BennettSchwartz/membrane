@@ -39,18 +39,16 @@ describe("MembraneClient unit", () => {
       payload: {
         kind: "entity",
         canonical_name: "Membrane",
-        entity_kind: "project",
-        aliases: ["membrane"]
+        primary_type: "Project",
+        types: ["Project"],
+        aliases: [{ value: "membrane" }]
       }
     };
 
     const transport = new FakeTransport({
-      primary_record: Buffer.from(JSON.stringify(primary), "utf8"),
-      created_records: [Buffer.from(JSON.stringify(entity), "utf8")],
-      edges: Buffer.from(
-        JSON.stringify([{ source_id: "source-1", predicate: "mentions_entity", target_id: "entity-1" }]),
-        "utf8"
-      )
+      primary_record: primary,
+      created_records: [entity],
+      edges: [{ source_id: "source-1", predicate: "mentions_entity", target_id: "entity-1" }]
     });
     const client = new MembraneClient("localhost:9090", { transport });
 
@@ -68,8 +66,8 @@ describe("MembraneClient unit", () => {
     );
 
     expect(transport.calls[0]?.method).toBe("CaptureMemory");
-    expect(Buffer.isBuffer(transport.calls[0]?.request.content)).toBe(true);
-    expect(Buffer.isBuffer(transport.calls[0]?.request.context)).toBe(true);
+    expect(transport.calls[0]?.request.content).toMatchObject({ kind: "structValue" });
+    expect(transport.calls[0]?.request.context).toMatchObject({ kind: "structValue" });
     expect(transport.calls[0]?.request.source_kind).toBe("agent_turn");
     expect(result.primary_record.id).toBe("source-1");
     expect(result.created_records[0]?.id).toBe("entity-1");
@@ -78,26 +76,18 @@ describe("MembraneClient unit", () => {
 
   it("retrieveGraph parses graph nodes, edges, and selection", async () => {
     const transport = new FakeTransport({
-      nodes: Buffer.from(
-        JSON.stringify([
-          { record: asRecord("root-1"), root: true, hop: 0 },
-          { record: asRecord("neighbor-1"), root: false, hop: 1 }
-        ]),
-        "utf8"
-      ),
-      edges: Buffer.from(
-        JSON.stringify([{ source_id: "root-1", predicate: "mentions_entity", target_id: "neighbor-1" }]),
-        "utf8"
-      ),
+      nodes: [
+        { record: asRecord("root-1"), root: true, hop: 0 },
+        { record: asRecord("neighbor-1"), root: false, hop: 1 }
+      ],
+      edges: [{ source_id: "root-1", predicate: "mentions_entity", target_id: "neighbor-1" }],
       root_ids: ["root-1"],
-      selection: Buffer.from(
-        JSON.stringify({
-          selected: [asRecord("root-1")],
-          confidence: 0.8,
-          needs_more: false
-        }),
-        "utf8"
-      )
+      selection: {
+        selected: [asRecord("root-1")],
+        confidence: 0.8,
+        needs_more: false,
+        scores: { "root-1": 0.91 }
+      }
     });
     const client = new MembraneClient("localhost:9090", { transport });
 
@@ -111,10 +101,20 @@ describe("MembraneClient unit", () => {
     expect(result.edges[0]?.target_id).toBe("neighbor-1");
     expect(result.root_ids).toEqual(["root-1"]);
     expect(result.selection?.confidence).toBe(0.8);
+    expect(result.selection?.scores?.["root-1"]).toBe(0.91);
   });
 
   it("getMetrics parses snapshot payload", async () => {
-    const transport = new FakeTransport({ snapshot: Buffer.from(JSON.stringify({ total_records: 42 }), "utf8") });
+    const transport = new FakeTransport({
+      snapshot: {
+        kind: "structValue",
+        structValue: {
+          fields: {
+            total_records: { kind: "numberValue", numberValue: 42 }
+          }
+        }
+      }
+    });
     const client = new MembraneClient("localhost:9090", { transport });
 
     const snapshot = await client.getMetrics();
@@ -128,9 +128,9 @@ describe("MembraneClient unit", () => {
         name: "capture_memory",
         expectedMethod: "CaptureMemory",
         response: {
-          primary_record: Buffer.from(JSON.stringify(asRecord("alias-capture")), "utf8"),
+          primary_record: asRecord("alias-capture"),
           created_records: [],
-          edges: Buffer.from("[]", "utf8")
+          edges: []
         },
         invoke: (client: MembraneClient) => client.capture_memory({ text: "remember this" }),
         assertResult: (result: unknown) => expect((result as { primary_record: MemoryRecord }).primary_record.id).toBe("alias-capture")
@@ -139,8 +139,8 @@ describe("MembraneClient unit", () => {
         name: "retrieve_graph",
         expectedMethod: "RetrieveGraph",
         response: {
-          nodes: Buffer.from(JSON.stringify([{ record: asRecord("alias-graph"), root: true, hop: 0 }]), "utf8"),
-          edges: Buffer.from("[]", "utf8"),
+          nodes: [{ record: asRecord("alias-graph"), root: true, hop: 0 }],
+          edges: [],
           root_ids: ["alias-graph"]
         },
         invoke: (client: MembraneClient) => client.retrieve_graph("alias graph"),
@@ -150,14 +150,23 @@ describe("MembraneClient unit", () => {
       {
         name: "retrieve_by_id",
         expectedMethod: "RetrieveByID",
-        response: { record: Buffer.from(JSON.stringify(asRecord("alias-retrieve")), "utf8") },
+        response: { record: asRecord("alias-retrieve") },
         invoke: (client: MembraneClient) => client.retrieve_by_id("rec-1"),
         assertResult: (result: unknown) => expect((result as MemoryRecord).id).toBe("alias-retrieve")
       },
       {
         name: "get_metrics",
         expectedMethod: "GetMetrics",
-        response: { snapshot: Buffer.from(JSON.stringify({ total_records: 7 }), "utf8") },
+        response: {
+          snapshot: {
+            kind: "structValue",
+            structValue: {
+              fields: {
+                total_records: { kind: "numberValue", numberValue: 7 }
+              }
+            }
+          }
+        },
         invoke: (client: MembraneClient) => client.get_metrics(),
         assertResult: (result: unknown) => expect((result as { total_records: number }).total_records).toBe(7)
       }

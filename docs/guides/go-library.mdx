@@ -3,7 +3,7 @@ title: "Go Library"
 description: "Use Membrane as an embedded Go library without running the daemon."
 ---
 
-Membrane can be used directly as a Go package, embedding the full memory substrate—storage, ingestion, retrieval, decay, revision, and metrics—into your own process.
+Membrane can run inside your Go process. The embedded facade exposes the same core model as the daemon: graph-aware capture, trust-gated graph retrieval, revision, reinforcement, and metrics.
 
 ## Installation
 
@@ -11,13 +11,9 @@ Membrane can be used directly as a Go package, embedding the full memory substra
 go get github.com/BennettSchwartz/membrane
 ```
 
-## Creating a Membrane instance
+## Create An Instance
 
-Start by loading or constructing a `Config`, then pass it to `membrane.New`.
-
-<CodeGroup>
-
-```go use defaults
+```go
 cfg := membrane.DefaultConfig()
 cfg.DBPath = "my-agent.db"
 
@@ -25,27 +21,7 @@ m, err := membrane.New(cfg)
 if err != nil {
     log.Fatal(err)
 }
-```
 
-```go load from file
-cfg, err := membrane.LoadConfig("/etc/membrane/config.yaml")
-if err != nil {
-    log.Fatal(err)
-}
-
-m, err := membrane.New(cfg)
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-</CodeGroup>
-
-### Starting and stopping
-
-`Start` launches the background decay and consolidation schedulers. `Stop` gracefully shuts them down and closes the store.
-
-```go
 ctx := context.Background()
 if err := m.Start(ctx); err != nil {
     log.Fatal(err)
@@ -54,223 +30,176 @@ defer m.Stop()
 ```
 
 <Note>
-Always call `m.Stop()` (or `defer m.Stop()`) to flush the store and release database locks before your process exits.
+Always call `m.Stop()` to shut down schedulers and close the database.
 </Note>
 
 ---
 
-## Ingestion methods
+## Capture Memory
 
-All ingestion calls return a `*schema.MemoryRecord` containing the assigned UUID, type, sensitivity, salience, and confidence.
-
-### IngestEvent
-
-Captures a raw event (tool calls, errors, observations) as an **episodic** record.
+Use `CaptureMemory` for events, tool output, observations, working state, and agent turns. The response contains the primary record plus any linked records or graph edges.
 
 ```go
-rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-    Source:    "build-agent",
-    EventKind: "tool_call",
-    Ref:       "build#42",
-    Summary:   "Executed go build, failed with linker error",
-    Tags:      []string{"build", "error"},
+capture, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+    Source:           "auth-agent",
+    SourceKind:       "tool_output",
+    Content:          map[string]any{
+        "tool_name": "go test",
+        "args":      map[string]any{"packages": []string{"./pkg/auth"}},
+        "result":    map[string]any{"exit_code": 0, "stdout": "ok ./pkg/auth"},
+    },
+    Context:          map[string]any{"thread_id": "session-001"},
+    ReasonToRemember: "Successful auth package verification",
+    Summary:          "Auth package tests passed",
+    Tags:             []string{"auth", "tests"},
+    Scope:            "project-auth",
+    Sensitivity:      schema.SensitivityLow,
 })
-fmt.Printf("Ingested: %s\n", rec.ID)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(capture.PrimaryRecord.ID)
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `Source` | `string` | Yes | Actor or system that produced the event |
-| `EventKind` | `string` | Yes | Event type, e.g. `"tool_call"`, `"error"`, `"user_input"` |
-| `Ref` | `string` | Yes | Source event reference ID |
-| `Summary` | `string` | No | Human-readable summary |
-| `Timestamp` | `time.Time` | No | Defaults to `time.Now()` |
-| `Tags` | `[]string` | No | Labels for categorization |
-| `Scope` | `string` | No | Visibility scope |
-| `Sensitivity` | `schema.Sensitivity` | No | Overrides default sensitivity |
+### Common Source Kinds
 
-### IngestToolOutput
+| Source kind | Use for |
+|-------------|---------|
+| `event` | User messages, agent replies, errors, status changes |
+| `tool_output` | Tool calls and structured results |
+| `observation` | Subject-predicate-object facts |
+| `working_state` | In-flight task state |
+| `agent_turn` | Generic agent turn capture |
 
-Captures a tool invocation with its arguments and result as an **episodic** record. The payload includes a `ToolGraph` node for dependency tracking.
+### Observation Example
 
 ```go
-rec, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
-    Source:   "build-agent",
-    ToolName: "go_build",
-    Args:     map[string]any{"target": "./cmd/..."},
-    Result:   map[string]any{"exit_code": 1, "stderr": "linker error"},
-    Tags:     []string{"build"},
-})
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Source` | `string` | Actor that invoked the tool |
-| `ToolName` | `string` | Name of the tool invoked |
-| `Args` | `map[string]any` | Arguments passed to the tool |
-| `Result` | `any` | Output produced by the tool |
-| `DependsOn` | `[]string` | IDs of tool nodes this output depends on |
-| `Tags` | `[]string` | Labels for categorization |
-| `Scope` | `string` | Visibility scope |
-
-### IngestObservation
-
-Captures a subject-predicate-object observation as a **semantic** record.
-
-```go
-rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-    Source:    "build-agent",
-    Subject:   "user",
-    Predicate: "prefers_language",
-    Object:    "go",
-    Tags:      []string{"preferences"},
+_, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+    Source:     "auth-agent",
+    SourceKind: "observation",
+    Content: map[string]any{
+        "subject":   "user",
+        "predicate": "prefers_language",
+        "object":    "Go",
+    },
+    ReasonToRemember: "Remember user language preference",
+    Summary:          "User prefers Go",
+    Tags:             []string{"preference"},
+    Sensitivity:      schema.SensitivityLow,
 })
 ```
 
-### IngestOutcome
-
-Updates an existing episodic record with an outcome status. The target must be an episodic record.
+### Working State Example
 
 ```go
-rec, err := m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
-    Source:         "build-agent",
-    TargetRecordID: episodicRecordID,
+_, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+    Source:     "auth-agent",
+    SourceKind: "working_state",
+    Content: map[string]any{
+        "thread_id":       "session-001",
+        "state":           "executing",
+        "next_actions":    []string{"run tests", "review output"},
+        "context_summary": "Refactoring auth middleware",
+    },
+    Summary:     "Auth refactor in progress",
+    Tags:        []string{"auth", "working"},
+    Sensitivity: schema.SensitivityLow,
+})
+```
+
+### Record Outcome
+
+`RecordOutcome` updates an existing episodic record with success, failure, or partial outcome state.
+
+```go
+updated, err := m.RecordOutcome(ctx, ingestion.IngestOutcomeRequest{
+    Source:         "auth-agent",
+    TargetRecordID: capture.PrimaryRecord.ID,
     OutcomeStatus:  schema.OutcomeStatusSuccess,
 })
 ```
 
-### IngestWorkingState
-
-Captures the current in-flight task state as a **working** memory record.
-
-```go
-rec, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-    Source:      "build-agent",
-    ThreadID:    "session-001",
-    State:       schema.TaskStateExecuting,
-    NextActions: []string{"run tests", "deploy"},
-    OpenQuestions: []string{"which registry to push to?"},
-})
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Source` | `string` | Actor that produced the working state |
-| `ThreadID` | `string` | Thread or session identifier |
-| `State` | `schema.TaskState` | Current task state |
-| `NextActions` | `[]string` | Planned next actions |
-| `OpenQuestions` | `[]string` | Unresolved questions |
-| `ContextSummary` | `string` | Summary of the current context |
-| `ActiveConstraints` | `[]schema.Constraint` | Currently active constraints |
-
 ---
 
-## Retrieve with trust context
+## Retrieve Graph Context
 
-`Retrieve` performs layered retrieval in canonical order: working → semantic → competence → plan_graph → episodic. The `TrustContext` gates which records are returned.
+`RetrieveGraph` returns ranked root records and a bounded graph neighborhood. Every retrieval request needs a `TrustContext`.
 
 ```go
-resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
-    TaskDescriptor: "fix build error",
-    Trust: &retrieval.TrustContext{
-        MaxSensitivity: schema.SensitivityMedium,
-        Authenticated:  true,
-        ActorID:        "build-agent",
-        Scopes:         []string{"project-acme"},
-    },
+graph, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+    TaskDescriptor: "debug auth retry failures",
+    Trust: retrieval.NewTrustContext(
+        schema.SensitivityMedium,
+        true,
+        "auth-agent",
+        []string{"project-auth"},
+    ),
     MemoryTypes: []schema.MemoryType{
-        schema.MemoryTypeCompetence,
+        schema.MemoryTypeEntity,
         schema.MemoryTypeSemantic,
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeEpisodic,
     },
+    RootLimit:   8,
+    NodeLimit:   20,
+    EdgeLimit:   80,
+    MaxHops:     1,
     MinSalience: 0.2,
-    Limit:       10,
 })
 if err != nil {
     log.Fatal(err)
 }
 
-for _, r := range resp.Records {
-    fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+for _, node := range graph.Nodes {
+    fmt.Printf("Found: %s (type=%s, root=%t, hop=%d)\n",
+        node.Record.ID,
+        node.Record.Type,
+        node.Root,
+        node.Hop,
+    )
 }
 ```
 
-To fetch a single record by ID:
+Fetch a single record by ID:
 
 ```go
-record, err := m.RetrieveByID(ctx, recordID, &retrieval.TrustContext{
-    MaxSensitivity: schema.SensitivityHigh,
-    Authenticated:  true,
-})
+record, err := m.RetrieveByID(ctx, capture.PrimaryRecord.ID, retrieval.NewTrustContext(
+    schema.SensitivityHigh,
+    true,
+    "auth-agent",
+    []string{"project-auth"},
+))
 ```
 
 ---
 
-## Revision operations
+## Revision Operations
 
-Revision operations update the record's status and append an audit entry. All operations accept an `actor` and `rationale` for full provenance.
-
-### Supersede
-
-Atomically replaces an old record with a new version.
+Revision operations update durable knowledge with audit entries.
 
 ```go
 newRec := &schema.MemoryRecord{ /* ... */ }
-superseded, err := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
-```
+superseded, err := m.Supersede(ctx, oldRecordID, newRec, "agent", "updated fact")
 
-### Fork
-
-Creates a conditional variant derived from a source record.
-
-```go
 forkedRec := &schema.MemoryRecord{ /* ... */ }
-forked, err := m.Fork(ctx, sourceID, forkedRec, "agent", "different for dev environment")
-```
+forked, err := m.Fork(ctx, sourceID, forkedRec, "agent", "different in staging")
 
-### Retract
+err = m.Retract(ctx, recordID, "agent", "no longer accurate")
 
-Marks a record as retracted without deleting it. The record remains in the audit trail.
-
-```go
-err := m.Retract(ctx, recordID, "agent", "no longer accurate")
-```
-
-### Merge
-
-Combines multiple records into one consolidated record.
-
-```go
 mergedRec := &schema.MemoryRecord{ /* ... */ }
-merged, err := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolidating duplicates")
+merged, err := m.Merge(ctx, []string{id1, id2}, mergedRec, "agent", "deduplicated")
+
+err = m.Contest(ctx, recordID, conflictingRecordID, "agent", "conflicting evidence")
 ```
 
-### Contest
-
-Marks a record as contested when conflicting evidence exists.
+## Reinforce And Penalize
 
 ```go
-err := m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts this")
+err := m.Reinforce(ctx, recordID, "agent", "used successfully")
+err = m.Penalize(ctx, recordID, 0.2, "agent", "not useful for this task")
 ```
 
----
-
-## Reinforce and Penalize
-
-Reinforce boosts a record's salience; Penalize reduces it by a specified amount.
-
-```go
-// Boost salience after a successful retrieval
-err := m.Reinforce(ctx, recordID, "agent", "plan used successfully")
-
-// Reduce salience when a procedure fails
-err := m.Penalize(ctx, recordID, 0.2, "agent", "procedure led to build failure")
-```
-
----
-
-## GetMetrics
-
-Returns a point-in-time `*metrics.Snapshot` of the substrate.
+## Metrics
 
 ```go
 snap, err := m.GetMetrics(ctx)
@@ -279,96 +208,11 @@ if err != nil {
 }
 fmt.Printf("Total records: %d\n", snap.TotalRecords)
 fmt.Printf("Retrieval usefulness: %.2f\n", snap.RetrievalUsefulness)
-fmt.Printf("Competence success rate: %.2f\n", snap.CompetenceSuccessRate)
 ```
 
 ---
 
-## Config struct reference
-
-<ParamField path="Backend" type="string">
-Storage backend: `"sqlite"` (default) or `"postgres"`.
-</ParamField>
-
-<ParamField path="DBPath" type="string">
-SQLite database file path. Default: `"membrane.db"`.
-</ParamField>
-
-<ParamField path="PostgresDSN" type="string">
-PostgreSQL connection string. Required when `Backend` is `"postgres"`. Falls back to `MEMBRANE_POSTGRES_DSN`.
-</ParamField>
-
-<ParamField path="ListenAddr" type="string">
-gRPC listen address. Default: `":9090"`.
-</ParamField>
-
-<ParamField path="DecayInterval" type="time.Duration">
-How often the decay scheduler runs. Default: `1h`.
-</ParamField>
-
-<ParamField path="ConsolidationInterval" type="time.Duration">
-How often the consolidation scheduler runs. Default: `6h`.
-</ParamField>
-
-<ParamField path="DefaultSensitivity" type="string">
-Default sensitivity assigned at ingestion. Default: `"low"`. Valid values: `public`, `low`, `medium`, `high`, `hyper`.
-</ParamField>
-
-<ParamField path="SelectionConfidenceThreshold" type="float64">
-Minimum confidence for competence and plan_graph candidates in the selector. Default: `0.7`.
-</ParamField>
-
-<ParamField path="EncryptionKey" type="string">
-SQLCipher key for the SQLite database. Falls back to `MEMBRANE_ENCRYPTION_KEY`.
-</ParamField>
-
-<ParamField path="EmbeddingEndpoint" type="string">
-HTTP endpoint for generating embeddings (Postgres only).
-</ParamField>
-
-<ParamField path="EmbeddingModel" type="string">
-Embedding model name sent to the embedding endpoint.
-</ParamField>
-
-<ParamField path="EmbeddingDimensions" type="int">
-Output dimension of the embedding model. Default: `1536`.
-</ParamField>
-
-<ParamField path="EmbeddingAPIKey" type="string">
-API key for the embedding endpoint. Falls back to `MEMBRANE_EMBEDDING_API_KEY`.
-</ParamField>
-
-<ParamField path="LLMEndpoint" type="string">
-HTTP endpoint for semantic fact extraction during consolidation (Postgres only).
-</ParamField>
-
-<ParamField path="LLMModel" type="string">
-Chat model name for the LLM extraction endpoint.
-</ParamField>
-
-<ParamField path="LLMAPIKey" type="string">
-API key for the LLM endpoint. Falls back to `MEMBRANE_LLM_API_KEY`.
-</ParamField>
-
-<ParamField path="TLSCertFile" type="string">
-Path to TLS certificate PEM file. TLS is disabled when empty.
-</ParamField>
-
-<ParamField path="TLSKeyFile" type="string">
-Path to TLS private key PEM file.
-</ParamField>
-
-<ParamField path="APIKey" type="string">
-Shared secret for authenticating gRPC clients. Falls back to `MEMBRANE_API_KEY`. Authentication disabled when empty.
-</ParamField>
-
-<ParamField path="RateLimitPerSecond" type="int">
-Maximum requests per second per client. `0` disables rate limiting. Default: `100`.
-</ParamField>
-
----
-
-## Complete example
+## Complete Example
 
 ```go
 package main
@@ -395,50 +239,50 @@ func main() {
     defer m.Stop()
 
     ctx := context.Background()
-    m.Start(ctx)
-
-    // Ingest an episodic event (tool call observation)
-    rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-        Source:    "build-agent",
-        EventKind: "tool_call",
-        Ref:       "build#42",
-        Summary:   "Executed go build, failed with linker error",
-        Tags:      []string{"build", "error"},
-    })
-    fmt.Printf("Ingested episodic record: %s\n", rec.ID)
-
-    // Ingest a semantic observation
-    m.IngestObservation(ctx, ingestion.IngestObservationRequest{
-        Source:    "build-agent",
-        Subject:   "user",
-        Predicate: "prefers_language",
-        Object:    "go",
-        Tags:      []string{"preferences"},
-    })
-
-    // Ingest working memory state
-    m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
-        Source:      "build-agent",
-        ThreadID:    "session-001",
-        State:       schema.TaskStateExecuting,
-        NextActions: []string{"run tests", "deploy"},
-    })
-
-    // Retrieve with trust context
-    resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
-        TaskDescriptor: "fix build error",
-        Trust: &retrieval.TrustContext{
-            MaxSensitivity: schema.SensitivityMedium,
-            Authenticated:  true,
-        },
-        MemoryTypes: []schema.MemoryType{
-            schema.MemoryTypeCompetence,
-            schema.MemoryTypeSemantic,
-        },
-    })
-
-    for _, r := range resp.Records {
-        fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+    if err := m.Start(ctx); err != nil {
+        log.Fatal(err)
     }
+
+    capture, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+        Source:           "auth-agent",
+        SourceKind:       "event",
+        Content:          map[string]any{
+            "ref":  "thread-1:turn-7",
+            "text": "Refactored auth middleware and verified package tests",
+        },
+        ReasonToRemember: "Keep auth refactor context",
+        Summary:          "Refactored auth middleware",
+        Tags:             []string{"auth"},
+        Sensitivity:      schema.SensitivityLow,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    graph, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+        TaskDescriptor: "debug auth",
+        Trust: retrieval.NewTrustContext(
+            schema.SensitivityMedium,
+            true,
+            "auth-agent",
+            nil,
+        ),
+        MemoryTypes: []schema.MemoryType{
+            schema.MemoryTypeEntity,
+            schema.MemoryTypeSemantic,
+            schema.MemoryTypeEpisodic,
+        },
+        RootLimit: 5,
+        NodeLimit: 20,
+        MaxHops:   1,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Captured %s and retrieved %d graph nodes\n",
+        capture.PrimaryRecord.ID,
+        len(graph.Nodes),
+    )
 }
 ```

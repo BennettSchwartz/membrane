@@ -52,7 +52,7 @@ plugins:
 | `auto_context` | `true` | Auto-inject memories before each agent turn |
 | `context_limit` | `5` | Max memories to inject |
 | `min_salience` | `0.3` | Minimum salience score for retrieval |
-| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph` |
+| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `entity`, `semantic`, `competence`, `plan_graph` |
 
 
 ## Usage

@@ -224,11 +224,19 @@ type EntityPayload struct {
 	// CanonicalName is the preferred display/lookup name for the entity.
 	CanonicalName string `json:"canonical_name"`
 
-	// EntityKind is the coarse category for the entity.
-	EntityKind EntityKind `json:"entity_kind,omitempty"`
+	// PrimaryType is the preferred ontology type for the entity.
+	PrimaryType string `json:"primary_type,omitempty"`
+
+	// Types lists ontology types for the entity. Values are registry-backed
+	// strings rather than a closed enum, so callers can add domain-specific
+	// types without schema migrations.
+	Types []string `json:"types,omitempty"`
 
 	// Aliases contains alternate surface forms for the entity.
-	Aliases []string `json:"aliases,omitempty"`
+	Aliases []EntityAlias `json:"aliases,omitempty"`
+
+	// Identifiers contains stable external identifiers for the entity.
+	Identifiers []EntityIdentifier `json:"identifiers,omitempty"`
 
 	// Summary is a short description of the entity.
 	Summary string `json:"summary,omitempty"`
@@ -236,6 +244,47 @@ type EntityPayload struct {
 
 func (EntityPayload) PayloadKind() string { return "entity" }
 func (EntityPayload) isPayload()          {}
+
+// EntityAlias is an alternate surface form for an entity.
+type EntityAlias struct {
+	Value  string `json:"value"`
+	Kind   string `json:"kind,omitempty"`
+	Locale string `json:"locale,omitempty"`
+}
+
+// EntityIdentifier is a stable external identifier for an entity.
+type EntityIdentifier struct {
+	Namespace string `json:"namespace"`
+	Value     string `json:"value"`
+}
+
+// MarshalJSON emits a compact string form for plain aliases while preserving
+// room for typed aliases when kind/locale are present.
+func (a EntityAlias) MarshalJSON() ([]byte, error) {
+	if a.Kind == "" && a.Locale == "" {
+		return json.Marshal(a.Value)
+	}
+	type alias EntityAlias
+	return json.Marshal(alias(a))
+}
+
+// UnmarshalJSON accepts both the new object form and the previous string form.
+func (a *EntityAlias) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err == nil {
+		a.Value = value
+		a.Kind = ""
+		a.Locale = ""
+		return nil
+	}
+	type alias EntityAlias
+	var raw alias
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*a = EntityAlias(raw)
+	return nil
+}
 
 // Validity defines when a semantic fact is valid.
 // RFC 15A.8: Supports global, conditional, and timeboxed validity.

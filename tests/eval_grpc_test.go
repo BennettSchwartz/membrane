@@ -15,11 +15,11 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
-	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
@@ -107,22 +107,37 @@ func (e *grpcEnv) ctx() context.Context {
 	return metadata.NewOutgoingContext(context.Background(), md)
 }
 
-func decodeRecord(t *testing.T, data []byte) *schema.MemoryRecord {
+func decodeRecord(t *testing.T, rec *pb.MemoryRecord) *schema.MemoryRecord {
 	t.Helper()
-	var rec schema.MemoryRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
-		t.Fatalf("unmarshal record: %v", err)
+	if rec == nil {
+		t.Fatalf("record is nil")
 	}
-	return &rec
+	return &schema.MemoryRecord{
+		ID:          rec.Id,
+		Type:        schema.MemoryType(rec.Type),
+		Sensitivity: schema.Sensitivity(rec.Sensitivity),
+		Confidence:  rec.Confidence,
+		Salience:    rec.Salience,
+		Scope:       rec.Scope,
+		Tags:        rec.Tags,
+	}
 }
 
-func mustMarshalJSON(t *testing.T, value any) []byte {
+func mustMarshalJSON(t *testing.T, value any) *structpb.Value {
 	t.Helper()
 	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatalf("marshal json: %v", err)
 	}
-	return data
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	out, err := structpb.NewValue(normalized)
+	if err != nil {
+		t.Fatalf("struct value: %v", err)
+	}
+	return out
 }
 
 func requireCreatedRecordOfType(t *testing.T, resp *pb.CaptureMemoryResponse, recordType schema.MemoryType) *schema.MemoryRecord {
@@ -135,6 +150,46 @@ func requireCreatedRecordOfType(t *testing.T, resp *pb.CaptureMemoryResponse, re
 	}
 	t.Fatalf("capture response missing created record of type %q", recordType)
 	return nil
+}
+
+func semanticRecordPB(t *testing.T, subject, predicate string, object any, validity *pb.Validity, revisionPolicy string) *pb.MemoryRecord {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if validity == nil {
+		validity = &pb.Validity{Mode: string(schema.ValidityModeGlobal)}
+	}
+	return &pb.MemoryRecord{
+		Type:        string(schema.MemoryTypeSemantic),
+		Sensitivity: string(schema.SensitivityLow),
+		Confidence:  1,
+		Salience:    1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Lifecycle: &pb.Lifecycle{
+			Decay: &pb.DecayProfile{
+				Curve:           string(schema.DecayCurveExponential),
+				HalfLifeSeconds: 86400,
+			},
+			LastReinforcedAt: now,
+			DeletionPolicy:   string(schema.DeletionPolicyAutoPrune),
+		},
+		Provenance: &pb.Provenance{Sources: []*pb.ProvenanceSource{}},
+		Payload: &pb.Payload{Kind: &pb.Payload_Semantic{Semantic: &pb.SemanticPayload{
+			Kind:           "semantic",
+			Subject:        subject,
+			Predicate:      predicate,
+			Object:         mustMarshalJSON(t, object),
+			Validity:       validity,
+			Evidence:       []*pb.ProvenanceRef{{SourceType: "eval", SourceId: "grpc", Timestamp: now}},
+			RevisionPolicy: revisionPolicy,
+		}}},
+		AuditLog: []*pb.AuditEntry{{
+			Action:    string(schema.AuditActionCreate),
+			Actor:     "eval",
+			Timestamp: now,
+			Rationale: "test record",
+		}},
+	}
 }
 
 func requireGRPCError(t *testing.T, err error, code codes.Code, messageContains string) {
@@ -366,20 +421,9 @@ func TestEvalGRPCSurface(t *testing.T) {
 		t.Fatalf("Penalize: %v", err)
 	}
 
-	newSemantic := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
-		&schema.SemanticPayload{
-			Kind:      "semantic",
-			Subject:   "user",
-			Predicate: "prefers",
-			Object:    "Rust",
-			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
-			Evidence:  []schema.ProvenanceRef{{SourceType: "eval", SourceID: "grpc"}},
-		},
-	)
-	newBytes, _ := json.Marshal(newSemantic)
 	supResp, err := env.client.Supersede(ctx, &pb.SupersedeRequest{
 		OldId:     obsRec.ID,
-		NewRecord: newBytes,
+		NewRecord: semanticRecordPB(t, "user", "prefers", "Rust", nil, ""),
 		Actor:     "eval",
 		Rationale: "update",
 	})
@@ -401,23 +445,14 @@ func TestEvalGRPCSurface(t *testing.T) {
 	}
 	forkSourceRec := requireCreatedRecordOfType(t, forkSource, schema.MemoryTypeSemantic)
 
-	forked := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
-		&schema.SemanticPayload{
-			Kind:           "semantic",
-			Subject:        "service",
-			Predicate:      "uses_cache",
-			Object:         "Memcached",
-			Validity:       schema.Validity{Mode: schema.ValidityModeConditional, Conditions: map[string]any{"env": "dev"}},
-			Evidence:       []schema.ProvenanceRef{{SourceType: "eval", SourceID: "grpc"}},
-			RevisionPolicy: "fork",
-		},
-	)
-	forkBytes, _ := json.Marshal(forked)
 	forkResp, err := env.client.Fork(ctx, &pb.ForkRequest{
-		SourceId:     forkSourceRec.ID,
-		ForkedRecord: forkBytes,
-		Actor:        "eval",
-		Rationale:    "dev env",
+		SourceId: forkSourceRec.ID,
+		ForkedRecord: semanticRecordPB(t, "service", "uses_cache", "Memcached", &pb.Validity{
+			Mode:       string(schema.ValidityModeConditional),
+			Conditions: map[string]*structpb.Value{"env": mustMarshalJSON(t, "dev")},
+		}, "fork"),
+		Actor:     "eval",
+		Rationale: "dev env",
 	})
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
@@ -449,20 +484,9 @@ func TestEvalGRPCSurface(t *testing.T) {
 	mergeLeftRec := requireCreatedRecordOfType(t, mergeLeft, schema.MemoryTypeSemantic)
 	mergeRightRec := requireCreatedRecordOfType(t, mergeRight, schema.MemoryTypeSemantic)
 
-	merged := schema.NewMemoryRecord("", schema.MemoryTypeSemantic, schema.SensitivityLow,
-		&schema.SemanticPayload{
-			Kind:      "semantic",
-			Subject:   "db",
-			Predicate: "uses",
-			Object:    "Postgres",
-			Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
-			Evidence:  []schema.ProvenanceRef{{SourceType: "eval", SourceID: "grpc"}},
-		},
-	)
-	mergedBytes, _ := json.Marshal(merged)
 	mergeResp, err := env.client.Merge(ctx, &pb.MergeRequest{
 		Ids:          []string{mergeLeftRec.ID, mergeRightRec.ID},
-		MergedRecord: mergedBytes,
+		MergedRecord: semanticRecordPB(t, "db", "uses", "Postgres", nil, ""),
 		Actor:        "eval",
 		Rationale:    "merge",
 	})
@@ -494,24 +518,18 @@ func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
 	env := newGRPCEnv(t, "", 0)
 	ctx := env.ctx()
 
-	content, err := json.Marshal(map[string]any{
+	content := mustMarshalJSON(t, map[string]any{
 		"ref":     "evt-capture-1",
 		"text":    "Remember Orchid as the staging deploy target",
 		"project": "Orchid",
 	})
-	if err != nil {
-		t.Fatalf("marshal content: %v", err)
-	}
-	contextBytes, err := json.Marshal(map[string]any{"thread_id": "thread-1"})
-	if err != nil {
-		t.Fatalf("marshal context: %v", err)
-	}
+	contextValue := mustMarshalJSON(t, map[string]any{"thread_id": "thread-1"})
 
 	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
 		Source:           "grpc-test",
 		SourceKind:       "event",
 		Content:          content,
-		Context:          contextBytes,
+		Context:          contextValue,
 		ReasonToRemember: "Deployment jargon should be recoverable",
 		Summary:          "Remember Orchid",
 		Tags:             []string{"grpc", "orchid"},
@@ -534,12 +552,8 @@ func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
 	if entity.Type != schema.MemoryTypeEntity {
 		t.Fatalf("Created entity type = %q, want entity", entity.Type)
 	}
-	var captureEdges []schema.GraphEdge
-	if err := json.Unmarshal(captureResp.Edges, &captureEdges); err != nil {
-		t.Fatalf("unmarshal capture edges: %v", err)
-	}
-	if len(captureEdges) != 2 {
-		t.Fatalf("capture edges len = %d, want 2", len(captureEdges))
+	if len(captureResp.Edges) != 2 {
+		t.Fatalf("capture edges len = %d, want 2", len(captureResp.Edges))
 	}
 
 	graphResp, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
@@ -559,39 +573,141 @@ func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
 		t.Fatalf("RetrieveGraph: %v", err)
 	}
 
-	var nodes []retrieval.GraphNode
-	if err := json.Unmarshal(graphResp.Nodes, &nodes); err != nil {
-		t.Fatalf("unmarshal graph nodes: %v", err)
-	}
-	var edges []schema.GraphEdge
-	if err := json.Unmarshal(graphResp.Edges, &edges); err != nil {
-		t.Fatalf("unmarshal graph edges: %v", err)
-	}
 	if len(graphResp.RootIds) == 0 {
 		t.Fatalf("RootIds = empty, want at least one root")
 	}
 	foundPrimary := false
 	foundEntity := false
-	for _, node := range nodes {
-		if node.Record != nil && node.Record.ID == primary.ID {
+	for _, node := range graphResp.Nodes {
+		if node.Record != nil && node.Record.Id == primary.ID {
 			foundPrimary = true
 		}
-		if node.Record != nil && node.Record.ID == entity.ID {
+		if node.Record != nil && node.Record.Id == entity.ID {
 			foundEntity = true
 		}
 	}
 	if !foundPrimary || !foundEntity {
-		t.Fatalf("graph nodes missing primary/entity: foundPrimary=%v foundEntity=%v nodes=%+v", foundPrimary, foundEntity, nodes)
+		t.Fatalf("graph nodes missing primary/entity: foundPrimary=%v foundEntity=%v nodes=%+v", foundPrimary, foundEntity, graphResp.Nodes)
 	}
 	hasMentionEdge := false
-	for _, edge := range edges {
+	for _, edge := range graphResp.Edges {
 		if edge.Predicate == "mentions_entity" {
 			hasMentionEdge = true
 			break
 		}
 	}
 	if !hasMentionEdge {
-		t.Fatalf("expected mentions_entity edge, got %+v", edges)
+		t.Fatalf("expected mentions_entity edge, got %+v", graphResp.Edges)
+	}
+}
+
+func TestEvalGRPCRetrieveGraphReturnsRedactedRecord(t *testing.T) {
+	env := newGRPCEnv(t, "", 0)
+	ctx := env.ctx()
+
+	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:      "grpc-test",
+		SourceKind:  "event",
+		Content:     mustMarshalJSON(t, map[string]any{"ref": "evt-redacted-1", "text": "Confidential deployment note"}),
+		Summary:     "Confidential deployment note",
+		Sensitivity: "medium",
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+	primary := decodeRecord(t, captureResp.PrimaryRecord)
+
+	graphResp, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		TaskDescriptor: "deployment note",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "low",
+			Authenticated:  true,
+			ActorId:        "grpc-test",
+		},
+		MemoryTypes: []string{"episodic"},
+		RootLimit:   5,
+		NodeLimit:   5,
+		MaxHops:     0,
+	})
+	if err != nil {
+		t.Fatalf("RetrieveGraph redacted: %v", err)
+	}
+
+	for _, node := range graphResp.Nodes {
+		if node.Record == nil || node.Record.Id != primary.ID {
+			continue
+		}
+		if node.Record.Payload != nil {
+			t.Fatalf("redacted payload = %+v, want nil", node.Record.Payload)
+		}
+		if node.Record.Sensitivity != "medium" {
+			t.Fatalf("redacted sensitivity = %q, want medium", node.Record.Sensitivity)
+		}
+		return
+	}
+	t.Fatalf("graph nodes missing redacted record %s: %+v", primary.ID, graphResp.Nodes)
+}
+
+func TestEvalGRPCCaptureMemoryLinksDerivedSemanticThroughEntity(t *testing.T) {
+	env := newGRPCEnv(t, "", 0)
+	ctx := env.ctx()
+
+	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:      "grpc-test",
+		SourceKind:  "observation",
+		Content:     mustMarshalJSON(t, map[string]any{"subject": "Orchid", "predicate": "deploy_target_for", "object": "staging"}),
+		Scope:       "project:alpha",
+		Sensitivity: "low",
+		Tags:        []string{"deploy"},
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	entity := requireCreatedRecordOfType(t, captureResp, schema.MemoryTypeEntity)
+	semantic := requireCreatedRecordOfType(t, captureResp, schema.MemoryTypeSemantic)
+
+	foundSemanticEntityLink := false
+	for _, edge := range captureResp.Edges {
+		if edge.SourceId == semantic.ID && edge.Predicate == "subject_entity" && edge.TargetId == entity.ID {
+			foundSemanticEntityLink = true
+			break
+		}
+	}
+	if !foundSemanticEntityLink {
+		t.Fatalf("capture edges = %+v, want semantic -> entity link", captureResp.Edges)
+	}
+
+	graphResp, err := env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		TaskDescriptor: "Orchid deploy target",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: "low",
+			Authenticated:  true,
+			ActorId:        "grpc-test",
+			Scopes:         []string{"project:alpha"},
+		},
+		MemoryTypes: []string{"semantic"},
+		RootLimit:   1,
+		NodeLimit:   3,
+		EdgeLimit:   6,
+		MaxHops:     1,
+	})
+	if err != nil {
+		t.Fatalf("RetrieveGraph: %v", err)
+	}
+
+	if len(graphResp.RootIds) != 1 || graphResp.RootIds[0] != semantic.ID {
+		t.Fatalf("RootIds = %v, want [%s]", graphResp.RootIds, semantic.ID)
+	}
+	foundEntityNeighbor := false
+	for _, node := range graphResp.Nodes {
+		if node.Record != nil && node.Record.Id == entity.ID && node.Hop == 1 {
+			foundEntityNeighbor = true
+			break
+		}
+	}
+	if !foundEntityNeighbor {
+		t.Fatalf("graph nodes = %+v, want entity neighbor", graphResp.Nodes)
 	}
 }
 
@@ -608,11 +724,6 @@ func TestEvalGRPCValidation(t *testing.T) {
 	_, err = env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{RootLimit: 1})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument for missing trust, got %v", err)
-	}
-
-	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: []byte("{")})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for bad content JSON, got %v", err)
 	}
 
 	longTag := strings.Repeat("a", 300)
@@ -669,11 +780,6 @@ func TestEvalGRPCValidation(t *testing.T) {
 		t.Fatalf("expected invalid argument for invalid proposed_type, got %v", err)
 	}
 
-	_, err = env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: mustMarshalJSON(t, map[string]any{"ref": "rec-2"}), Context: []byte("{")})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for invalid context JSON, got %v", err)
-	}
-
 	_, err = env.client.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
 		Trust:       trust,
 		MemoryTypes: []string{"anything"},
@@ -705,22 +811,14 @@ func TestEvalGRPCValidation(t *testing.T) {
 		t.Fatalf("expected not found for missing record, got %v", err)
 	}
 
-	replacement := []byte(`{
-		"id": "replacement-1",
-		"type": "semantic",
-		"sensitivity": "low",
-		"confidence": 1,
-		"salience": 1,
-		"payload": {"kind": "mystery"}
-	}`)
 	_, err = env.client.Supersede(ctx, &pb.SupersedeRequest{
 		OldId:     semanticRec.ID,
-		NewRecord: replacement,
+		NewRecord: &pb.MemoryRecord{Id: "replacement-1", Type: string(schema.MemoryTypeSemantic), Sensitivity: string(schema.SensitivityLow), Confidence: 1, Salience: 1},
 		Actor:     "eval",
 		Rationale: "validate payload mapping",
 	})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected invalid argument for downstream record validation, got %v", err)
+		t.Fatalf("expected invalid argument for missing typed payload, got %v", err)
 	}
 }
 
@@ -728,7 +826,7 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 	env := newGRPCEnv(t, "", 0)
 	ctx := env.ctx()
 	trust := &pb.TrustContext{MaxSensitivity: "low", Authenticated: true}
-	oversized := []byte(strings.Repeat("a", 10*1024*1024+1))
+	oversized := structpb.NewStringValue(strings.Repeat("a", 10*1024*1024+1))
 
 	tests := []struct {
 		name            string
@@ -772,24 +870,6 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 			},
 			code:            codes.InvalidArgument,
 			messageContains: "memory_types[0] must be one of: episodic, working, semantic, competence, plan_graph, entity",
-		},
-		{
-			name: "malformed-content-json",
-			call: func() error {
-				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: []byte("{")})
-				return err
-			},
-			code:            codes.InvalidArgument,
-			messageContains: "invalid content JSON:",
-		},
-		{
-			name: "malformed-context-json",
-			call: func() error {
-				_, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{Source: "eval", SourceKind: "event", Content: mustMarshalJSON(t, map[string]any{"ref": "ctx"}), Context: []byte("{")})
-				return err
-			},
-			code:            codes.InvalidArgument,
-			messageContains: "invalid context JSON:",
 		},
 		{
 			name: "oversized-content-payload",

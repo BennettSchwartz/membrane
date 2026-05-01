@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
@@ -69,6 +70,17 @@ func validateJSONPayload(name string, data []byte) error {
 	return nil
 }
 
+func validateValuePayload(name string, value *structpb.Value) error {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value.AsInterface())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid %s value: %v", name, err)
+	}
+	return validateJSONPayload(name, data)
+}
+
 // validateSensitivity checks that a sensitivity value is either empty (when optional)
 // or one of the supported enum values.
 func validateSensitivity(name, value string, required bool) error {
@@ -119,10 +131,10 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 			return nil, err
 		}
 	}
-	if err := validateJSONPayload("content", req.Content); err != nil {
+	if err := validateValuePayload("content", req.Content); err != nil {
 		return nil, err
 	}
-	if err := validateJSONPayload("context", req.Context); err != nil {
+	if err := validateValuePayload("context", req.Context); err != nil {
 		return nil, err
 	}
 
@@ -131,24 +143,11 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
 	}
 
-	var content any
-	if len(req.Content) > 0 {
-		if err := json.Unmarshal(req.Content, &content); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid content JSON: %v", err)
-		}
-	}
-	var captureContext any
-	if len(req.Context) > 0 {
-		if err := json.Unmarshal(req.Context, &captureContext); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid context JSON: %v", err)
-		}
-	}
-
 	resp, err := h.membrane.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 		Source:           req.Source,
 		SourceKind:       req.SourceKind,
-		Content:          content,
-		Context:          captureContext,
+		Content:          valueFromPB(req.Content),
+		Context:          valueFromPB(req.Context),
 		ReasonToRemember: req.ReasonToRemember,
 		ProposedType:     schema.MemoryType(req.ProposedType),
 		Summary:          req.Summary,
@@ -235,11 +234,7 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest)
 
 // Supersede converts the gRPC request and delegates to Membrane.Supersede.
 func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.MemoryRecordResponse, error) {
-	if err := validateJSONPayload("new_record", req.NewRecord); err != nil {
-		return nil, err
-	}
-
-	newRec, err := unmarshalRecord(req.NewRecord)
+	newRec, err := memoryRecordFromPB(req.NewRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid new_record: %v", err)
 	}
@@ -254,11 +249,7 @@ func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.
 
 // Fork converts the gRPC request and delegates to Membrane.Fork.
 func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryRecordResponse, error) {
-	if err := validateJSONPayload("forked_record", req.ForkedRecord); err != nil {
-		return nil, err
-	}
-
-	forkedRec, err := unmarshalRecord(req.ForkedRecord)
+	forkedRec, err := memoryRecordFromPB(req.ForkedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid forked_record: %v", err)
 	}
@@ -287,11 +278,7 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 	if len(req.Ids) > maxLimit {
 		return nil, status.Errorf(codes.InvalidArgument, "too many ids: %d (max %d)", len(req.Ids), maxLimit)
 	}
-	if err := validateJSONPayload("merged_record", req.MergedRecord); err != nil {
-		return nil, err
-	}
-
-	mergedRec, err := unmarshalRecord(req.MergedRecord)
+	mergedRec, err := memoryRecordFromPB(req.MergedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid merged_record: %v", err)
 	}
@@ -337,19 +324,19 @@ func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.Pe
 	return &pb.PenalizeResponse{}, nil
 }
 
-// GetMetrics delegates to Membrane.GetMetrics and returns a JSON-encoded snapshot.
+// GetMetrics delegates to Membrane.GetMetrics and returns a typed snapshot.
 func (h *Handler) GetMetrics(ctx context.Context, _ *pb.GetMetricsRequest) (*pb.MetricsResponse, error) {
 	snap, err := h.membrane.GetMetrics(ctx)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
 
-	data, err := json.Marshal(snap)
+	value, err := valueToPB(snap)
 	if err != nil {
 		return nil, internalErr(fmt.Errorf("marshal metrics: %w", err))
 	}
 
-	return &pb.MetricsResponse{Snapshot: data}, nil
+	return &pb.MetricsResponse{Snapshot: value}, nil
 }
 
 // Contest converts the gRPC request and delegates to Membrane.Contest.
@@ -391,48 +378,1211 @@ func toTrustContext(tc *pb.TrustContext) *retrieval.TrustContext {
 	)
 }
 
-// unmarshalRecord deserialises a JSON-encoded MemoryRecord.
-func unmarshalRecord(data []byte) (*schema.MemoryRecord, error) {
-	var rec schema.MemoryRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return nil, err
+func valueFromPB(value *structpb.Value) any {
+	if value == nil {
+		return nil
 	}
-	return &rec, nil
+	return value.AsInterface()
 }
 
-// marshalMemoryRecordResponse JSON-encodes a MemoryRecord into a MemoryRecordResponse.
+func valueToPB(value any) (*structpb.Value, error) {
+	if value == nil {
+		return structpb.NewNullValue(), nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return nil, err
+	}
+	return structpb.NewValue(normalized)
+}
+
+func valueMapToPB(values map[string]any) (map[string]*structpb.Value, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*structpb.Value, len(values))
+	for key, value := range values {
+		pbValue, err := valueToPB(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		out[key] = pbValue
+	}
+	return out, nil
+}
+
+func valueMapFromPB(values map[string]*structpb.Value) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = valueFromPB(value)
+	}
+	return out
+}
+
+func timeToString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func timePtrToString(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return timeToString(*t)
+}
+
+func parseTimeValue(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
+}
+
+func parseTimePtr(value string) (*time.Time, error) {
+	parsed, err := parseTimeValue(value)
+	if err != nil || parsed.IsZero() {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func memoryRecordToPB(rec *schema.MemoryRecord) (*pb.MemoryRecord, error) {
+	if rec == nil {
+		return nil, nil
+	}
+	var payload *pb.Payload
+	if rec.Payload != nil {
+		var err error
+		payload, err = payloadToPB(rec.Payload)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &pb.MemoryRecord{
+		Id:             rec.ID,
+		Type:           string(rec.Type),
+		Sensitivity:    string(rec.Sensitivity),
+		Confidence:     rec.Confidence,
+		Salience:       rec.Salience,
+		Scope:          rec.Scope,
+		Tags:           rec.Tags,
+		CreatedAt:      timeToString(rec.CreatedAt),
+		UpdatedAt:      timeToString(rec.UpdatedAt),
+		Lifecycle:      lifecycleToPB(rec.Lifecycle),
+		Provenance:     provenanceToPB(rec.Provenance),
+		Relations:      relationsToPB(rec.Relations),
+		Payload:        payload,
+		Interpretation: interpretationToPB(rec.Interpretation),
+		AuditLog:       auditLogToPB(rec.AuditLog),
+	}, nil
+}
+
+func memoryRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
+	if rec == nil {
+		return nil, errors.New("record is required")
+	}
+	payload, err := payloadFromPB(rec.Payload)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := parseTimeValue(rec.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("created_at: %w", err)
+	}
+	updatedAt, err := parseTimeValue(rec.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("updated_at: %w", err)
+	}
+	lifecycle, err := lifecycleFromPB(rec.Lifecycle)
+	if err != nil {
+		return nil, err
+	}
+	provenance, err := provenanceFromPB(rec.Provenance)
+	if err != nil {
+		return nil, err
+	}
+	auditLog, err := auditLogFromPB(rec.AuditLog)
+	if err != nil {
+		return nil, err
+	}
+	return &schema.MemoryRecord{
+		ID:             rec.Id,
+		Type:           schema.MemoryType(rec.Type),
+		Sensitivity:    schema.Sensitivity(rec.Sensitivity),
+		Confidence:     rec.Confidence,
+		Salience:       rec.Salience,
+		Scope:          rec.Scope,
+		Tags:           rec.Tags,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+		Lifecycle:      lifecycle,
+		Provenance:     provenance,
+		Relations:      relationsFromPB(rec.Relations),
+		Payload:        payload,
+		Interpretation: interpretationFromPB(rec.Interpretation),
+		AuditLog:       auditLog,
+	}, nil
+}
+
+func lifecycleToPB(lifecycle schema.Lifecycle) *pb.Lifecycle {
+	return &pb.Lifecycle{
+		Decay:            decayProfileToPB(lifecycle.Decay),
+		LastReinforcedAt: timeToString(lifecycle.LastReinforcedAt),
+		Pinned:           lifecycle.Pinned,
+		DeletionPolicy:   string(lifecycle.DeletionPolicy),
+	}
+}
+
+func lifecycleFromPB(lifecycle *pb.Lifecycle) (schema.Lifecycle, error) {
+	if lifecycle == nil {
+		return schema.Lifecycle{}, nil
+	}
+	lastReinforcedAt, err := parseTimeValue(lifecycle.LastReinforcedAt)
+	if err != nil {
+		return schema.Lifecycle{}, fmt.Errorf("lifecycle.last_reinforced_at: %w", err)
+	}
+	return schema.Lifecycle{
+		Decay:            decayProfileFromPB(lifecycle.Decay),
+		LastReinforcedAt: lastReinforcedAt,
+		Pinned:           lifecycle.Pinned,
+		DeletionPolicy:   schema.DeletionPolicy(lifecycle.DeletionPolicy),
+	}, nil
+}
+
+func decayProfileToPB(decay schema.DecayProfile) *pb.DecayProfile {
+	return &pb.DecayProfile{
+		Curve:             string(decay.Curve),
+		HalfLifeSeconds:   decay.HalfLifeSeconds,
+		MinSalience:       decay.MinSalience,
+		MaxAgeSeconds:     decay.MaxAgeSeconds,
+		ReinforcementGain: decay.ReinforcementGain,
+	}
+}
+
+func decayProfileFromPB(decay *pb.DecayProfile) schema.DecayProfile {
+	if decay == nil {
+		return schema.DecayProfile{}
+	}
+	return schema.DecayProfile{
+		Curve:             schema.DecayCurve(decay.Curve),
+		HalfLifeSeconds:   decay.HalfLifeSeconds,
+		MinSalience:       decay.MinSalience,
+		MaxAgeSeconds:     decay.MaxAgeSeconds,
+		ReinforcementGain: decay.ReinforcementGain,
+	}
+}
+
+func provenanceToPB(provenance schema.Provenance) *pb.Provenance {
+	return &pb.Provenance{
+		Sources:   provenanceSourcesToPB(provenance.Sources),
+		CreatedBy: provenance.CreatedBy,
+	}
+}
+
+func provenanceFromPB(provenance *pb.Provenance) (schema.Provenance, error) {
+	if provenance == nil {
+		return schema.Provenance{}, nil
+	}
+	sources, err := provenanceSourcesFromPB(provenance.Sources)
+	if err != nil {
+		return schema.Provenance{}, err
+	}
+	return schema.Provenance{Sources: sources, CreatedBy: provenance.CreatedBy}, nil
+}
+
+func provenanceSourcesToPB(sources []schema.ProvenanceSource) []*pb.ProvenanceSource {
+	out := make([]*pb.ProvenanceSource, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, &pb.ProvenanceSource{
+			Kind:      string(source.Kind),
+			Ref:       source.Ref,
+			Timestamp: timeToString(source.Timestamp),
+			Hash:      source.Hash,
+			CreatedBy: source.CreatedBy,
+		})
+	}
+	return out
+}
+
+func provenanceSourcesFromPB(sources []*pb.ProvenanceSource) ([]schema.ProvenanceSource, error) {
+	out := make([]schema.ProvenanceSource, 0, len(sources))
+	for i, source := range sources {
+		if source == nil {
+			continue
+		}
+		timestamp, err := parseTimeValue(source.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("provenance.sources[%d].timestamp: %w", i, err)
+		}
+		out = append(out, schema.ProvenanceSource{
+			Kind:      schema.ProvenanceKind(source.Kind),
+			Ref:       source.Ref,
+			Hash:      source.Hash,
+			CreatedBy: source.CreatedBy,
+			Timestamp: timestamp,
+		})
+	}
+	return out, nil
+}
+
+func relationsToPB(relations []schema.Relation) []*pb.Relation {
+	out := make([]*pb.Relation, 0, len(relations))
+	for _, relation := range relations {
+		out = append(out, &pb.Relation{
+			Predicate: relation.Predicate,
+			TargetId:  relation.TargetID,
+			Weight:    relation.Weight,
+			CreatedAt: timeToString(relation.CreatedAt),
+		})
+	}
+	return out
+}
+
+func relationsFromPB(relations []*pb.Relation) []schema.Relation {
+	out := make([]schema.Relation, 0, len(relations))
+	for _, relation := range relations {
+		if relation == nil {
+			continue
+		}
+		createdAt, _ := parseTimeValue(relation.CreatedAt)
+		out = append(out, schema.Relation{
+			Predicate: relation.Predicate,
+			TargetID:  relation.TargetId,
+			Weight:    relation.Weight,
+			CreatedAt: createdAt,
+		})
+	}
+	return out
+}
+
+func graphEdgesToPB(edges []schema.GraphEdge) []*pb.GraphEdge {
+	out := make([]*pb.GraphEdge, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, &pb.GraphEdge{
+			SourceId:  edge.SourceID,
+			Predicate: edge.Predicate,
+			TargetId:  edge.TargetID,
+			Weight:    edge.Weight,
+			CreatedAt: timeToString(edge.CreatedAt),
+		})
+	}
+	return out
+}
+
+func graphNodeToPB(node retrieval.GraphNode) (*pb.GraphNode, error) {
+	rec, err := memoryRecordToPB(node.Record)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GraphNode{Record: rec, Root: node.Root, Hop: int32(node.Hop)}, nil
+}
+
+func selectionToPB(selection *retrieval.SelectionResult) (*pb.SelectionResult, error) {
+	if selection == nil {
+		return nil, nil
+	}
+	selected := make([]*pb.MemoryRecord, 0, len(selection.Selected))
+	for _, rec := range selection.Selected {
+		out, err := memoryRecordToPB(rec)
+		if err != nil {
+			return nil, err
+		}
+		selected = append(selected, out)
+	}
+	return &pb.SelectionResult{
+		Selected:   selected,
+		Confidence: selection.Confidence,
+		NeedsMore:  selection.NeedsMore,
+		Scores:     selection.Scores,
+	}, nil
+}
+
+func auditLogToPB(entries []schema.AuditEntry) []*pb.AuditEntry {
+	out := make([]*pb.AuditEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, &pb.AuditEntry{
+			Action:    string(entry.Action),
+			Actor:     entry.Actor,
+			Timestamp: timeToString(entry.Timestamp),
+			Rationale: entry.Rationale,
+		})
+	}
+	return out
+}
+
+func auditLogFromPB(entries []*pb.AuditEntry) ([]schema.AuditEntry, error) {
+	out := make([]schema.AuditEntry, 0, len(entries))
+	for i, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		timestamp, err := parseTimeValue(entry.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("audit_log[%d].timestamp: %w", i, err)
+		}
+		out = append(out, schema.AuditEntry{
+			Action:    schema.AuditAction(entry.Action),
+			Actor:     entry.Actor,
+			Timestamp: timestamp,
+			Rationale: entry.Rationale,
+		})
+	}
+	return out, nil
+}
+
+func interpretationToPB(interpretation *schema.Interpretation) *pb.Interpretation {
+	if interpretation == nil {
+		return nil
+	}
+	return &pb.Interpretation{
+		Status:               string(interpretation.Status),
+		Summary:              interpretation.Summary,
+		ProposedType:         string(interpretation.ProposedType),
+		TopicalLabels:        interpretation.TopicalLabels,
+		Mentions:             mentionsToPB(interpretation.Mentions),
+		RelationCandidates:   relationCandidatesToPB(interpretation.RelationCandidates),
+		ReferenceCandidates:  referenceCandidatesToPB(interpretation.ReferenceCandidates),
+		ExtractionConfidence: interpretation.ExtractionConfidence,
+	}
+}
+
+func interpretationFromPB(interpretation *pb.Interpretation) *schema.Interpretation {
+	if interpretation == nil {
+		return nil
+	}
+	return &schema.Interpretation{
+		Status:               schema.InterpretationStatus(interpretation.Status),
+		Summary:              interpretation.Summary,
+		ProposedType:         schema.MemoryType(interpretation.ProposedType),
+		TopicalLabels:        interpretation.TopicalLabels,
+		Mentions:             mentionsFromPB(interpretation.Mentions),
+		RelationCandidates:   relationCandidatesFromPB(interpretation.RelationCandidates),
+		ReferenceCandidates:  referenceCandidatesFromPB(interpretation.ReferenceCandidates),
+		ExtractionConfidence: interpretation.ExtractionConfidence,
+	}
+}
+
+func mentionsToPB(mentions []schema.Mention) []*pb.Mention {
+	out := make([]*pb.Mention, 0, len(mentions))
+	for _, mention := range mentions {
+		out = append(out, &pb.Mention{
+			Surface:           mention.Surface,
+			EntityKind:        string(mention.EntityKind),
+			CanonicalEntityId: mention.CanonicalEntityID,
+			Confidence:        mention.Confidence,
+			Aliases:           mention.Aliases,
+		})
+	}
+	return out
+}
+
+func mentionsFromPB(mentions []*pb.Mention) []schema.Mention {
+	out := make([]schema.Mention, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention == nil {
+			continue
+		}
+		out = append(out, schema.Mention{
+			Surface:           mention.Surface,
+			EntityKind:        schema.EntityKind(mention.EntityKind),
+			CanonicalEntityID: mention.CanonicalEntityId,
+			Confidence:        mention.Confidence,
+			Aliases:           mention.Aliases,
+		})
+	}
+	return out
+}
+
+func relationCandidatesToPB(candidates []schema.RelationCandidate) []*pb.RelationCandidate {
+	out := make([]*pb.RelationCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, &pb.RelationCandidate{
+			Predicate:      candidate.Predicate,
+			TargetRecordId: candidate.TargetRecordID,
+			TargetEntityId: candidate.TargetEntityID,
+			Confidence:     candidate.Confidence,
+			Resolved:       candidate.Resolved,
+		})
+	}
+	return out
+}
+
+func relationCandidatesFromPB(candidates []*pb.RelationCandidate) []schema.RelationCandidate {
+	out := make([]schema.RelationCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		out = append(out, schema.RelationCandidate{
+			Predicate:      candidate.Predicate,
+			TargetRecordID: candidate.TargetRecordId,
+			TargetEntityID: candidate.TargetEntityId,
+			Confidence:     candidate.Confidence,
+			Resolved:       candidate.Resolved,
+		})
+	}
+	return out
+}
+
+func referenceCandidatesToPB(candidates []schema.ReferenceCandidate) []*pb.ReferenceCandidate {
+	out := make([]*pb.ReferenceCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, &pb.ReferenceCandidate{
+			Ref:            candidate.Ref,
+			TargetRecordId: candidate.TargetRecordID,
+			TargetEntityId: candidate.TargetEntityID,
+			Confidence:     candidate.Confidence,
+			Resolved:       candidate.Resolved,
+		})
+	}
+	return out
+}
+
+func referenceCandidatesFromPB(candidates []*pb.ReferenceCandidate) []schema.ReferenceCandidate {
+	out := make([]schema.ReferenceCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		out = append(out, schema.ReferenceCandidate{
+			Ref:            candidate.Ref,
+			TargetRecordID: candidate.TargetRecordId,
+			TargetEntityID: candidate.TargetEntityId,
+			Confidence:     candidate.Confidence,
+			Resolved:       candidate.Resolved,
+		})
+	}
+	return out
+}
+
+func payloadToPB(payload schema.Payload) (*pb.Payload, error) {
+	switch p := payload.(type) {
+	case *schema.EpisodicPayload:
+		out, err := episodicPayloadToPB(p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Episodic{Episodic: out}}, nil
+	case schema.EpisodicPayload:
+		out, err := episodicPayloadToPB(&p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Episodic{Episodic: out}}, nil
+	case *schema.WorkingPayload:
+		out, err := workingPayloadToPB(p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Working{Working: out}}, nil
+	case schema.WorkingPayload:
+		out, err := workingPayloadToPB(&p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Working{Working: out}}, nil
+	case *schema.SemanticPayload:
+		out, err := semanticPayloadToPB(p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Semantic{Semantic: out}}, nil
+	case schema.SemanticPayload:
+		out, err := semanticPayloadToPB(&p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Semantic{Semantic: out}}, nil
+	case *schema.CompetencePayload:
+		out, err := competencePayloadToPB(p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Competence{Competence: out}}, nil
+	case schema.CompetencePayload:
+		out, err := competencePayloadToPB(&p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_Competence{Competence: out}}, nil
+	case *schema.PlanGraphPayload:
+		out, err := planGraphPayloadToPB(p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_PlanGraph{PlanGraph: out}}, nil
+	case schema.PlanGraphPayload:
+		out, err := planGraphPayloadToPB(&p)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.Payload{Kind: &pb.Payload_PlanGraph{PlanGraph: out}}, nil
+	case *schema.EntityPayload:
+		return &pb.Payload{Kind: &pb.Payload_Entity{Entity: entityPayloadToPB(p)}}, nil
+	case schema.EntityPayload:
+		return &pb.Payload{Kind: &pb.Payload_Entity{Entity: entityPayloadToPB(&p)}}, nil
+	default:
+		return nil, fmt.Errorf("unsupported payload type %T", payload)
+	}
+}
+
+func payloadFromPB(payload *pb.Payload) (schema.Payload, error) {
+	if payload == nil || payload.GetKind() == nil {
+		return nil, errors.New("payload is required")
+	}
+	switch p := payload.GetKind().(type) {
+	case *pb.Payload_Episodic:
+		return episodicPayloadFromPB(p.Episodic)
+	case *pb.Payload_Working:
+		return workingPayloadFromPB(p.Working), nil
+	case *pb.Payload_Semantic:
+		return semanticPayloadFromPB(p.Semantic)
+	case *pb.Payload_Competence:
+		return competencePayloadFromPB(p.Competence), nil
+	case *pb.Payload_PlanGraph:
+		return planGraphPayloadFromPB(p.PlanGraph), nil
+	case *pb.Payload_Entity:
+		return entityPayloadFromPB(p.Entity), nil
+	default:
+		return nil, fmt.Errorf("unsupported payload variant %T", p)
+	}
+}
+
+func episodicPayloadToPB(payload *schema.EpisodicPayload) (*pb.EpisodicPayload, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	toolGraph := make([]*pb.ToolNode, 0, len(payload.ToolGraph))
+	for _, node := range payload.ToolGraph {
+		args, err := valueMapToPB(node.Args)
+		if err != nil {
+			return nil, fmt.Errorf("tool_graph[%s].args: %w", node.ID, err)
+		}
+		result, err := valueToPB(node.Result)
+		if err != nil {
+			return nil, fmt.Errorf("tool_graph[%s].result: %w", node.ID, err)
+		}
+		toolGraph = append(toolGraph, &pb.ToolNode{
+			Id:        node.ID,
+			Tool:      node.Tool,
+			Args:      args,
+			Result:    result,
+			Timestamp: timeToString(node.Timestamp),
+			DependsOn: node.DependsOn,
+		})
+	}
+	timeline := make([]*pb.TimelineEvent, 0, len(payload.Timeline))
+	for _, event := range payload.Timeline {
+		timeline = append(timeline, &pb.TimelineEvent{
+			T:         timeToString(event.T),
+			EventKind: event.EventKind,
+			Ref:       event.Ref,
+			Summary:   event.Summary,
+		})
+	}
+	environment, err := environmentToPB(payload.Environment)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.EpisodicPayload{
+		Kind:         payload.Kind,
+		Timeline:     timeline,
+		ToolGraph:    toolGraph,
+		Environment:  environment,
+		Outcome:      string(payload.Outcome),
+		Artifacts:    payload.Artifacts,
+		ToolGraphRef: payload.ToolGraphRef,
+	}, nil
+}
+
+func episodicPayloadFromPB(payload *pb.EpisodicPayload) (*schema.EpisodicPayload, error) {
+	if payload == nil {
+		return nil, errors.New("episodic payload is required")
+	}
+	timeline := make([]schema.TimelineEvent, 0, len(payload.Timeline))
+	for i, event := range payload.Timeline {
+		if event == nil {
+			continue
+		}
+		t, err := parseTimeValue(event.T)
+		if err != nil {
+			return nil, fmt.Errorf("timeline[%d].t: %w", i, err)
+		}
+		timeline = append(timeline, schema.TimelineEvent{
+			T:         t,
+			EventKind: event.EventKind,
+			Ref:       event.Ref,
+			Summary:   event.Summary,
+		})
+	}
+	toolGraph := make([]schema.ToolNode, 0, len(payload.ToolGraph))
+	for i, node := range payload.ToolGraph {
+		if node == nil {
+			continue
+		}
+		timestamp, err := parseTimeValue(node.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("tool_graph[%d].timestamp: %w", i, err)
+		}
+		toolGraph = append(toolGraph, schema.ToolNode{
+			ID:        node.Id,
+			Tool:      node.Tool,
+			Args:      valueMapFromPB(node.Args),
+			Result:    valueFromPB(node.Result),
+			Timestamp: timestamp,
+			DependsOn: node.DependsOn,
+		})
+	}
+	return &schema.EpisodicPayload{
+		Kind:         payload.Kind,
+		Timeline:     timeline,
+		ToolGraph:    toolGraph,
+		Environment:  environmentFromPB(payload.Environment),
+		Outcome:      schema.OutcomeStatus(payload.Outcome),
+		Artifacts:    payload.Artifacts,
+		ToolGraphRef: payload.ToolGraphRef,
+	}, nil
+}
+
+func environmentToPB(environment *schema.EnvironmentSnapshot) (*pb.EnvironmentSnapshot, error) {
+	if environment == nil {
+		return nil, nil
+	}
+	context, err := valueMapToPB(environment.Context)
+	if err != nil {
+		return nil, fmt.Errorf("environment.context: %w", err)
+	}
+	return &pb.EnvironmentSnapshot{
+		Os:               environment.OS,
+		OsVersion:        environment.OSVersion,
+		ToolVersions:     environment.ToolVersions,
+		WorkingDirectory: environment.WorkingDirectory,
+		Context:          context,
+	}, nil
+}
+
+func environmentFromPB(environment *pb.EnvironmentSnapshot) *schema.EnvironmentSnapshot {
+	if environment == nil {
+		return nil
+	}
+	return &schema.EnvironmentSnapshot{
+		OS:               environment.Os,
+		OSVersion:        environment.OsVersion,
+		ToolVersions:     environment.ToolVersions,
+		WorkingDirectory: environment.WorkingDirectory,
+		Context:          valueMapFromPB(environment.Context),
+	}
+}
+
+func workingPayloadToPB(payload *schema.WorkingPayload) (*pb.WorkingPayload, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	constraints := make([]*pb.Constraint, 0, len(payload.ActiveConstraints))
+	for _, constraint := range payload.ActiveConstraints {
+		value, err := valueToPB(constraint.Value)
+		if err != nil {
+			return nil, fmt.Errorf("active_constraints[%s].value: %w", constraint.Key, err)
+		}
+		constraints = append(constraints, &pb.Constraint{
+			Type:     constraint.Type,
+			Key:      constraint.Key,
+			Value:    value,
+			Required: constraint.Required,
+		})
+	}
+	return &pb.WorkingPayload{
+		Kind:              payload.Kind,
+		ThreadId:          payload.ThreadID,
+		State:             string(payload.State),
+		ActiveConstraints: constraints,
+		NextActions:       payload.NextActions,
+		OpenQuestions:     payload.OpenQuestions,
+		ContextSummary:    payload.ContextSummary,
+	}, nil
+}
+
+func workingPayloadFromPB(payload *pb.WorkingPayload) *schema.WorkingPayload {
+	if payload == nil {
+		return nil
+	}
+	constraints := make([]schema.Constraint, 0, len(payload.ActiveConstraints))
+	for _, constraint := range payload.ActiveConstraints {
+		if constraint == nil {
+			continue
+		}
+		constraints = append(constraints, schema.Constraint{
+			Type:     constraint.Type,
+			Key:      constraint.Key,
+			Value:    valueFromPB(constraint.Value),
+			Required: constraint.Required,
+		})
+	}
+	return &schema.WorkingPayload{
+		Kind:              payload.Kind,
+		ThreadID:          payload.ThreadId,
+		State:             schema.TaskState(payload.State),
+		ActiveConstraints: constraints,
+		NextActions:       payload.NextActions,
+		OpenQuestions:     payload.OpenQuestions,
+		ContextSummary:    payload.ContextSummary,
+	}
+}
+
+func semanticPayloadToPB(payload *schema.SemanticPayload) (*pb.SemanticPayload, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	object, err := valueToPB(payload.Object)
+	if err != nil {
+		return nil, fmt.Errorf("object: %w", err)
+	}
+	conditions, err := valueMapToPB(payload.Validity.Conditions)
+	if err != nil {
+		return nil, fmt.Errorf("validity.conditions: %w", err)
+	}
+	return &pb.SemanticPayload{
+		Kind:      payload.Kind,
+		Subject:   payload.Subject,
+		Predicate: payload.Predicate,
+		Object:    object,
+		Validity: &pb.Validity{
+			Mode:       string(payload.Validity.Mode),
+			Conditions: conditions,
+			Start:      timePtrToString(payload.Validity.Start),
+			End:        timePtrToString(payload.Validity.End),
+		},
+		Evidence:       evidenceToPB(payload.Evidence),
+		RevisionPolicy: payload.RevisionPolicy,
+		Revision:       revisionStateToPB(payload.Revision),
+	}, nil
+}
+
+func semanticPayloadFromPB(payload *pb.SemanticPayload) (*schema.SemanticPayload, error) {
+	if payload == nil {
+		return nil, errors.New("semantic payload is required")
+	}
+	validity, err := validityFromPB(payload.Validity)
+	if err != nil {
+		return nil, err
+	}
+	evidence, err := evidenceFromPB(payload.Evidence)
+	if err != nil {
+		return nil, err
+	}
+	return &schema.SemanticPayload{
+		Kind:           payload.Kind,
+		Subject:        payload.Subject,
+		Predicate:      payload.Predicate,
+		Object:         valueFromPB(payload.Object),
+		Validity:       validity,
+		Evidence:       evidence,
+		RevisionPolicy: payload.RevisionPolicy,
+		Revision:       revisionStateFromPB(payload.Revision),
+	}, nil
+}
+
+func validityFromPB(validity *pb.Validity) (schema.Validity, error) {
+	if validity == nil {
+		return schema.Validity{}, nil
+	}
+	start, err := parseTimePtr(validity.Start)
+	if err != nil {
+		return schema.Validity{}, fmt.Errorf("validity.start: %w", err)
+	}
+	end, err := parseTimePtr(validity.End)
+	if err != nil {
+		return schema.Validity{}, fmt.Errorf("validity.end: %w", err)
+	}
+	return schema.Validity{
+		Mode:       schema.ValidityMode(validity.Mode),
+		Conditions: valueMapFromPB(validity.Conditions),
+		Start:      start,
+		End:        end,
+	}, nil
+}
+
+func evidenceToPB(evidence []schema.ProvenanceRef) []*pb.ProvenanceRef {
+	out := make([]*pb.ProvenanceRef, 0, len(evidence))
+	for _, ref := range evidence {
+		out = append(out, &pb.ProvenanceRef{
+			SourceType: ref.SourceType,
+			SourceId:   ref.SourceID,
+			Timestamp:  timeToString(ref.Timestamp),
+		})
+	}
+	return out
+}
+
+func evidenceFromPB(evidence []*pb.ProvenanceRef) ([]schema.ProvenanceRef, error) {
+	out := make([]schema.ProvenanceRef, 0, len(evidence))
+	for i, ref := range evidence {
+		if ref == nil {
+			continue
+		}
+		timestamp, err := parseTimeValue(ref.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("evidence[%d].timestamp: %w", i, err)
+		}
+		out = append(out, schema.ProvenanceRef{
+			SourceType: ref.SourceType,
+			SourceID:   ref.SourceId,
+			Timestamp:  timestamp,
+		})
+	}
+	return out, nil
+}
+
+func revisionStateToPB(revision *schema.RevisionState) *pb.RevisionState {
+	if revision == nil {
+		return nil
+	}
+	return &pb.RevisionState{
+		Supersedes:   revision.Supersedes,
+		SupersededBy: revision.SupersededBy,
+		Status:       string(revision.Status),
+	}
+}
+
+func revisionStateFromPB(revision *pb.RevisionState) *schema.RevisionState {
+	if revision == nil {
+		return nil
+	}
+	return &schema.RevisionState{
+		Supersedes:   revision.Supersedes,
+		SupersededBy: revision.SupersededBy,
+		Status:       schema.RevisionStatus(revision.Status),
+	}
+}
+
+func entityPayloadToPB(payload *schema.EntityPayload) *pb.EntityPayload {
+	if payload == nil {
+		return nil
+	}
+	return &pb.EntityPayload{
+		Kind:          payload.Kind,
+		CanonicalName: payload.CanonicalName,
+		PrimaryType:   payload.PrimaryType,
+		Types:         payload.Types,
+		Aliases:       entityAliasesToPB(payload.Aliases),
+		Identifiers:   entityIdentifiersToPB(payload.Identifiers),
+		Summary:       payload.Summary,
+	}
+}
+
+func entityPayloadFromPB(payload *pb.EntityPayload) *schema.EntityPayload {
+	if payload == nil {
+		return nil
+	}
+	return &schema.EntityPayload{
+		Kind:          payload.Kind,
+		CanonicalName: payload.CanonicalName,
+		PrimaryType:   payload.PrimaryType,
+		Types:         payload.Types,
+		Aliases:       entityAliasesFromPB(payload.Aliases),
+		Identifiers:   entityIdentifiersFromPB(payload.Identifiers),
+		Summary:       payload.Summary,
+	}
+}
+
+func entityAliasesToPB(aliases []schema.EntityAlias) []*pb.EntityAlias {
+	out := make([]*pb.EntityAlias, 0, len(aliases))
+	for _, alias := range aliases {
+		out = append(out, &pb.EntityAlias{Value: alias.Value, Kind: alias.Kind, Locale: alias.Locale})
+	}
+	return out
+}
+
+func entityAliasesFromPB(aliases []*pb.EntityAlias) []schema.EntityAlias {
+	out := make([]schema.EntityAlias, 0, len(aliases))
+	for _, alias := range aliases {
+		if alias == nil {
+			continue
+		}
+		out = append(out, schema.EntityAlias{Value: alias.Value, Kind: alias.Kind, Locale: alias.Locale})
+	}
+	return out
+}
+
+func entityIdentifiersToPB(identifiers []schema.EntityIdentifier) []*pb.EntityIdentifier {
+	out := make([]*pb.EntityIdentifier, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		out = append(out, &pb.EntityIdentifier{Namespace: identifier.Namespace, Value: identifier.Value})
+	}
+	return out
+}
+
+func entityIdentifiersFromPB(identifiers []*pb.EntityIdentifier) []schema.EntityIdentifier {
+	out := make([]schema.EntityIdentifier, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		if identifier == nil {
+			continue
+		}
+		out = append(out, schema.EntityIdentifier{Namespace: identifier.Namespace, Value: identifier.Value})
+	}
+	return out
+}
+
+func competencePayloadToPB(payload *schema.CompetencePayload) (*pb.CompetencePayload, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	triggers := make([]*pb.Trigger, 0, len(payload.Triggers))
+	for _, trigger := range payload.Triggers {
+		conditions, err := valueMapToPB(trigger.Conditions)
+		if err != nil {
+			return nil, fmt.Errorf("triggers[%s].conditions: %w", trigger.Signal, err)
+		}
+		triggers = append(triggers, &pb.Trigger{Signal: trigger.Signal, Conditions: conditions})
+	}
+	recipe := make([]*pb.RecipeStep, 0, len(payload.Recipe))
+	for _, step := range payload.Recipe {
+		argsSchema, err := valueMapToPB(step.ArgsSchema)
+		if err != nil {
+			return nil, fmt.Errorf("recipe[%s].args_schema: %w", step.Step, err)
+		}
+		recipe = append(recipe, &pb.RecipeStep{
+			Step:       step.Step,
+			Tool:       step.Tool,
+			ArgsSchema: argsSchema,
+			Validation: step.Validation,
+		})
+	}
+	return &pb.CompetencePayload{
+		Kind:          payload.Kind,
+		SkillName:     payload.SkillName,
+		Triggers:      triggers,
+		Recipe:        recipe,
+		RequiredTools: payload.RequiredTools,
+		FailureModes:  payload.FailureModes,
+		Fallbacks:     payload.Fallbacks,
+		Performance:   performanceStatsToPB(payload.Performance),
+		Version:       payload.Version,
+	}, nil
+}
+
+func competencePayloadFromPB(payload *pb.CompetencePayload) *schema.CompetencePayload {
+	if payload == nil {
+		return nil
+	}
+	triggers := make([]schema.Trigger, 0, len(payload.Triggers))
+	for _, trigger := range payload.Triggers {
+		if trigger == nil {
+			continue
+		}
+		triggers = append(triggers, schema.Trigger{
+			Signal:     trigger.Signal,
+			Conditions: valueMapFromPB(trigger.Conditions),
+		})
+	}
+	recipe := make([]schema.RecipeStep, 0, len(payload.Recipe))
+	for _, step := range payload.Recipe {
+		if step == nil {
+			continue
+		}
+		recipe = append(recipe, schema.RecipeStep{
+			Step:       step.Step,
+			Tool:       step.Tool,
+			ArgsSchema: valueMapFromPB(step.ArgsSchema),
+			Validation: step.Validation,
+		})
+	}
+	return &schema.CompetencePayload{
+		Kind:          payload.Kind,
+		SkillName:     payload.SkillName,
+		Triggers:      triggers,
+		Recipe:        recipe,
+		RequiredTools: payload.RequiredTools,
+		FailureModes:  payload.FailureModes,
+		Fallbacks:     payload.Fallbacks,
+		Performance:   performanceStatsFromPB(payload.Performance),
+		Version:       payload.Version,
+	}
+}
+
+func performanceStatsToPB(stats *schema.PerformanceStats) *pb.PerformanceStats {
+	if stats == nil {
+		return nil
+	}
+	return &pb.PerformanceStats{
+		SuccessCount: stats.SuccessCount,
+		FailureCount: stats.FailureCount,
+		SuccessRate:  stats.SuccessRate,
+		AvgLatencyMs: stats.AvgLatencyMs,
+		LastUsedAt:   timePtrToString(stats.LastUsedAt),
+	}
+}
+
+func performanceStatsFromPB(stats *pb.PerformanceStats) *schema.PerformanceStats {
+	if stats == nil {
+		return nil
+	}
+	lastUsedAt, _ := parseTimePtr(stats.LastUsedAt)
+	return &schema.PerformanceStats{
+		SuccessCount: stats.SuccessCount,
+		FailureCount: stats.FailureCount,
+		SuccessRate:  stats.SuccessRate,
+		AvgLatencyMs: stats.AvgLatencyMs,
+		LastUsedAt:   lastUsedAt,
+	}
+}
+
+func planGraphPayloadToPB(payload *schema.PlanGraphPayload) (*pb.PlanGraphPayload, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	constraints, err := valueMapToPB(payload.Constraints)
+	if err != nil {
+		return nil, fmt.Errorf("constraints: %w", err)
+	}
+	inputsSchema, err := valueMapToPB(payload.InputsSchema)
+	if err != nil {
+		return nil, fmt.Errorf("inputs_schema: %w", err)
+	}
+	outputsSchema, err := valueMapToPB(payload.OutputsSchema)
+	if err != nil {
+		return nil, fmt.Errorf("outputs_schema: %w", err)
+	}
+	nodes := make([]*pb.PlanNode, 0, len(payload.Nodes))
+	for _, node := range payload.Nodes {
+		params, err := valueMapToPB(node.Params)
+		if err != nil {
+			return nil, fmt.Errorf("nodes[%s].params: %w", node.ID, err)
+		}
+		guards, err := valueMapToPB(node.Guards)
+		if err != nil {
+			return nil, fmt.Errorf("nodes[%s].guards: %w", node.ID, err)
+		}
+		nodes = append(nodes, &pb.PlanNode{
+			Id:     node.ID,
+			Op:     node.Op,
+			Params: params,
+			Guards: guards,
+		})
+	}
+	edges := make([]*pb.PlanEdge, 0, len(payload.Edges))
+	for _, edge := range payload.Edges {
+		edges = append(edges, &pb.PlanEdge{From: edge.From, To: edge.To, Kind: string(edge.Kind)})
+	}
+	return &pb.PlanGraphPayload{
+		Kind:          payload.Kind,
+		PlanId:        payload.PlanID,
+		Version:       payload.Version,
+		Intent:        payload.Intent,
+		Constraints:   constraints,
+		InputsSchema:  inputsSchema,
+		OutputsSchema: outputsSchema,
+		Nodes:         nodes,
+		Edges:         edges,
+		Metrics:       planMetricsToPB(payload.Metrics),
+	}, nil
+}
+
+func planGraphPayloadFromPB(payload *pb.PlanGraphPayload) *schema.PlanGraphPayload {
+	if payload == nil {
+		return nil
+	}
+	nodes := make([]schema.PlanNode, 0, len(payload.Nodes))
+	for _, node := range payload.Nodes {
+		if node == nil {
+			continue
+		}
+		nodes = append(nodes, schema.PlanNode{
+			ID:     node.Id,
+			Op:     node.Op,
+			Params: valueMapFromPB(node.Params),
+			Guards: valueMapFromPB(node.Guards),
+		})
+	}
+	edges := make([]schema.PlanEdge, 0, len(payload.Edges))
+	for _, edge := range payload.Edges {
+		if edge == nil {
+			continue
+		}
+		edges = append(edges, schema.PlanEdge{
+			From: edge.From,
+			To:   edge.To,
+			Kind: schema.EdgeKind(edge.Kind),
+		})
+	}
+	return &schema.PlanGraphPayload{
+		Kind:          payload.Kind,
+		PlanID:        payload.PlanId,
+		Version:       payload.Version,
+		Intent:        payload.Intent,
+		Constraints:   valueMapFromPB(payload.Constraints),
+		InputsSchema:  valueMapFromPB(payload.InputsSchema),
+		OutputsSchema: valueMapFromPB(payload.OutputsSchema),
+		Nodes:         nodes,
+		Edges:         edges,
+		Metrics:       planMetricsFromPB(payload.Metrics),
+	}
+}
+
+func planMetricsToPB(metrics *schema.PlanMetrics) *pb.PlanMetrics {
+	if metrics == nil {
+		return nil
+	}
+	return &pb.PlanMetrics{
+		AvgLatencyMs:   metrics.AvgLatencyMs,
+		FailureRate:    metrics.FailureRate,
+		ExecutionCount: metrics.ExecutionCount,
+		LastExecutedAt: timePtrToString(metrics.LastExecutedAt),
+	}
+}
+
+func planMetricsFromPB(metrics *pb.PlanMetrics) *schema.PlanMetrics {
+	if metrics == nil {
+		return nil
+	}
+	lastExecutedAt, _ := parseTimePtr(metrics.LastExecutedAt)
+	return &schema.PlanMetrics{
+		AvgLatencyMs:   metrics.AvgLatencyMs,
+		FailureRate:    metrics.FailureRate,
+		ExecutionCount: metrics.ExecutionCount,
+		LastExecutedAt: lastExecutedAt,
+	}
+}
+
+// marshalMemoryRecordResponse converts a MemoryRecord into a typed MemoryRecordResponse.
 func marshalMemoryRecordResponse(rec *schema.MemoryRecord) (*pb.MemoryRecordResponse, error) {
-	data, err := json.Marshal(rec)
+	out, err := memoryRecordToPB(rec)
 	if err != nil {
 		return nil, internalErr(fmt.Errorf("marshal record: %w", err))
 	}
-	return &pb.MemoryRecordResponse{Record: data}, nil
+	return &pb.MemoryRecordResponse{Record: out}, nil
 }
 
 func marshalCaptureMemoryResponse(resp *ingestion.CaptureMemoryResponse) (*pb.CaptureMemoryResponse, error) {
 	if resp == nil {
 		return &pb.CaptureMemoryResponse{}, nil
 	}
-	primaryBytes, err := json.Marshal(resp.PrimaryRecord)
+	primary, err := memoryRecordToPB(resp.PrimaryRecord)
 	if err != nil {
 		return nil, internalErr(fmt.Errorf("marshal primary_record: %w", err))
 	}
-	createdRecords := make([][]byte, 0, len(resp.CreatedRecords))
+	createdRecords := make([]*pb.MemoryRecord, 0, len(resp.CreatedRecords))
 	for _, rec := range resp.CreatedRecords {
-		data, err := json.Marshal(rec)
+		out, err := memoryRecordToPB(rec)
 		if err != nil {
 			return nil, internalErr(fmt.Errorf("marshal created_record: %w", err))
 		}
-		createdRecords = append(createdRecords, data)
+		createdRecords = append(createdRecords, out)
 	}
-	edgeBytes, err := json.Marshal(resp.Edges)
-	if err != nil {
-		return nil, internalErr(fmt.Errorf("marshal capture edges: %w", err))
-	}
+	edges := graphEdgesToPB(resp.Edges)
 	return &pb.CaptureMemoryResponse{
-		PrimaryRecord:  primaryBytes,
+		PrimaryRecord:  primary,
 		CreatedRecords: createdRecords,
-		Edges:          edgeBytes,
+		Edges:          edges,
 	}, nil
 }
 
@@ -440,26 +1590,23 @@ func marshalRetrieveGraphResponse(resp *retrieval.RetrieveGraphResponse) (*pb.Re
 	if resp == nil {
 		return &pb.RetrieveGraphResponse{}, nil
 	}
-	nodeBytes, err := json.Marshal(resp.Nodes)
-	if err != nil {
-		return nil, internalErr(fmt.Errorf("marshal graph nodes: %w", err))
-	}
-	edgeBytes, err := json.Marshal(resp.Edges)
-	if err != nil {
-		return nil, internalErr(fmt.Errorf("marshal graph edges: %w", err))
-	}
-	var selBytes []byte
-	if resp.Selection != nil {
-		selBytes, err = json.Marshal(resp.Selection)
+	nodes := make([]*pb.GraphNode, 0, len(resp.Nodes))
+	for _, node := range resp.Nodes {
+		out, err := graphNodeToPB(node)
 		if err != nil {
-			return nil, internalErr(fmt.Errorf("marshal graph selection: %w", err))
+			return nil, internalErr(fmt.Errorf("marshal graph node: %w", err))
 		}
+		nodes = append(nodes, out)
+	}
+	selection, err := selectionToPB(resp.Selection)
+	if err != nil {
+		return nil, internalErr(fmt.Errorf("marshal graph selection: %w", err))
 	}
 	return &pb.RetrieveGraphResponse{
-		Nodes:     nodeBytes,
-		Edges:     edgeBytes,
+		Nodes:     nodes,
+		Edges:     graphEdgesToPB(resp.Edges),
 		RootIds:   resp.RootIDs,
-		Selection: selBytes,
+		Selection: selection,
 	}, nil
 }
 

@@ -152,7 +152,7 @@ if len(tc.Scopes) > 0 && record.Scope != "" {
 <Tabs>
   <Tab title="Go">
 ```go
-resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+resp, _ := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
     TaskDescriptor: "fix build error",
     Trust: &retrieval.TrustContext{
         MaxSensitivity: schema.SensitivityMedium,
@@ -161,35 +161,46 @@ resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
         Scopes:         []string{"project-acme"},
     },
     MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeEntity,
         schema.MemoryTypeCompetence,
         schema.MemoryTypeSemantic,
     },
+    RootLimit: 10,
+    NodeLimit: 25,
+    MaxHops:   1,
 })
 
-for _, r := range resp.Records {
+for _, node := range resp.Nodes {
+    r := node.Record
     fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
 }
 ```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
-const results = await client.retrieve("database operations", {
+const graph = await client.retrieveGraph("database operations", {
   trust: {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "ts-agent",
     scopes: []
   },
-  memoryTypes: ["semantic", "competence"]
+  memoryTypes: ["entity", "semantic", "competence"],
+  rootLimit: 10,
+  nodeLimit: 25,
+  maxHops: 1
 });
 ```
   </Tab>
   <Tab title="Python">
 ```python
-results = client.retrieve(
+graph = client.retrieve_graph(
     task_descriptor="database operations",
     trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
-    memory_types=["semantic", "competence"],
+    memory_types=["entity", "semantic", "competence"],
+    root_limit=10,
+    node_limit=25,
+    max_hops=1,
 )
 ```
   </Tab>
@@ -199,7 +210,7 @@ results = client.retrieve(
 
 ## Retrieval without a trust context
 
-Passing a `nil` trust context to `Retrieve` or `RetrieveByID` returns `ErrNilTrust`. All retrieval calls must include a trust context.
+Passing a `nil` trust context to `RetrieveGraph`, lower-level `Retrieve`, or `RetrieveByID` returns `ErrNilTrust`. All retrieval calls must include a trust context.
 
 ```go
 // From pkg/retrieval/retrieval.go
@@ -219,7 +230,7 @@ Never omit the trust context in production code. Failing to supply one causes th
 When no `MemoryTypes` filter is specified, records are queried in this canonical order before trust filtering is applied:
 
 ```
-working → semantic → competence → plan_graph → episodic
+working → entity → semantic → competence → plan_graph → episodic
 ```
 
-This ordering ensures task-critical context (working memory) and high-value knowledge (semantic, competence) are surfaced before raw experience.
+This ordering ensures task-critical context, entity anchors, and high-value knowledge are surfaced before raw experience.

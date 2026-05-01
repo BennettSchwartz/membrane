@@ -20,7 +20,7 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
     ```
   </Tab>
   <Tab title="gRPC">
-    Call the `GetMetrics` gRPC method (no request body required). Returns the same JSON-encoded snapshot.
+    Call the `GetMetrics` gRPC method (no request body required). The `snapshot` response field is a `google.protobuf.Value` containing the metrics object.
   </Tab>
 </Tabs>
 
@@ -29,9 +29,10 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
 ```json
 {
   "collected_at": "2026-02-05T14:23:10Z",
-  "total_records": 142,
+  "total_records": 160,
   "records_by_type": {
     "episodic": 80,
+    "entity": 18,
     "semantic": 35,
     "competence": 15,
     "plan_graph": 7,
@@ -40,13 +41,13 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
   "avg_salience": 0.62,
   "avg_confidence": 0.78,
   "salience_distribution": {
-    "0.0-0.2": 12,
-    "0.2-0.4": 18,
-    "0.4-0.6": 30,
-    "0.6-0.8": 45,
-    "0.8-1.0": 37
+    "0.0-0.2": 14,
+    "0.2-0.4": 22,
+    "0.4-0.6": 34,
+    "0.6-0.8": 50,
+    "0.8-1.0": 40
   },
-  "active_records": 130,
+  "active_records": 148,
   "pinned_records": 3,
   "total_audit_entries": 890,
   "memory_growth_rate": 0.15,

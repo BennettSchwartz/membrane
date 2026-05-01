@@ -3,18 +3,19 @@
 Communicates with the Membrane daemon over gRPC using the protobuf-defined
 ``membrane.v1.MembraneService`` contract.
 
-Several request/response fields still carry JSON-encoded ``bytes`` payloads
-inside the protobuf messages. This client hides that encoding detail behind
-Python-native helper methods.
+Arbitrary content fields use ``google.protobuf.Value`` while records, graph
+nodes, graph edges, and response envelopes are typed protobuf messages.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from typing import Any, Sequence
 
 import grpc
+from google.protobuf import json_format
+from google.protobuf.message import Message
+from google.protobuf.struct_pb2 import Value
 
 from membrane.types import (
     CaptureMemoryResult,
@@ -39,54 +40,71 @@ def _now_rfc3339() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _json_bytes(value: Any) -> bytes:
-    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+_PAYLOAD_ONEOF_KEYS = {
+    "episodic",
+    "working",
+    "semantic",
+    "competence",
+    "plan_graph",
+    "entity",
+}
 
 
-def _parse_json_bytes(data: bytes) -> Any:
-    return json.loads(data.decode("utf-8"))  # type: ignore[no-any-return]
+def _value_message(value: Any) -> Value:
+    msg = Value()
+    json_format.ParseDict(value, msg)
+    return msg
 
 
-def _parse_record_from_response(record: bytes) -> MemoryRecord:
-    """Parse a JSON-encoded MemoryRecord from a protobuf bytes field.
-
-    ``MemoryRecordResponse`` exposes the record bytes directly on its
-    ``record`` field.
-    """
-    return MemoryRecord.from_dict(_parse_json_bytes(record))
+def _value_to_python(value: Value) -> Any:
+    return json_format.MessageToDict(value, preserving_proto_field_name=True)
 
 
-def _parse_selection_from_response(data: bytes) -> SelectionResult | None:
-    if not data:
-        return None
-
-    raw = _parse_json_bytes(data)
+def _message_to_dict(message: Message) -> dict[str, Any]:
+    raw = json_format.MessageToDict(message, preserving_proto_field_name=True)
     if not isinstance(raw, dict):
-        raise TypeError("Expected selection metadata object")
-    return SelectionResult.from_dict(raw)
+        raise TypeError(f"Expected {message.DESCRIPTOR.full_name} object")
+    return raw
+
+
+def _parse_record_from_response(record: membrane_pb2.MemoryRecord) -> MemoryRecord:
+    return MemoryRecord.from_dict(_message_to_dict(record))
+
+
+def _parse_selection_from_response(
+    selection: membrane_pb2.SelectionResult,
+) -> SelectionResult | None:
+    if selection.ByteSize() == 0:
+        return None
+    return SelectionResult.from_dict(_message_to_dict(selection))
+
+
+def _graph_edge_from_response(edge: membrane_pb2.GraphEdge) -> GraphEdge:
+    return GraphEdge.from_dict(_message_to_dict(edge))
+
+
+def _graph_node_from_response(node: membrane_pb2.GraphNode) -> GraphNode:
+    return GraphNode.from_dict(_message_to_dict(node))
 
 
 def _parse_capture_memory_response(
     response: membrane_pb2.CaptureMemoryResponse,
 ) -> CaptureMemoryResult:
-    raw_edges = _parse_json_bytes(response.edges) if response.edges else []
     return CaptureMemoryResult(
         primary_record=_parse_record_from_response(response.primary_record),
         created_records=[
-            _parse_record_from_response(raw) for raw in response.created_records
+            _parse_record_from_response(record) for record in response.created_records
         ],
-        edges=[GraphEdge.from_dict(edge) for edge in raw_edges],
+        edges=[_graph_edge_from_response(edge) for edge in response.edges],
     )
 
 
 def _parse_retrieve_graph_response(
     response: membrane_pb2.RetrieveGraphResponse,
 ) -> RetrieveGraphResult:
-    raw_nodes = _parse_json_bytes(response.nodes) if response.nodes else []
-    raw_edges = _parse_json_bytes(response.edges) if response.edges else []
     return RetrieveGraphResult(
-        nodes=[GraphNode.from_dict(node) for node in raw_nodes],
-        edges=[GraphEdge.from_dict(edge) for edge in raw_edges],
+        nodes=[_graph_node_from_response(node) for node in response.nodes],
+        edges=[_graph_edge_from_response(edge) for edge in response.edges],
         root_ids=list(response.root_ids),
         selection=_parse_selection_from_response(response.selection),
     )
@@ -106,6 +124,31 @@ def _trust_context_message(trust: TrustContext) -> membrane_pb2.TrustContext:
         actor_id=trust.actor_id,
         scopes=trust.scopes,
     )
+
+
+def _record_dict_for_proto(record: dict[str, Any] | MemoryRecord) -> dict[str, Any]:
+    data = record.to_dict() if isinstance(record, MemoryRecord) else dict(record)
+    payload = data.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        return data
+
+    oneof_keys = [key for key in _PAYLOAD_ONEOF_KEYS if key in payload]
+    if oneof_keys:
+        data["payload"] = {key: payload[key] for key in oneof_keys}
+        return data
+
+    payload_kind = payload.get("kind") or data.get("type")
+    if isinstance(payload_kind, MemoryType):
+        payload_kind = payload_kind.value
+    if payload_kind in _PAYLOAD_ONEOF_KEYS:
+        data["payload"] = {str(payload_kind): payload}
+    return data
+
+
+def _record_message(record: dict[str, Any] | MemoryRecord) -> membrane_pb2.MemoryRecord:
+    msg = membrane_pb2.MemoryRecord()
+    json_format.ParseDict(_record_dict_for_proto(record), msg)
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +276,7 @@ class MembraneClient:
             source_kind=(
                 source_kind.value if isinstance(source_kind, SourceKind) else source_kind
             ),
-            content=_json_bytes(content),
+            content=_value_message(content),
             reason_to_remember=reason_to_remember,
             proposed_type=(
                 proposed_type.value
@@ -247,7 +290,7 @@ class MembraneClient:
             timestamp=timestamp or _now_rfc3339(),
         )
         if context is not None:
-            req.context = _json_bytes(context)
+            req.context.CopyFrom(_value_message(context))
         resp = self._stub.CaptureMemory(req, **self._call_kwargs())
         return _parse_capture_memory_response(resp)
 
@@ -335,12 +378,9 @@ class MembraneClient:
         Returns:
             The newly created ``MemoryRecord``.
         """
-        if isinstance(new_record, MemoryRecord):
-            new_record = new_record.to_dict()
-
         req = membrane_pb2.SupersedeRequest(
             old_id=old_id,
-            new_record=_json_bytes(new_record),
+            new_record=_record_message(new_record),
             actor=actor,
             rationale=rationale,
         )
@@ -365,12 +405,9 @@ class MembraneClient:
         Returns:
             The newly created ``MemoryRecord``.
         """
-        if isinstance(forked_record, MemoryRecord):
-            forked_record = forked_record.to_dict()
-
         req = membrane_pb2.ForkRequest(
             source_id=source_id,
-            forked_record=_json_bytes(forked_record),
+            forked_record=_record_message(forked_record),
             actor=actor,
             rationale=rationale,
         )
@@ -415,12 +452,9 @@ class MembraneClient:
         Returns:
             The newly created ``MemoryRecord``.
         """
-        if isinstance(merged_record, MemoryRecord):
-            merged_record = merged_record.to_dict()
-
         req = membrane_pb2.MergeRequest(
             ids=list(record_ids),
-            merged_record=_json_bytes(merged_record),
+            merged_record=_record_message(merged_record),
             actor=actor,
             rationale=rationale,
         )
@@ -507,7 +541,10 @@ class MembraneClient:
             membrane_pb2.GetMetricsRequest(),
             **self._call_kwargs(),
         )
-        return _parse_json_bytes(resp.snapshot)
+        snapshot = _value_to_python(resp.snapshot)
+        if not isinstance(snapshot, dict):
+            raise TypeError("Expected metrics snapshot object")
+        return snapshot
 
     # -- Lifecycle -----------------------------------------------------------
 
