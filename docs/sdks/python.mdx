@@ -1,445 +1,209 @@
 ---
 title: "Python SDK"
-description: "Python client for the Membrane memory substrate. Communicates with the Membrane daemon over gRPC using the protobuf-defined service contract."
+description: "Python client for the Membrane gRPC daemon."
 ---
+
+The Python SDK communicates with `membraned` over gRPC using the typed `membrane.v1.MembraneService` protobuf contract. Arbitrary capture content uses `google.protobuf.Value`; memory records, graph nodes, graph edges, and response envelopes are typed protobuf messages converted into Python dataclasses.
 
 ## Installation
 
-<CodeGroup>
-
-```bash pip
+```bash
 pip install -e clients/python
 ```
 
-```bash pip (with dev deps)
+For development:
+
+```bash
 pip install -e clients/python[dev]
 ```
 
-</CodeGroup>
-
-<Info>
-Requires Python 3.10+, `grpcio >= 1.78.0`, `protobuf >= 6.31.1`, and a running Membrane daemon (default: `localhost:9090`).
-</Info>
-
-## Quick start
+## Quick Start
 
 ```python
-from membrane import MembraneClient, Sensitivity, TrustContext
+from membrane import MembraneClient, Sensitivity, SourceKind, TrustContext
 
-# Connect to the running Membrane daemon
 client = MembraneClient("localhost:9090")
 
-# Ingest an event
-record = client.ingest_event(
-    event_kind="file_edit",
-    ref="src/main.py",
-    summary="Refactored authentication module",
+capture = client.capture_memory(
+    {
+        "ref": "src/auth.py",
+        "text": "Refactored auth middleware and verified package tests",
+        "file": "src/auth.py",
+    },
+    source_kind=SourceKind.EVENT,
+    reason_to_remember="Keep the auth refactor available for future debugging",
+    summary="Refactored auth middleware",
     sensitivity=Sensitivity.LOW,
+    tags=["auth", "python"],
 )
-print(f"Created record: {record.id}")
+print(capture.primary_record.id)
 
-# Retrieve memories relevant to a task
 trust = TrustContext(
     max_sensitivity=Sensitivity.MEDIUM,
     authenticated=True,
     actor_id="agent-1",
 )
-records = client.retrieve("fix the login bug", trust=trust, limit=5)
-for r in records:
-    print(f"  [{r.type.value}] {r.id} (salience={r.salience:.2f})")
 
-# Reinforce a useful memory
-client.reinforce(record.id, actor="agent-1", rationale="Used successfully")
+graph = client.retrieve_graph(
+    "debug auth",
+    trust=trust,
+    memory_types=["entity", "semantic", "competence", "episodic"],
+    root_limit=5,
+    node_limit=20,
+    max_hops=1,
+)
 
-# Clean up
+for node in graph.nodes:
+    print(f"[{node.record.type.value}] {node.record.id} root={node.root} hop={node.hop}")
+
 client.close()
 ```
 
-### Context manager
-
-```python
-with MembraneClient("localhost:9090") as client:
-    record = client.ingest_observation(
-        subject="user",
-        predicate="prefers",
-        obj={"language": "Python"},
-        sensitivity=Sensitivity.LOW,
-    )
-```
-
-## `MembraneClient`
-
-### Constructor
-
-```python
-MembraneClient(
-    addr: str = "localhost:9090",
-    *,
-    tls: bool = False,
-    tls_ca_cert: str | None = None,
-    api_key: str | None = None,
-    timeout: float | None = None,
-)
-```
-
-<ParamField path="addr" type="str">
-  gRPC server address in `host:port` format. Defaults to `"localhost:9090"`.
-</ParamField>
-
-<ParamField path="tls" type="bool">
-  Enable TLS transport. When `True` and `tls_ca_cert` is not provided, system root certificates are used.
-</ParamField>
-
-<ParamField path="tls_ca_cert" type="str | None">
-  Path to a PEM-encoded CA certificate for server verification. Implies `tls=True`.
-</ParamField>
-
-<ParamField path="api_key" type="str | None">
-  Bearer token sent as `authorization` metadata on every RPC.
-</ParamField>
-
-<ParamField path="timeout" type="float | None">
-  Default timeout in seconds for all RPC calls. `None` means no timeout.
-</ParamField>
-
-#### TLS and authentication example
+## Client Options
 
 ```python
 client = MembraneClient(
     "membrane.example.com:443",
-    tls=True,                        # use TLS transport
-    tls_ca_cert="/path/to/ca.pem",   # optional custom CA
-    api_key="your-api-key",          # Bearer token auth
-    timeout=10.0,                    # default timeout in seconds
+    tls=True,
+    tls_ca_cert="/path/to/ca.pem",
+    api_key="your-api-key",
+    timeout=10.0,
 )
+```
+
+<ParamField path="addr" type="str" default="localhost:9090">
+  gRPC address of the Membrane daemon.
+</ParamField>
+
+<ParamField path="tls" type="bool">
+  Use TLS transport.
+</ParamField>
+
+<ParamField path="tls_ca_cert" type="str">
+  Optional CA certificate path. Supplying it implies TLS.
+</ParamField>
+
+<ParamField path="api_key" type="str">
+  Bearer token sent in gRPC metadata.
+</ParamField>
+
+<ParamField path="timeout" type="float">
+  Default timeout in seconds for RPC calls.
+</ParamField>
+
+The client also supports the context-manager protocol:
+
+```python
+with MembraneClient("localhost:9090") as client:
+    capture = client.capture_memory({"text": "Remember this"})
 ```
 
 ---
 
-## Ingestion methods
-
-### `ingest_event`
-
-Create an episodic record from an event.
+## Capture
 
 ```python
-def ingest_event(
-    self,
-    event_kind: str,
-    ref: str,
+def capture_memory(
+    content: Any,
     *,
+    source_kind: SourceKind | str = SourceKind.AGENT_TURN,
+    context: Any = None,
+    reason_to_remember: str = "",
+    proposed_type: MemoryType | str | None = None,
     summary: str = "",
     sensitivity: Sensitivity | str = Sensitivity.LOW,
     source: str = "python-client",
     tags: Sequence[str] | None = None,
     scope: str = "",
     timestamp: str | None = None,
-) -> MemoryRecord
+) -> CaptureMemoryResult
 ```
 
-<ParamField path="event_kind" type="str" required>
-  Kind of event, e.g. `"file_edit"`, `"tool_call"`, `"error"`.
-</ParamField>
-
-<ParamField path="ref" type="str" required>
-  Reference identifier for the event source.
-</ParamField>
-
-<ParamField path="summary" type="str">
-  Human-readable summary of the event.
-</ParamField>
-
-<ParamField path="sensitivity" type="Sensitivity | str">
-  Sensitivity classification. Defaults to `Sensitivity.LOW`.
-</ParamField>
-
-<ParamField path="source" type="str">
-  Provenance source identifier. Defaults to `"python-client"`.
-</ParamField>
-
-<ParamField path="tags" type="Sequence[str] | None">
-  Tags for categorization and retrieval filtering.
-</ParamField>
-
-<ParamField path="scope" type="str">
-  Visibility scope for the record.
-</ParamField>
-
-<ParamField path="timestamp" type="str | None">
-  RFC 3339 timestamp. Defaults to now.
-</ParamField>
+Captures a rich memory candidate. `content` must be JSON-compatible.
 
 ```python
-record = client.ingest_event(
-    source="my-agent",
-    event_kind="tool_call",
-    ref="task#1",
-    summary="Ran database migration successfully",
-    tags=["db", "migration"],
-)
-```
-
-### `ingest_tool_output`
-
-Create an episodic record from a tool invocation.
-
-```python
-def ingest_tool_output(
-    self,
-    tool_name: str,
-    *,
-    args: dict[str, Any] | None = None,
-    result: Any = None,
-    sensitivity: Sensitivity | str = Sensitivity.LOW,
-    source: str = "python-client",
-    depends_on: Sequence[str] | None = None,
-    tags: Sequence[str] | None = None,
-    scope: str = "",
-    timestamp: str | None = None,
-) -> MemoryRecord
-```
-
-<ParamField path="tool_name" type="str" required>
-  Name of the tool that produced output.
-</ParamField>
-
-<ParamField path="args" type="dict[str, Any] | None">
-  Arguments passed to the tool.
-</ParamField>
-
-<ParamField path="result" type="Any">
-  Result returned by the tool (any JSON-serializable value).
-</ParamField>
-
-<ParamField path="depends_on" type="Sequence[str] | None">
-  IDs of records this output depends on.
-</ParamField>
-
-```python
-record = client.ingest_tool_output(
-    "run_tests",
-    args={"suite": "auth"},
-    result={"passed": 42, "failed": 0},
-    tags=["tests", "auth"],
-)
-```
-
-### `ingest_observation`
-
-Create a semantic record from a subject-predicate-object triple.
-
-```python
-def ingest_observation(
-    self,
-    subject: str,
-    predicate: str,
-    obj: Any,
-    *,
-    sensitivity: Sensitivity | str = Sensitivity.LOW,
-    source: str = "python-client",
-    tags: Sequence[str] | None = None,
-    scope: str = "",
-    timestamp: str | None = None,
-) -> MemoryRecord
-```
-
-<ParamField path="subject" type="str" required>
-  The subject of the observation.
-</ParamField>
-
-<ParamField path="predicate" type="str" required>
-  The predicate relating subject to object.
-</ParamField>
-
-<ParamField path="obj" type="Any" required>
-  The object value (any JSON-serializable value).
-</ParamField>
-
-```python
-record = client.ingest_observation(
-    subject="user",
-    predicate="prefers",
-    obj={"language": "Python"},
+capture = client.capture_memory(
+    {
+        "tool_name": "go test",
+        "args": {"packages": ["./pkg/auth"]},
+        "result": {"exit_code": 0},
+    },
+    source_kind=SourceKind.TOOL_OUTPUT,
+    source="auth-agent",
+    reason_to_remember="Successful auth package verification",
+    summary="Auth package tests passed",
+    tags=["auth", "tests"],
+    scope="project-auth",
     sensitivity=Sensitivity.LOW,
 )
+
+print(capture.primary_record.id)
+print(len(capture.created_records))
+print(len(capture.edges))
 ```
 
-### `ingest_outcome`
+`CaptureMemoryResult` contains:
 
-Attach an outcome to an existing episodic record.
-
-```python
-def ingest_outcome(
-    self,
-    target_record_id: str,
-    outcome_status: OutcomeStatus | str,
-    *,
-    source: str = "python-client",
-    timestamp: str | None = None,
-) -> MemoryRecord
-```
-
-<ParamField path="target_record_id" type="str" required>
-  ID of the record to attach the outcome to.
-</ParamField>
-
-<ParamField path="outcome_status" type="OutcomeStatus | str" required>
-  One of `"success"`, `"failure"`, or `"partial"`.
-</ParamField>
-
-```python
-from membrane import OutcomeStatus
-
-client.ingest_outcome(record.id, OutcomeStatus.SUCCESS)
-```
-
-### `ingest_working_state`
-
-Create a working memory snapshot for a task thread.
-
-```python
-def ingest_working_state(
-    self,
-    thread_id: str,
-    state: str,
-    *,
-    next_actions: Sequence[str] | None = None,
-    open_questions: Sequence[str] | None = None,
-    context_summary: str = "",
-    active_constraints: Sequence[dict[str, Any]] | None = None,
-    sensitivity: Sensitivity | str = Sensitivity.LOW,
-    source: str = "python-client",
-    tags: Sequence[str] | None = None,
-    scope: str = "",
-    timestamp: str | None = None,
-) -> MemoryRecord
-```
-
-<ParamField path="thread_id" type="str" required>
-  Identifier for the task thread.
-</ParamField>
-
-<ParamField path="state" type="str" required>
-  Current task state: `"planning"`, `"executing"`, `"blocked"`, `"waiting"`, or `"done"`.
-</ParamField>
-
-<ParamField path="next_actions" type="Sequence[str] | None">
-  Planned next steps.
-</ParamField>
-
-<ParamField path="open_questions" type="Sequence[str] | None">
-  Unresolved questions.
-</ParamField>
-
-<ParamField path="context_summary" type="str">
-  Human-readable summary of current context.
-</ParamField>
-
-<ParamField path="active_constraints" type="Sequence[dict[str, Any]] | None">
-  Active constraints as JSON-serializable dicts.
-</ParamField>
-
-```python
-client.ingest_working_state(
-    thread_id="session-001",
-    state="executing",
-    next_actions=["run tests", "deploy"],
-    context_summary="Backend initialized, frontend pending, docs TODO",
-)
-```
+| Field | Type |
+|-------|------|
+| `primary_record` | `MemoryRecord` |
+| `created_records` | `list[MemoryRecord]` |
+| `edges` | `list[GraphEdge]` |
 
 ---
 
-## Retrieval methods
-
-### `retrieve`
-
-Retrieve memory records relevant to a task descriptor. Returns only records (backward-compatible helper).
+## Retrieve Graph
 
 ```python
-def retrieve(
-    self,
+def retrieve_graph(
     task_descriptor: str,
     *,
     trust: TrustContext | None = None,
     memory_types: Sequence[MemoryType | str] | None = None,
     min_salience: float = 0.0,
-    limit: int = 10,
-) -> list[MemoryRecord]
+    root_limit: int = 10,
+    node_limit: int = 25,
+    edge_limit: int = 100,
+    max_hops: int = 1,
+) -> RetrieveGraphResult
 ```
 
-<ParamField path="task_descriptor" type="str" required>
-  Natural-language description of the current task.
-</ParamField>
-
-<ParamField path="trust" type="TrustContext | None">
-  Trust context controlling access. Defaults to a minimal context with `Sensitivity.LOW`.
-</ParamField>
-
-<ParamField path="memory_types" type="Sequence[MemoryType | str] | None">
-  Filter by memory types: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`.
-</ParamField>
-
-<ParamField path="min_salience" type="float">
-  Minimum salience threshold. Defaults to `0.0`.
-</ParamField>
-
-<ParamField path="limit" type="int">
-  Maximum records to return. Defaults to `10`.
-</ParamField>
+Retrieves ranked root memories and a bounded graph neighborhood.
 
 ```python
-trust = TrustContext(
-    max_sensitivity=Sensitivity.MEDIUM,
-    authenticated=True,
-    actor_id="agent-1",
+graph = client.retrieve_graph(
+    "debug auth retry failures",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="auth-agent",
+        scopes=["project-auth"],
+    ),
+    memory_types=["entity", "semantic", "competence", "episodic"],
+    root_limit=8,
+    node_limit=20,
+    edge_limit=80,
+    max_hops=1,
 )
-records = client.retrieve(
-    "database operations",
-    trust=trust,
-    memory_types=["semantic", "competence"],
-    limit=5,
-)
+
+root_records = [node.record for node in graph.nodes if node.root]
 ```
 
-### `retrieve_with_selection`
+`RetrieveGraphResult` contains:
 
-Retrieve records plus optional selector metadata (ranked candidates, confidence).
+| Field | Type |
+|-------|------|
+| `nodes` | `list[GraphNode]` |
+| `edges` | `list[GraphEdge]` |
+| `root_ids` | `list[str]` |
+| `selection` | `SelectionResult | None` |
 
-```python
-def retrieve_with_selection(
-    self,
-    task_descriptor: str,
-    *,
-    trust: TrustContext | None = None,
-    memory_types: Sequence[MemoryType | str] | None = None,
-    min_salience: float = 0.0,
-    limit: int = 10,
-) -> RetrieveResult
-```
+---
 
-Returns a `RetrieveResult` dataclass:
-
-```python
-@dataclass
-class RetrieveResult:
-    records: list[MemoryRecord]
-    selection: SelectionResult | None  # optional selector metadata
-
-@dataclass
-class SelectionResult:
-    selected: list[MemoryRecord]
-    confidence: float
-    needs_more: bool
-```
-
-### `retrieve_by_id`
-
-Fetch a single record by its ID.
+## Retrieve By ID
 
 ```python
 def retrieve_by_id(
-    self,
     record_id: str,
     *,
     trust: TrustContext | None = None,
@@ -447,310 +211,87 @@ def retrieve_by_id(
 ```
 
 ```python
-record = client.retrieve_by_id("rec-uuid-here")
-```
-
----
-
-## Revision methods
-
-### `supersede`
-
-Replace a record with a new version.
-
-```python
-def supersede(
-    self,
-    old_id: str,
-    new_record: dict[str, Any] | MemoryRecord,
-    actor: str,
-    rationale: str,
-) -> MemoryRecord
-```
-
-```python
-updated = client.supersede(
-    old_record.id,
-    {**old_record.to_dict(), "payload": {"version": "2.0"}},
-    actor="agent-1",
-    rationale="Updated version field",
-)
-```
-
-### `fork`
-
-Create a conditional variant of a record.
-
-```python
-def fork(
-    self,
-    source_id: str,
-    forked_record: dict[str, Any] | MemoryRecord,
-    actor: str,
-    rationale: str,
-) -> MemoryRecord
-```
-
-```python
-variant = client.fork(
-    source_record.id,
-    {**source_record.to_dict(), "scope": "dev"},
-    actor="agent-1",
-    rationale="Different behavior for dev environment",
-)
-```
-
-### `retract`
-
-Soft-delete a record.
-
-```python
-def retract(
-    self,
-    record_id: str,
-    actor: str,
-    rationale: str,
-) -> None
-```
-
-```python
-client.retract(record.id, actor="agent-1", rationale="No longer accurate")
-```
-
-### `merge`
-
-Combine multiple records into a single consolidated record.
-
-```python
-def merge(
-    self,
-    record_ids: Sequence[str],
-    merged_record: dict[str, Any] | MemoryRecord,
-    actor: str,
-    rationale: str,
-) -> MemoryRecord
-```
-
-```python
-merged = client.merge(
-    [id1, id2, id3],
-    {"type": "semantic", "payload": {"fact": "combined knowledge"}},
-    actor="agent-1",
-    rationale="Consolidating duplicate semantic records",
-)
-```
-
-### `contest`
-
-Mark a record as contested due to conflicting evidence.
-
-```python
-def contest(
-    self,
-    record_id: str,
-    contesting_ref: str,
-    actor: str,
-    rationale: str,
-) -> None
-```
-
-```python
-client.contest(
-    record.id,
-    conflicting_record.id,
-    actor="agent-1",
-    rationale="New evidence contradicts this",
+record = client.retrieve_by_id(
+    record_id,
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.HIGH,
+        authenticated=True,
+        actor_id="support-agent",
+        scopes=["project-auth"],
+    ),
 )
 ```
 
 ---
 
-## Reinforcement methods
-
-### `reinforce`
-
-Boost a record's salience score.
+## Revision
 
 ```python
-def reinforce(
-    self,
-    record_id: str,
-    actor: str,
-    rationale: str,
-) -> None
+client.supersede(old_id, new_record, "agent", "updated fact")
+client.fork(source_id, forked_record, "agent", "different in staging")
+client.retract(record_id, "agent", "no longer accurate")
+client.merge([id1, id2], merged_record, "agent", "deduplicated")
+client.contest(record_id, conflicting_ref, "agent", "conflicting evidence")
 ```
+
+`new_record`, `forked_record`, and `merged_record` may be dictionaries matching the `MemoryRecord` wire shape or `MemoryRecord` dataclasses.
+
+## Reinforcement
 
 ```python
-client.reinforce(record.id, actor="agent-1", rationale="Used successfully in task")
+client.reinforce(record_id, "agent", "used successfully")
+client.penalize(record_id, 0.2, "agent", "not useful for this task")
 ```
 
-### `penalize`
-
-Reduce a record's salience score.
-
-```python
-def penalize(
-    self,
-    record_id: str,
-    amount: float,
-    actor: str,
-    rationale: str,
-) -> None
-```
-
-```python
-client.penalize(record.id, amount=0.2, actor="agent-1", rationale="Led to incorrect result")
-```
-
----
-
-## `get_metrics`
-
-Retrieve a point-in-time metrics snapshot from the daemon.
-
-```python
-def get_metrics(self) -> dict[str, Any]
-```
+## Metrics
 
 ```python
 metrics = client.get_metrics()
-print(metrics["total_records"], metrics["avg_salience"])
+print(metrics["total_records"])
 ```
 
 ---
 
-## `close`
-
-Close the underlying gRPC channel. The context manager calls this automatically.
-
-```python
-def close(self) -> None
-```
-
----
-
-## Core types
-
-### `Sensitivity`
-
-```python
-class Sensitivity(str, Enum):
-    PUBLIC = "public"
-    LOW    = "low"
-    MEDIUM = "medium"
-    HIGH   = "high"
-    HYPER  = "hyper"
-```
-
-Controls access during retrieval. Records above the caller's `max_sensitivity` are returned in redacted form.
-
-### `TrustContext`
-
-```python
-@dataclass
-class TrustContext:
-    max_sensitivity: Sensitivity = Sensitivity.LOW  # highest sensitivity the caller may access
-    authenticated: bool = False
-    actor_id: str = ""
-    scopes: list[str] = field(default_factory=list)
-```
-
-### `MemoryRecord`
-
-```python
-@dataclass
-class MemoryRecord:
-    id: str
-    type: MemoryType           # "episodic" | "working" | "semantic" | "competence" | "plan_graph"
-    sensitivity: Sensitivity
-    confidence: float          # 0–1 applicability score
-    salience: float            # 0–1 current importance score
-    scope: str
-    tags: list[str]
-    created_at: str
-    updated_at: str
-    lifecycle: Lifecycle | None
-    provenance: Provenance | None
-    relations: list[Relation]
-    payload: Any               # type-specific structured payload
-    audit_log: list[AuditEntry]
-```
-
-### `MemoryType`
-
-```python
-class MemoryType(str, Enum):
-    EPISODIC   = "episodic"
-    WORKING    = "working"
-    SEMANTIC   = "semantic"
-    COMPETENCE = "competence"
-    PLAN_GRAPH = "plan_graph"
-```
-
-### `OutcomeStatus`
-
-```python
-class OutcomeStatus(str, Enum):
-    SUCCESS = "success"
-    FAILURE = "failure"
-    PARTIAL = "partial"
-```
-
-### `Relation`
-
-```python
-@dataclass
-class Relation:
-    target_id: str = ""   # ID of the related MemoryRecord
-    kind: str = ""        # relationship type (maps to Go Predicate)
-    weight: float = 1.0   # strength of the relationship [0, 1]
-```
-
-<Note>
-  The Python `Relation.kind` field maps to Go's `schema.Relation.Predicate`. Common values: `supports`, `contradicts`, `derived_from`, `supersedes`, `contested_by`.
-</Note>
-
-### Additional exported types
-
-All of the following are importable from the top-level `membrane` package:
+## Types And Enums
 
 ```python
 from membrane import (
-    AuditAction,     # Enum: create, revise, fork, merge, delete, reinforce, decay
-    AuditEntry,      # Dataclass: action, actor, timestamp, rationale
-    DecayCurve,      # Enum: EXPONENTIAL = "exponential"
-    DecayProfile,    # Dataclass: curve, half_life_seconds
-    DeletionPolicy,  # Enum: AUTO_PRUNE, MANUAL_ONLY, NEVER
-    EdgeKind,        # Enum: DATA = "data", CONTROL = "control"
-    Lifecycle,       # Dataclass: decay, last_reinforced_at, deletion_policy
-    ProvenanceKind,  # Enum: EVENT, ARTIFACT, TOOL_CALL, OBSERVATION, OUTCOME
-    ProvenanceSource,# Dataclass: kind, ref, timestamp
-    Provenance,      # Dataclass: sources (list[ProvenanceSource])
-    Relation,        # Dataclass: target_id, kind, weight
-    RetrieveResult,  # Dataclass: records, selection
-    RevisionStatus,  # Enum: ACTIVE, CONTESTED, RETRACTED
-    SelectionResult, # Dataclass: selected, confidence, needs_more
-    TaskState,       # Enum: PLANNING, EXECUTING, BLOCKED, WAITING, DONE
-    ValidityMode,    # Enum: GLOBAL, CONDITIONAL, TIMEBOXED
+    BUILTIN_ENTITY_TYPES,
+    EntityPayload,
+    EntityType,
+    GraphPredicate,
+    MemoryRecord,
+    MemoryType,
+    Sensitivity,
+    SourceKind,
+    TrustContext,
 )
 ```
 
----
-
-## Error handling
-
-Failed RPCs raise `grpc.RpcError`. Inspect `e.code()` and `e.details()` for the gRPC status:
+Memory types:
 
 ```python
-import grpc
-from membrane import MembraneClient
-
-client = MembraneClient("localhost:9090")
-try:
-    record = client.retrieve_by_id("nonexistent-id")
-except grpc.RpcError as e:
-    print(e.code())     # e.g. StatusCode.NOT_FOUND
-    print(e.details())  # human-readable message
-finally:
-    client.close()
+MemoryType.EPISODIC
+MemoryType.WORKING
+MemoryType.SEMANTIC
+MemoryType.COMPETENCE
+MemoryType.PLAN_GRAPH
+MemoryType.ENTITY
 ```
+
+Built-in entity ontology values are open-ended. Use `EntityType.OTHER` or any project-specific string when none of the built-ins fit.
+
+## Development
+
+```bash
+cd clients/python
+pip install -e .[dev]
+pytest
+```
+
+## Requirements
+
+- Python >= 3.10
+- `grpcio >= 1.80.0`
+- `protobuf >= 6.31.1`
+- A running Membrane daemon, default `localhost:9090`

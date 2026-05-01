@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "membrane-docs",
+  "account_id": "776e99cad6263022ce616ccd9c25663e",
+  "workers_dev": true,
+  "compatibility_date": "2026-04-30",
+  "assets": {
+    "directory": "./build",
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}

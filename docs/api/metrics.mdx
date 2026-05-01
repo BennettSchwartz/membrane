@@ -5,7 +5,7 @@ description: "Point-in-time observability snapshot via GetMetrics."
 
 ## GetMetrics
 
-Returns a point-in-time snapshot of the memory substrate's health and behavioural metrics. The response payload is a JSON-encoded `Snapshot` object.
+Returns a point-in-time snapshot of the memory substrate's health and behavioural metrics. The response payload is a `google.protobuf.Value` containing the snapshot object.
 
 This method takes no input parameters:
 
@@ -13,7 +13,7 @@ This method takes no input parameters:
 message GetMetricsRequest {}
 
 message MetricsResponse {
-    bytes snapshot = 1; // JSON-encoded metrics.Snapshot
+    google.protobuf.Value snapshot = 1;
 }
 ```
 
@@ -35,6 +35,9 @@ message MetricsResponse {
     </ResponseField>
     <ResponseField name="working" type="number">
       Count of working memory records.
+    </ResponseField>
+    <ResponseField name="entity" type="number">
+      Count of entity records.
     </ResponseField>
     <ResponseField name="semantic" type="number">
       Count of semantic records.
@@ -124,9 +127,10 @@ message MetricsResponse {
 ```json
 {
   "collected_at": "2026-02-05T14:23:10Z",
-  "total_records": 142,
+  "total_records": 160,
   "records_by_type": {
     "episodic": 80,
+    "entity": 18,
     "semantic": 35,
     "competence": 15,
     "plan_graph": 7,
@@ -135,13 +139,13 @@ message MetricsResponse {
   "avg_salience": 0.62,
   "avg_confidence": 0.78,
   "salience_distribution": {
-    "0.0-0.2": 12,
-    "0.2-0.4": 18,
-    "0.4-0.6": 30,
-    "0.6-0.8": 45,
-    "0.8-1.0": 37
+    "0.0-0.2": 14,
+    "0.2-0.4": 22,
+    "0.4-0.6": 34,
+    "0.6-0.8": 50,
+    "0.8-1.0": 40
   },
-  "active_records": 130,
+  "active_records": 148,
   "pinned_records": 3,
   "total_audit_entries": 890,
   "memory_growth_rate": 0.15,

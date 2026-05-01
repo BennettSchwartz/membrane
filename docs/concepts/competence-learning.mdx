@@ -173,13 +173,19 @@ embedding_dimensions: 1536
 ## Example: storing and retrieving a procedure
 
 ```go
-// 1. Ingest a successful episodic record with a tool graph
-rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
-    Source:    "build-agent",
-    EventKind: "tool_call",
-    Ref:       "build#42",
-    Summary:   "Executed go build, failed with linker error",
-    Tags:      []string{"build", "error"},
+// 1. Capture a successful episodic record with a tool graph
+_, _ = m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+    Source:     "build-agent",
+    SourceKind: "tool_output",
+    Content: map[string]any{
+        "tool_name": "go test",
+        "args":      map[string]any{"packages": []string{"./pkg/auth"}},
+        "result":    map[string]any{"exit_code": 0, "stdout": "ok ./pkg/auth"},
+    },
+    ReasonToRemember: "Successful auth test procedure",
+    Summary:          "Auth package tests passed",
+    Tags:             []string{"build", "auth", "tests"},
+    Sensitivity:      schema.SensitivityLow,
 })
 
 // 2. After at least 2 successful episodes with the same tool pattern,
@@ -189,7 +195,7 @@ result, err := consolidationSvc.RunAll(ctx)
 fmt.Printf("Competence records created: %d\n", result.CompetenceExtracted)
 
 // 3. Retrieve competence records for a task
-resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+resp, _ := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
     TaskDescriptor: "fix build error",
     Trust: &retrieval.TrustContext{
         MaxSensitivity: schema.SensitivityMedium,
@@ -198,9 +204,13 @@ resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
     MemoryTypes: []schema.MemoryType{
         schema.MemoryTypeCompetence,
     },
+    RootLimit: 5,
+    NodeLimit: 10,
+    MaxHops:   0,
 })
 
-for _, r := range resp.Records {
+for _, node := range resp.Nodes {
+    r := node.Record
     if p, ok := r.Payload.(*schema.CompetencePayload); ok {
         fmt.Printf("Skill: %s (success_rate=%.2f)\n",
             p.SkillName,
@@ -212,8 +222,10 @@ for _, r := range resp.Records {
     }
 }
 
-// 4. Reinforce after a successful use
-m.Reinforce(ctx, r.ID, "build-agent", "procedure applied successfully")
+// 4. Reinforce the selected competence after a successful use
+if len(resp.RootIDs) > 0 {
+    m.Reinforce(ctx, resp.RootIDs[0], "build-agent", "procedure applied successfully")
+}
 ```
 
 ---
