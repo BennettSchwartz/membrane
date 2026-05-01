@@ -114,7 +114,12 @@ jobs:
           exit 1
 
       - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+        run: |
+          UNFORMATTED="$(find . -name '*.go' -not -path './.git/*' -print0 | xargs -0 gofmt -l)"
+          if [ -n "$UNFORMATTED" ]; then
+            echo "$UNFORMATTED"
+            exit 1
+          fi
 
       - name: Check go mod tidy
         run: |

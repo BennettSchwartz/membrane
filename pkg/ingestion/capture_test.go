@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/BennettSchwartz/membrane/pkg/schema"
-	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
+	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stubInterpreter struct {

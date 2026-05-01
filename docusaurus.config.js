@@ -3,7 +3,7 @@
 const config = {
   title: "Membrane",
   tagline: "A selective learning and memory substrate for LLM and agentic systems.",
-  url: process.env.DOCS_SITE_URL ?? "https://membrane-docs.bennettschwartz32.workers.dev",
+  url: process.env.DOCS_SITE_URL ?? "https://membrane.gustycube.com",
   baseUrl: "/",
   organizationName: "BennettSchwartz",
   projectName: "membrane",
