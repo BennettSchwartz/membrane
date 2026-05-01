@@ -3,6 +3,55 @@ import Link from "@docusaurus/Link";
 import OriginalMDXComponents from "@theme-original/MDXComponents";
 import DocusaurusTabs from "@theme/Tabs";
 import TabItem from "@theme/TabItem";
+import {
+  ArrowDownToLine,
+  Bolt,
+  BookOpen,
+  Brain,
+  ChartBar,
+  ChartLine,
+  ChartScatter,
+  Clock,
+  Code,
+  Database,
+  Info as InfoIcon,
+  Layers,
+  ListOrdered,
+  Lock,
+  Network,
+  Pencil,
+  Rocket,
+  Search,
+  Server,
+  Shield,
+  Sparkles,
+  VectorSquare,
+} from "lucide-react";
+
+const CARD_ICONS = {
+  "arrow-down-to-line": ArrowDownToLine,
+  "book-open": BookOpen,
+  "chart-bar": ChartBar,
+  "chart-line": ChartLine,
+  "chart-scatter": ChartScatter,
+  "circle-info": InfoIcon,
+  "list-ordered": ListOrdered,
+  "magnifying-glass": Search,
+  "vector-square": VectorSquare,
+  bolt: Bolt,
+  brain: Brain,
+  clock: Clock,
+  code: Code,
+  database: Database,
+  layers: Layers,
+  lock: Lock,
+  pencil: Pencil,
+  rocket: Rocket,
+  server: Server,
+  shield: Shield,
+  sitemap: Network,
+  sparkles: Sparkles,
+};
 
 function Field({ kind, path, name, type, required, children, default: defaultValue }) {
   const label = path ?? name;
@@ -122,11 +171,29 @@ function CardGroup({ children, cols = 2 }) {
   );
 }
 
+function CardIcon({ icon }) {
+  if (!icon) {
+    return null;
+  }
+  if (React.isValidElement(icon)) {
+    return <span className="membrane-card__icon" aria-hidden="true">{icon}</span>;
+  }
+  const Icon = typeof icon === "string" ? CARD_ICONS[icon] : null;
+  if (!Icon) {
+    return null;
+  }
+  return (
+    <span className="membrane-card__icon" aria-hidden="true">
+      <Icon size={20} strokeWidth={2} />
+    </span>
+  );
+}
+
 function Card({ title, icon, href, children }) {
   const body = (
     <div className="membrane-card">
       <div className="membrane-card__header">
-        {icon ? <span className="membrane-card__icon" aria-hidden="true">{icon}</span> : null}
+        <CardIcon icon={icon} />
         {title ? <strong>{title}</strong> : null}
       </div>
       <div className="membrane-card__body">{children}</div>
