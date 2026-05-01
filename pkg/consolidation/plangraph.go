@@ -131,6 +131,7 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 			},
 		}
 
+		entityEdges := linkRecordToEntityTerms(ctx, c.store, newRec, planEntityTerms(nodes), "uses", "used_by", now)
 		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
 			if err := tx.Create(ctx, newRec); err != nil {
 				return err
@@ -141,7 +142,23 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 				Weight:    1.0,
 				CreatedAt: now,
 			}
-			return tx.AddRelation(ctx, newRec.ID, rel)
+			if err := tx.AddRelation(ctx, newRec.ID, rel); err != nil {
+				return err
+			}
+			for _, edge := range entityEdges {
+				if edge.SourceID == newRec.ID {
+					continue
+				}
+				if err := tx.AddRelation(ctx, edge.SourceID, schema.Relation{
+					Predicate: edge.Predicate,
+					TargetID:  edge.TargetID,
+					Weight:    edge.Weight,
+					CreatedAt: edge.CreatedAt,
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		if err != nil {
 			return created, err
@@ -155,6 +172,21 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 	}
 
 	return created, nil
+}
+
+func planEntityTerms(nodes []schema.PlanNode) []string {
+	terms := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Op != "" {
+			terms = append(terms, node.Op)
+		}
+		for _, key := range []string{"tool", "command", "repo", "repository", "file", "service", "package"} {
+			if value, ok := node.Params[key].(string); ok && value != "" {
+				terms = append(terms, value)
+			}
+		}
+	}
+	return terms
 }
 
 // convertToolGraphToPlan converts episodic ToolNodes into PlanNodes

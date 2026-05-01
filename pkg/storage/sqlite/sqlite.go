@@ -179,7 +179,10 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		}
 		if _, err := q.ExecContext(ctx,
 			`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(source_id, predicate, target_id) DO UPDATE SET
+			 weight = excluded.weight,
+			 created_at = excluded.created_at`,
 			rec.ID, rel.Predicate, rel.TargetID, w,
 			rel.CreatedAt.UTC().Format(time.RFC3339Nano),
 		); err != nil {
@@ -208,6 +211,10 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		); err != nil {
 			return fmt.Errorf("insert competence_stats: %w", err)
 		}
+	}
+
+	if err := replaceEntityIndexes(ctx, q, rec); err != nil {
+		return err
 	}
 
 	return nil
@@ -482,12 +489,19 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		}
 		if _, err := q.ExecContext(ctx,
 			`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(source_id, predicate, target_id) DO UPDATE SET
+			 weight = excluded.weight,
+			 created_at = excluded.created_at`,
 			rec.ID, rel.Predicate, rel.TargetID, w,
 			ca.UTC().Format(time.RFC3339Nano),
 		); err != nil {
 			return fmt.Errorf("insert relations: %w", err)
 		}
+	}
+
+	if err := replaceEntityIndexes(ctx, q, rec); err != nil {
+		return err
 	}
 
 	return nil
@@ -910,7 +924,10 @@ func addRelation(ctx context.Context, q queryable, sourceID string, rel schema.R
 
 	_, err = q.ExecContext(ctx,
 		`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(source_id, predicate, target_id) DO UPDATE SET
+		 weight = excluded.weight,
+		 created_at = excluded.created_at`,
 		sourceID, rel.Predicate, rel.TargetID, w,
 		ca.UTC().Format(time.RFC3339Nano),
 	)
@@ -955,6 +972,154 @@ func (s *SQLiteStore) AddRelation(ctx context.Context, sourceID string, rel sche
 
 func (s *SQLiteStore) GetRelations(ctx context.Context, id string) ([]schema.Relation, error) {
 	return getRelations(ctx, s.db, id)
+}
+
+// ----------------------------------------------------------------------------
+// Entity lookup indexes
+// ----------------------------------------------------------------------------
+
+func replaceEntityIndexes(ctx context.Context, q queryable, rec *schema.MemoryRecord) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_terms WHERE record_id = ?`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_terms: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_types WHERE record_id = ?`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_types: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_identifiers WHERE record_id = ?`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_identifiers: %w", err)
+	}
+	if rec.Type != schema.MemoryTypeEntity {
+		return nil
+	}
+	entity, ok := rec.Payload.(*schema.EntityPayload)
+	if !ok || entity == nil {
+		return nil
+	}
+	scope := rec.Scope
+	if term := schema.NormalizeEntityTerm(entity.CanonicalName); term != "" {
+		if _, err := q.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_terms (record_id, normalized_term, term_kind, scope)
+			 VALUES (?, ?, ?, ?)`,
+			rec.ID, term, schema.EntityTermKindCanonical, scope,
+		); err != nil {
+			return fmt.Errorf("insert entity canonical term: %w", err)
+		}
+	}
+	for _, alias := range entity.Aliases {
+		if term := schema.NormalizeEntityTerm(alias.Value); term != "" {
+			if _, err := q.ExecContext(ctx,
+				`INSERT OR IGNORE INTO entity_terms (record_id, normalized_term, term_kind, scope)
+				 VALUES (?, ?, ?, ?)`,
+				rec.ID, term, firstNonEmpty(alias.Kind, schema.EntityTermKindAlias), scope,
+			); err != nil {
+				return fmt.Errorf("insert entity alias term: %w", err)
+			}
+		}
+	}
+	for _, entityType := range schema.EntityTypes(entity) {
+		if _, err := q.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_types (record_id, entity_type) VALUES (?, ?)`,
+			rec.ID, entityType,
+		); err != nil {
+			return fmt.Errorf("insert entity type: %w", err)
+		}
+	}
+	for _, identifier := range entity.Identifiers {
+		namespace := strings.TrimSpace(identifier.Namespace)
+		value := strings.TrimSpace(identifier.Value)
+		if namespace == "" || value == "" {
+			continue
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_identifiers (record_id, namespace, value, scope)
+			 VALUES (?, ?, ?, ?)`,
+			rec.ID, namespace, value, scope,
+		); err != nil {
+			return fmt.Errorf("insert entity identifier: %w", err)
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (s *SQLiteStore) FindEntitiesByTerm(ctx context.Context, term, scope string, limit int) ([]*schema.MemoryRecord, error) {
+	normalized := schema.NormalizeEntityTerm(term)
+	if normalized == "" {
+		return []*schema.MemoryRecord{}, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT record_id FROM entity_terms
+		 WHERE normalized_term = ? AND (scope = ? OR scope = '')
+		 ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END, record_id
+		 LIMIT ?`,
+		normalized, scope, scope, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query entity terms: %w", err)
+	}
+	defer rows.Close()
+	return s.recordsFromRows(ctx, rows)
+}
+
+func (s *SQLiteStore) FindEntityByIdentifier(ctx context.Context, namespace, value, scope string) (*schema.MemoryRecord, error) {
+	namespace = strings.TrimSpace(namespace)
+	value = strings.TrimSpace(value)
+	if namespace == "" || value == "" {
+		return nil, storage.ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT record_id FROM entity_identifiers
+		 WHERE namespace = ? AND value = ? AND (scope = ? OR scope = '')
+		 ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END, record_id
+		 LIMIT 1`,
+		namespace, value, scope, scope,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query entity identifiers: %w", err)
+	}
+	defer rows.Close()
+	records, err := s.recordsFromRows(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, storage.ErrNotFound
+	}
+	return records[0], nil
+}
+
+func (s *SQLiteStore) recordsFromRows(ctx context.Context, rows *sql.Rows) ([]*schema.MemoryRecord, error) {
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan entity id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entity ids: %w", err)
+	}
+	records := make([]*schema.MemoryRecord, 0, len(ids))
+	for _, id := range ids {
+		rec, err := s.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, rec)
+	}
+	return records, nil
 }
 
 // ----------------------------------------------------------------------------

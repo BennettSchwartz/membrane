@@ -71,20 +71,8 @@ func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
 		return false
 	}
 
-	// Check scope: if scopes are specified, the record's scope must match one.
-	// Note: records with empty scope are unscoped and available to all contexts,
-	// so they bypass this check (empty scope = not restricted to any particular scope).
-	if len(tc.Scopes) > 0 && record.Scope != "" {
-		found := false
-		for _, s := range tc.Scopes {
-			if s == record.Scope {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if !tc.allowsScope(record) {
+		return false
 	}
 
 	return true
@@ -106,6 +94,26 @@ func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool {
 		return false
 	}
 
-	// Only allow redacted view if record is exactly one level above max.
-	return recordLevel == maxLevel+1
+	// Only allow redacted view if record is exactly one level above max and
+	// is still visible within the caller's scope. Redaction removes payload
+	// content, but record IDs/tags/scope are still metadata.
+	return recordLevel == maxLevel+1 && tc.allowsScope(record)
+}
+
+func (tc *TrustContext) allowsScope(record *schema.MemoryRecord) bool {
+	if record == nil {
+		return false
+	}
+
+	// If scopes are specified, the record's scope must match one. Records with
+	// empty scope are unscoped and available to all contexts.
+	if len(tc.Scopes) == 0 || record.Scope == "" {
+		return true
+	}
+	for _, s := range tc.Scopes {
+		if s == record.Scope {
+			return true
+		}
+	}
+	return false
 }

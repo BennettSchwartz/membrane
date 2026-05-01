@@ -9,12 +9,17 @@ from membrane.types import (
     DecayProfile,
     DeletionPolicy,
     EdgeKind,
+    BUILTIN_ENTITY_TYPES,
+    EntityAlias,
     EntityKind,
+    EntityIdentifier,
     EntityPayload,
+    EntityType,
     EpisodicPayload,
     EnvironmentSnapshot,
     GraphEdge,
     GraphNode,
+    GraphPredicate,
     Interpretation,
     InterpretationStatus,
     Lifecycle,
@@ -87,6 +92,13 @@ class TestEnums:
     def test_enum_from_string(self):
         assert MemoryType("episodic") is MemoryType.EPISODIC
         assert Sensitivity("high") is Sensitivity.HIGH
+
+    def test_builtin_entity_types_are_open_string_constants(self):
+        assert EntityType.PERSON == "Person"
+        assert EntityType.PROJECT in BUILTIN_ENTITY_TYPES
+        assert EntityType.OTHER == "Other"
+        assert EntityType.OTHER in BUILTIN_ENTITY_TYPES
+        assert GraphPredicate.MENTIONS_ENTITY == "mentions_entity"
 
 
 class TestTrustContext:
@@ -237,6 +249,28 @@ class TestMemoryRecord:
         assert rec.type is MemoryType.EPISODIC
         assert rec.sensitivity is Sensitivity.LOW
 
+    def test_from_dict_unwraps_proto_payload_oneof(self):
+        rec = MemoryRecord.from_dict(
+            {
+                "id": "fact-1",
+                "type": "semantic",
+                "payload": {
+                    "semantic": {
+                        "kind": "semantic",
+                        "subject": "entity-orchid",
+                        "predicate": "uses",
+                        "object": "Postgres",
+                    }
+                },
+            }
+        )
+        assert rec.payload == {
+            "kind": "semantic",
+            "subject": "entity-orchid",
+            "predicate": "uses",
+            "object": "Postgres",
+        }
+
 
 class TestSubstructures:
     def test_decay_profile_from_dict(self):
@@ -324,6 +358,7 @@ class TestSubstructures:
                 ],
                 "Confidence": 0.42,
                 "NeedsMore": True,
+                "Scores": {"rec-1": 0.71},
             }
         )
 
@@ -331,6 +366,7 @@ class TestSubstructures:
         assert selection.selected[0].id == "rec-1"
         assert selection.confidence == 0.42
         assert selection.needs_more is True
+        assert selection.scores == {"rec-1": 0.71}
 
     def test_graph_and_capture_result_defaults(self):
         assert RetrieveGraphResult().nodes == []
@@ -382,6 +418,10 @@ class TestSubstructures:
             resolved=False,
         )
 
+    def test_mention_accepts_open_entity_type_string(self):
+        mention = Mention.from_dict({"surface": "Orchid", "entity_kind": "Project"})
+        assert mention.entity_kind == "Project"
+
     def test_graph_node_and_entity_payload_from_dict(self):
         node = GraphNode.from_dict(
             {
@@ -400,14 +440,31 @@ class TestSubstructures:
             {
                 "kind": "entity",
                 "canonical_name": "Orchid",
-                "entity_kind": "project",
-                "aliases": ["orchid"],
+                "primary_type": "Project",
+                "types": ["Project", "Service"],
+                "aliases": [{"value": "orchid", "kind": "lowercase"}],
+                "identifiers": [{"namespace": "repo", "value": "orchid"}],
                 "summary": "Staging deploy target",
             }
         )
         assert node.record.type is MemoryType.ENTITY
-        assert payload.entity_kind is EntityKind.PROJECT
-        assert payload.aliases == ["orchid"]
+        assert payload.primary_type == EntityType.PROJECT
+        assert payload.types == ["Project", "Service"]
+        assert payload.aliases == [EntityAlias(value="orchid", kind="lowercase")]
+        assert payload.identifiers == [EntityIdentifier(namespace="repo", value="orchid")]
+
+    def test_entity_payload_accepts_legacy_entity_kind_and_alias_strings(self):
+        payload = EntityPayload.from_dict(
+            {
+                "kind": "entity",
+                "canonical_name": "Orchid",
+                "entity_kind": "project",
+                "aliases": ["orchid"],
+            }
+        )
+        assert payload.primary_type == EntityType.PROJECT
+        assert payload.types == [EntityType.PROJECT]
+        assert payload.aliases == [EntityAlias(value="orchid")]
 
 
 class TestDecayProfileExtended:

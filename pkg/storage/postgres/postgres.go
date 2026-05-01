@@ -204,7 +204,10 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		}
 		if _, err := q.ExecContext(ctx,
 			`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-			 VALUES ($1, $2, $3, $4, $5)`,
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (source_id, predicate, target_id) DO UPDATE SET
+			 weight = EXCLUDED.weight,
+			 created_at = EXCLUDED.created_at`,
 			rec.ID, rel.Predicate, rel.TargetID, w, ca.UTC(),
 		); err != nil {
 			return fmt.Errorf("insert relations: %w", err)
@@ -229,6 +232,10 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		); err != nil {
 			return fmt.Errorf("insert competence_stats: %w", err)
 		}
+	}
+
+	if err := replaceEntityIndexes(ctx, q, rec); err != nil {
+		return err
 	}
 
 	return nil
@@ -490,11 +497,18 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 		}
 		if _, err := q.ExecContext(ctx,
 			`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-			 VALUES ($1, $2, $3, $4, $5)`,
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (source_id, predicate, target_id) DO UPDATE SET
+			 weight = EXCLUDED.weight,
+			 created_at = EXCLUDED.created_at`,
 			rec.ID, rel.Predicate, rel.TargetID, w, ca.UTC(),
 		); err != nil {
 			return fmt.Errorf("insert relations: %w", err)
 		}
+	}
+
+	if err := replaceEntityIndexes(ctx, q, rec); err != nil {
+		return err
 	}
 
 	return nil
@@ -868,7 +882,10 @@ func addRelation(ctx context.Context, q queryable, sourceID string, rel schema.R
 
 	_, err = q.ExecContext(ctx,
 		`INSERT INTO relations (source_id, predicate, target_id, weight, created_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (source_id, predicate, target_id) DO UPDATE SET
+		 weight = EXCLUDED.weight,
+		 created_at = EXCLUDED.created_at`,
 		sourceID, rel.Predicate, rel.TargetID, w, ca.UTC(),
 	)
 	if err != nil {
@@ -912,6 +929,159 @@ func (s *PostgresStore) AddRelation(ctx context.Context, sourceID string, rel sc
 
 func (s *PostgresStore) GetRelations(ctx context.Context, id string) ([]schema.Relation, error) {
 	return getRelations(ctx, s.db, id)
+}
+
+func replaceEntityIndexes(ctx context.Context, q queryable, rec *schema.MemoryRecord) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_terms WHERE record_id = $1`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_terms: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_types WHERE record_id = $1`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_types: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM entity_identifiers WHERE record_id = $1`, rec.ID); err != nil {
+		return fmt.Errorf("delete entity_identifiers: %w", err)
+	}
+	if rec.Type != schema.MemoryTypeEntity {
+		return nil
+	}
+	entity, ok := rec.Payload.(*schema.EntityPayload)
+	if !ok || entity == nil {
+		return nil
+	}
+	scope := rec.Scope
+	if term := schema.NormalizeEntityTerm(entity.CanonicalName); term != "" {
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO entity_terms (record_id, normalized_term, term_kind, scope)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`,
+			rec.ID, term, schema.EntityTermKindCanonical, scope,
+		); err != nil {
+			return fmt.Errorf("insert entity canonical term: %w", err)
+		}
+	}
+	for _, alias := range entity.Aliases {
+		if term := schema.NormalizeEntityTerm(alias.Value); term != "" {
+			if _, err := q.ExecContext(ctx,
+				`INSERT INTO entity_terms (record_id, normalized_term, term_kind, scope)
+				 VALUES ($1, $2, $3, $4)
+				 ON CONFLICT DO NOTHING`,
+				rec.ID, term, firstNonEmptyString(alias.Kind, schema.EntityTermKindAlias), scope,
+			); err != nil {
+				return fmt.Errorf("insert entity alias term: %w", err)
+			}
+		}
+	}
+	for _, entityType := range schema.EntityTypes(entity) {
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO entity_types (record_id, entity_type) VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			rec.ID, entityType,
+		); err != nil {
+			return fmt.Errorf("insert entity type: %w", err)
+		}
+	}
+	for _, identifier := range entity.Identifiers {
+		namespace := strings.TrimSpace(identifier.Namespace)
+		value := strings.TrimSpace(identifier.Value)
+		if namespace == "" || value == "" {
+			continue
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO entity_identifiers (record_id, namespace, value, scope)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`,
+			rec.ID, namespace, value, scope,
+		); err != nil {
+			return fmt.Errorf("insert entity identifier: %w", err)
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (s *PostgresStore) FindEntitiesByTerm(ctx context.Context, term, scope string, limit int) ([]*schema.MemoryRecord, error) {
+	normalized := schema.NormalizeEntityTerm(term)
+	if normalized == "" {
+		return []*schema.MemoryRecord{}, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT record_id
+		 FROM (
+		     SELECT record_id, MIN(CASE WHEN scope = $2 THEN 0 ELSE 1 END) AS scope_rank
+		     FROM entity_terms
+		     WHERE normalized_term = $1 AND (scope = $2 OR scope = '')
+		     GROUP BY record_id
+		 ) matches
+		 ORDER BY scope_rank, record_id
+		 LIMIT $3`,
+		normalized, scope, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query entity terms: %w", err)
+	}
+	defer rows.Close()
+	return s.recordsFromRows(ctx, rows)
+}
+
+func (s *PostgresStore) FindEntityByIdentifier(ctx context.Context, namespace, value, scope string) (*schema.MemoryRecord, error) {
+	namespace = strings.TrimSpace(namespace)
+	value = strings.TrimSpace(value)
+	if namespace == "" || value == "" {
+		return nil, storage.ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT record_id FROM entity_identifiers
+		 WHERE namespace = $1 AND value = $2 AND (scope = $3 OR scope = '')
+		 ORDER BY CASE WHEN scope = $3 THEN 0 ELSE 1 END, record_id
+		 LIMIT 1`,
+		namespace, value, scope,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query entity identifiers: %w", err)
+	}
+	defer rows.Close()
+	records, err := s.recordsFromRows(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, storage.ErrNotFound
+	}
+	return records[0], nil
+}
+
+func (s *PostgresStore) recordsFromRows(ctx context.Context, rows *sql.Rows) ([]*schema.MemoryRecord, error) {
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan entity id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entity ids: %w", err)
+	}
+	records := make([]*schema.MemoryRecord, 0, len(ids))
+	for _, id := range ids {
+		rec, err := s.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, rec)
+	}
+	return records, nil
 }
 
 // StoreTriggerEmbedding stores or updates a trigger embedding for a record.

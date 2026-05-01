@@ -18,6 +18,10 @@ decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
 selection_confidence_threshold: 0.7
+graph_default_root_limit: 10
+graph_default_node_limit: 25
+graph_default_edge_limit: 100
+graph_default_max_hops: 1
 
 # Optional embedding-backed retrieval (Postgres only)
 # embedding_endpoint: "https://api.openai.com/v1/embeddings"
@@ -29,6 +33,12 @@ selection_confidence_threshold: 0.7
 # llm_endpoint: "https://api.openai.com/v1/chat/completions"
 # llm_model: "gpt-5-mini"
 # llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
+
+# Optional ingest-side interpretation for CaptureMemory
+# ingest_llm_enabled: true
+# ingest_llm_endpoint: "https://api.openai.com/v1/chat/completions"
+# ingest_llm_model: "gpt-5-mini"
+# ingest_llm_api_key: ""  # or set MEMBRANE_INGEST_LLM_API_KEY
 
 # Security (prefer environment variables for keys)
 # encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
@@ -67,6 +77,11 @@ Calling `membrane.DefaultConfig()` produces:
 | `EncryptionKey` | `""` (unencrypted) |
 | `EmbeddingDimensions` | `1536` |
 | `RateLimitPerSecond` | `100` |
+| `GraphDefaultRootLimit` | `10` |
+| `GraphDefaultNodeLimit` | `25` |
+| `GraphDefaultEdgeLimit` | `100` |
+| `GraphDefaultMaxHops` | `1` |
+| `IngestLLMEnabled` | `false` |
 
 ---
 
@@ -118,6 +133,22 @@ Valid values: `public`, `low`, `medium`, `high`, `hyper`.
 Minimum confidence for competence and plan_graph candidates to pass the selector. Default: `0.7`.
 </ParamField>
 
+<ParamField path="graph_default_root_limit" type="int">
+Default root count applied by the Go facade when `RetrieveGraphRequest.RootLimit` is zero. Default: `10`.
+</ParamField>
+
+<ParamField path="graph_default_node_limit" type="int">
+Default total graph node limit applied by the Go facade when `RetrieveGraphRequest.NodeLimit` is zero. Default: `25`.
+</ParamField>
+
+<ParamField path="graph_default_edge_limit" type="int">
+Default graph edge limit applied by the Go facade when `RetrieveGraphRequest.EdgeLimit` is zero. Default: `100`.
+</ParamField>
+
+<ParamField path="graph_default_max_hops" type="int">
+Default graph expansion depth applied by the Go facade when `RetrieveGraphRequest.MaxHops` is zero. Default: `1`.
+</ParamField>
+
 ### Embedding
 
 <ParamField path="embedding_endpoint" type="string">
@@ -148,6 +179,24 @@ Chat model name sent to the LLM endpoint. Example: `gpt-5-mini`.
 
 <ParamField path="llm_api_key" type="string">
 API key for the LLM endpoint. Prefer setting `MEMBRANE_LLM_API_KEY` instead.
+</ParamField>
+
+### Ingest LLM
+
+<ParamField path="ingest_llm_enabled" type="bool">
+Enables ingest-side interpretation during `CaptureMemory`. Default: `false`.
+</ParamField>
+
+<ParamField path="ingest_llm_endpoint" type="string">
+HTTP endpoint for capture-time interpretation and candidate resolution.
+</ParamField>
+
+<ParamField path="ingest_llm_model" type="string">
+Chat model name sent to the ingest-side interpretation endpoint.
+</ParamField>
+
+<ParamField path="ingest_llm_api_key" type="string">
+API key for the ingest-side interpretation endpoint. Prefer setting `MEMBRANE_INGEST_LLM_API_KEY` instead.
 </ParamField>
 
 ### Security
@@ -182,6 +231,7 @@ Maximum gRPC requests per second per client. `0` disables rate limiting. Default
 | `MEMBRANE_POSTGRES_DSN` | `postgres_dsn` | PostgreSQL DSN, read when `backend: postgres` |
 | `MEMBRANE_EMBEDDING_API_KEY` | `embedding_api_key` | API key for the embedding endpoint |
 | `MEMBRANE_LLM_API_KEY` | `llm_api_key` | API key for the LLM semantic extraction endpoint |
+| `MEMBRANE_INGEST_LLM_API_KEY` | `ingest_llm_api_key` | API key for the ingest-side interpretation endpoint |
 | `MEMBRANE_API_KEY` | `api_key` | Bearer token for gRPC client authentication |
 
 ---

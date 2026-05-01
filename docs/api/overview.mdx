@@ -3,7 +3,7 @@ title: "gRPC API overview"
 description: "Transport, authentication, and method reference for the Membrane gRPC API."
 ---
 
-Membrane exposes a 15-method gRPC service backed by protoc-generated stubs. All request and response payloads are JSON-encoded and carried in protobuf `bytes` fields, so any gRPC client that can set metadata headers and read raw bytes can call the API.
+Membrane exposes a gRPC service backed by protoc-generated stubs. Public API envelopes are typed protobuf messages; arbitrary content fields use `google.protobuf.Value`, and memory records, graph nodes, graph edges, capture responses, and retrieval responses are first-class messages.
 
 ## Connection details
 
@@ -11,7 +11,7 @@ Membrane exposes a 15-method gRPC service backed by protoc-generated stubs. All 
 |----------|-------|
 | Default address | `localhost:9090` |
 | Protocol | gRPC (HTTP/2) |
-| Payload encoding | JSON inside protobuf `bytes` fields |
+| Payload encoding | Typed protobuf messages; `google.protobuf.Value` for arbitrary content |
 | TLS | Optional — set `tls_cert_file` and `tls_key_file` in config |
 | Authentication | Bearer token via `authorization` metadata header |
 | Rate limiting | Token bucket; configurable via `rate_limit_per_second` |
@@ -23,10 +23,10 @@ When `api_key` is configured, every RPC must include an `authorization` metadata
 ```bash grpcurl example
 grpcurl \
   -H 'authorization: Bearer your-key' \
-  -d '{"task_descriptor": "fix build error", "trust": {"max_sensitivity": "medium", "authenticated": true}, "memory_types": ["semantic", "competence"], "limit": 10}' \
+  -d '{"task_descriptor": "fix build error", "trust": {"max_sensitivity": "medium", "authenticated": true}, "memory_types": ["entity", "semantic", "competence"], "root_limit": 10}' \
   -plaintext \
   localhost:9090 \
-  membrane.v1.MembraneService/Retrieve
+  membrane.v1.MembraneService/RetrieveGraph
 ```
 
 <Note>
@@ -48,12 +48,8 @@ When TLS is enabled, use `-insecure` instead of `-plaintext` with grpcurl, or su
 
 | Method | Category | Description |
 |--------|----------|-------------|
-| `IngestEvent` | Ingestion | Create an episodic record from an event |
-| `IngestToolOutput` | Ingestion | Create an episodic record from a tool invocation |
-| `IngestObservation` | Ingestion | Create a semantic record from a subject-predicate-object observation |
-| `IngestOutcome` | Ingestion | Update an existing episodic record with an outcome status |
-| `IngestWorkingState` | Ingestion | Create a working memory record from a task state snapshot |
-| `Retrieve` | Retrieval | Layered retrieval with trust context and salience filtering |
+| `CaptureMemory` | Ingestion | Capture a rich memory candidate and any linked entity/semantic records |
+| `RetrieveGraph` | Retrieval | Retrieve ranked root memories plus a bounded graph neighborhood |
 | `RetrieveByID` | Retrieval | Fetch a single record by ID |
 | `Supersede` | Revision | Atomically replace a record with a new version |
 | `Fork` | Revision | Create a conditional variant of an existing record |
@@ -77,21 +73,25 @@ import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
 
-// Ingest an event
-const record = await client.ingestEvent("tool_call", "task#1", {
-  summary: "Ran database migration successfully",
-  tags: ["db", "migration"],
+// Capture a memory candidate
+const capture = await client.captureMemory({
+  ref: "task#1",
+  text: "Refactored auth middleware and verified package tests",
+}, {
+  sourceKind: "event",
+  summary: "Refactored auth middleware",
+  tags: ["auth", "tests"],
 });
 
 // Retrieve with trust context
-const results = await client.retrieve("database operations", {
+const graph = await client.retrieveGraph("auth debugging", {
   trust: {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "ts-agent",
     scopes: [],
   },
-  memoryTypes: ["semantic", "competence"],
+  memoryTypes: ["entity", "semantic", "competence"],
 });
 
 client.close();
@@ -110,20 +110,19 @@ from membrane import MembraneClient, Sensitivity, TrustContext
 
 client = MembraneClient("localhost:9090", api_key="your-key")
 
-# Ingest an event
-record = client.ingest_event(
-    source="my-agent",
-    event_kind="tool_call",
-    ref="task#1",
-    summary="Ran database migration successfully",
-    tags=["db", "migration"],
+# Capture a memory candidate
+capture = client.capture_memory(
+    {"ref": "task#1", "text": "Refactored auth middleware and verified package tests"},
+    source_kind="event",
+    summary="Refactored auth middleware",
+    tags=["auth", "tests"],
 )
 
 # Retrieve with trust context
-results = client.retrieve(
-    task_descriptor="database operations",
+graph = client.retrieve_graph(
+    task_descriptor="auth debugging",
     trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
-    memory_types=["semantic", "competence"],
+    memory_types=["entity", "semantic", "competence"],
 )
 ```
 
@@ -135,21 +134,24 @@ List available methods:
 grpcurl -plaintext localhost:9090 list membrane.v1.MembraneService
 ```
 
-Call `IngestEvent`:
+Call `CaptureMemory`:
 
 ```bash
 grpcurl \
   -H 'authorization: Bearer your-key' \
   -d '{
     "source": "build-agent",
-    "event_kind": "tool_call",
-    "ref": "build#42",
+    "source_kind": "event",
+    "content": {
+      "ref": "build#42",
+      "text": "Executed go build, failed with linker error"
+    },
     "summary": "Executed go build, failed with linker error",
     "tags": ["build", "error"]
   }' \
   -plaintext \
   localhost:9090 \
-  membrane.v1.MembraneService/IngestEvent
+  membrane.v1.MembraneService/CaptureMemory
 ```
 
 Call `GetMetrics`:
@@ -173,12 +175,8 @@ syntax = "proto3";
 package membrane.v1;
 
 service MembraneService {
-    rpc IngestEvent(IngestEventRequest) returns (IngestResponse);
-    rpc IngestToolOutput(IngestToolOutputRequest) returns (IngestResponse);
-    rpc IngestObservation(IngestObservationRequest) returns (IngestResponse);
-    rpc IngestOutcome(IngestOutcomeRequest) returns (IngestResponse);
-    rpc IngestWorkingState(IngestWorkingStateRequest) returns (IngestResponse);
-    rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+    rpc CaptureMemory(CaptureMemoryRequest) returns (CaptureMemoryResponse);
+    rpc RetrieveGraph(RetrieveGraphRequest) returns (RetrieveGraphResponse);
     rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
     rpc Supersede(SupersedeRequest) returns (MemoryRecordResponse);
     rpc Fork(ForkRequest) returns (MemoryRecordResponse);

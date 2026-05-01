@@ -35,8 +35,8 @@ Both the old and new records are persisted. The old record is not deleted; it is
   ID of the record to supersede. Must not be episodic.
 </ParamField>
 
-<ParamField path="new_record" type="bytes" required>
-  JSON-encoded `MemoryRecord` that replaces the old one. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+<ParamField path="new_record" type="MemoryRecord" required>
+  Typed `MemoryRecord` that replaces the old one. For semantic records, the payload must include at least one evidence reference or provenance source.
 </ParamField>
 
 <ParamField path="actor" type="string" required>
@@ -49,8 +49,8 @@ Both the old and new records are persisted. The old record is not deleted; it is
 
 ### Response
 
-<ResponseField name="record" type="bytes">
-  JSON-encoded `MemoryRecord` — the newly created record with its assigned ID and provenance populated.
+<ResponseField name="record" type="MemoryRecord">
+  Typed `MemoryRecord` — the newly created record with its assigned ID and provenance populated.
 </ResponseField>
 
 ### Example
@@ -78,8 +78,8 @@ The forked record receives a `derived_from` relation pointing to the source, and
   ID of the record to fork. Must not be episodic.
 </ParamField>
 
-<ParamField path="forked_record" type="bytes" required>
-  JSON-encoded `MemoryRecord` representing the conditional variant. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+<ParamField path="forked_record" type="MemoryRecord" required>
+  Typed `MemoryRecord` representing the conditional variant. For semantic records, the payload must include at least one evidence reference or provenance source.
 </ParamField>
 
 <ParamField path="actor" type="string" required>
@@ -92,8 +92,8 @@ The forked record receives a `derived_from` relation pointing to the source, and
 
 ### Response
 
-<ResponseField name="record" type="bytes">
-  JSON-encoded `MemoryRecord` — the newly created forked record.
+<ResponseField name="record" type="MemoryRecord">
+  Typed `MemoryRecord` — the newly created forked record.
 </ResponseField>
 
 ### Example
@@ -159,8 +159,8 @@ At least one source ID is required. All source records must be non-episodic. The
   IDs of the records to merge. Must contain at least one ID and no more than 10 000.
 </ParamField>
 
-<ParamField path="merged_record" type="bytes" required>
-  JSON-encoded `MemoryRecord` that consolidates the source records. For semantic records, the payload must include at least one evidence reference or provenance source. Maximum 10 MB.
+<ParamField path="merged_record" type="MemoryRecord" required>
+  Typed `MemoryRecord` that consolidates the source records. For semantic records, the payload must include at least one evidence reference or provenance source.
 </ParamField>
 
 <ParamField path="actor" type="string" required>
@@ -173,8 +173,8 @@ At least one source ID is required. All source records must be non-episodic. The
 
 ### Response
 
-<ResponseField name="record" type="bytes">
-  JSON-encoded `MemoryRecord` — the newly created merged record with `derived_from` relations.
+<ResponseField name="record" type="MemoryRecord">
+  Typed `MemoryRecord` — the newly created merged record with `derived_from` relations.
 </ResponseField>
 
 ### Example

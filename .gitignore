@@ -54,6 +54,9 @@ ENV/
 # Documentation build
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+.docusaurus/
+build/
+.wrangler/
 node_modules/
 
 # SQLite databases (for development)

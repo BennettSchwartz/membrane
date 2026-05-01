@@ -2,19 +2,60 @@ package ingestion
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
 type stubInterpreter struct {
 	interpretation *schema.Interpretation
+	resolved       *schema.Interpretation
 }
 
 func (s *stubInterpreter) Interpret(_ context.Context, _ InterpretRequest) (*schema.Interpretation, error) {
 	return s.interpretation, nil
+}
+
+func (s *stubInterpreter) Resolve(_ context.Context, _ ResolveRequest) (*schema.Interpretation, error) {
+	return s.resolved, nil
+}
+
+type failingRelationStore struct {
+	storage.Store
+}
+
+func (s *failingRelationStore) Begin(ctx context.Context) (storage.Transaction, error) {
+	tx, err := s.Store.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &failingRelationTx{Transaction: tx}, nil
+}
+
+func (s *failingRelationStore) FindEntitiesByTerm(ctx context.Context, term, scope string, limit int) ([]*schema.MemoryRecord, error) {
+	if lookup, ok := s.Store.(storage.EntityLookup); ok {
+		return lookup.FindEntitiesByTerm(ctx, term, scope, limit)
+	}
+	return nil, nil
+}
+
+func (s *failingRelationStore) FindEntityByIdentifier(ctx context.Context, namespace, value, scope string) (*schema.MemoryRecord, error) {
+	if lookup, ok := s.Store.(storage.EntityLookup); ok {
+		return lookup.FindEntityByIdentifier(ctx, namespace, value, scope)
+	}
+	return nil, storage.ErrNotFound
+}
+
+type failingRelationTx struct {
+	storage.Transaction
+}
+
+func (tx *failingRelationTx) AddRelation(context.Context, string, schema.Relation) error {
+	return errors.New("forced relation write failure")
 }
 
 func newCaptureTestService(t *testing.T, interpreter Interpreter) (*Service, *sqlitestore.SQLiteStore) {
@@ -87,6 +128,37 @@ func TestCaptureMemoryCreatesPrimaryRecordEntityAndEdges(t *testing.T) {
 	}
 }
 
+func TestCaptureMemoryRollsBackWhenRelationWriteFails(t *testing.T) {
+	base, err := sqlitestore.Open(":memory:", "")
+	if err != nil {
+		t.Fatalf("Open sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+
+	store := &failingRelationStore{Store: base}
+	svc := NewService(store, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	ctx := context.Background()
+
+	_, err = svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-rollback", "text": "Remember Orchid", "project": "Orchid"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err == nil {
+		t.Fatalf("CaptureMemory err = nil, want relation write failure")
+	}
+
+	records, listErr := base.List(ctx, storage.ListOptions{})
+	if listErr != nil {
+		t.Fatalf("List records after failed capture: %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("Records after failed capture = %+v, want rollback to leave store empty", records)
+	}
+}
+
 func TestCaptureMemoryWorkingStateCreatesWorkingPrimaryRecord(t *testing.T) {
 	svc, _ := newCaptureTestService(t, nil)
 	ctx := context.Background()
@@ -129,8 +201,9 @@ func TestCaptureMemoryInterpreterResolvesExistingEntity(t *testing.T) {
 	existing := schema.NewMemoryRecord("entity-existing", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
 		Kind:          "entity",
 		CanonicalName: "Orchid",
-		EntityKind:    schema.EntityKindProject,
-		Aliases:       []string{"orchid"},
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "orchid"}},
 		Summary:       "Existing Orchid entity",
 	})
 	if err := store.Create(ctx, existing); err != nil {
@@ -221,5 +294,224 @@ func TestCaptureMemoryCreatesSecondarySemanticRecordForExplicitFact(t *testing.T
 	}
 	if !foundDerivedEdge {
 		t.Fatalf("Edges = %+v, want derived_semantic edge", resp.Edges)
+	}
+	hasSemanticEntityLink := false
+	for _, edge := range resp.Edges {
+		if edge.Predicate == "subject_entity" && edge.SourceID != resp.PrimaryRecord.ID && edge.TargetID == entityID {
+			hasSemanticEntityLink = true
+			break
+		}
+	}
+	if !hasSemanticEntityLink {
+		t.Fatalf("Edges = %+v, want semantic record linked to canonical entity", resp.Edges)
+	}
+}
+
+func TestCaptureMemoryInterpreterMaterializesResolvedRelationCandidates(t *testing.T) {
+	interpreter := &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			Status:       schema.InterpretationStatusTentative,
+			Summary:      "Orchid depends on rollout playbook",
+			ProposedType: schema.MemoryTypeSemantic,
+			Mentions: []schema.Mention{{
+				Surface:    "Orchid",
+				EntityKind: schema.EntityKindProject,
+				Confidence: 0.9,
+			}},
+			RelationCandidates: []schema.RelationCandidate{{
+				Predicate:  "depends_on",
+				Confidence: 0.8,
+			}},
+			ReferenceCandidates: []schema.ReferenceCandidate{{
+				Ref:        "playbook-ref",
+				Confidence: 0.7,
+			}},
+			ExtractionConfidence: 0.9,
+		},
+		resolved: &schema.Interpretation{
+			Mentions: []schema.Mention{{
+				Surface:           "Orchid",
+				EntityKind:        schema.EntityKindProject,
+				CanonicalEntityID: "entity-existing",
+				Confidence:        0.9,
+			}},
+			RelationCandidates: []schema.RelationCandidate{{
+				Predicate:      "depends_on",
+				TargetRecordID: "semantic-playbook",
+				Confidence:     0.8,
+				Resolved:       true,
+			}},
+			ReferenceCandidates: []schema.ReferenceCandidate{{
+				Ref:            "playbook-ref",
+				TargetRecordID: "semantic-playbook",
+				Confidence:     0.7,
+				Resolved:       true,
+			}},
+			ExtractionConfidence: 0.9,
+		},
+	}
+	svc, store := newCaptureTestService(t, interpreter)
+	ctx := context.Background()
+
+	entity := schema.NewMemoryRecord("entity-existing", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "orchid"}},
+		Summary:       "Existing Orchid entity",
+	})
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+	playbook := schema.NewMemoryRecord("semantic-playbook", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "rollout",
+		Predicate: "documented_in",
+		Object:    "playbook",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	playbook.Relations = []schema.Relation{}
+	if err := store.Create(ctx, playbook); err != nil {
+		t.Fatalf("Create playbook: %v", err)
+	}
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-3", "text": "Orchid uses the rollout playbook"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	wantPredicates := map[string]bool{
+		"mentions_entity":   false,
+		"depends_on":        false,
+		"dependency_of":     false,
+		"references_record": false,
+		"referenced_by":     false,
+	}
+	for _, edge := range resp.Edges {
+		if _, ok := wantPredicates[edge.Predicate]; ok {
+			wantPredicates[edge.Predicate] = true
+		}
+	}
+	for predicate, seen := range wantPredicates {
+		if !seen {
+			t.Fatalf("Edges = %+v, missing %q", resp.Edges, predicate)
+		}
+	}
+
+	got, err := store.Get(ctx, resp.PrimaryRecord.ID)
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	if got.Interpretation == nil {
+		t.Fatalf("Interpretation = nil, want populated interpretation")
+	}
+	if got.Interpretation.Status != schema.InterpretationStatusResolved {
+		t.Fatalf("Interpretation.Status = %q, want resolved", got.Interpretation.Status)
+	}
+	if len(got.Interpretation.RelationCandidates) != 1 || !got.Interpretation.RelationCandidates[0].Resolved {
+		t.Fatalf("RelationCandidates = %+v, want resolved relation candidate", got.Interpretation.RelationCandidates)
+	}
+	if got.Interpretation.RelationCandidates[0].TargetRecordID != "semantic-playbook" {
+		t.Fatalf("RelationCandidates = %+v, want target_record_id semantic-playbook", got.Interpretation.RelationCandidates)
+	}
+	if len(got.Interpretation.ReferenceCandidates) != 1 || !got.Interpretation.ReferenceCandidates[0].Resolved {
+		t.Fatalf("ReferenceCandidates = %+v, want resolved reference candidate", got.Interpretation.ReferenceCandidates)
+	}
+}
+
+func TestCaptureMemoryKeepsInterpretationTentativeWhenRelationsRemainUnresolved(t *testing.T) {
+	interpreter := &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			Status:       schema.InterpretationStatusTentative,
+			Summary:      "Unresolved relation",
+			ProposedType: schema.MemoryTypeSemantic,
+			RelationCandidates: []schema.RelationCandidate{{
+				Predicate:  "depends_on",
+				Confidence: 0.4,
+			}},
+		},
+	}
+	svc, store := newCaptureTestService(t, interpreter)
+	ctx := context.Background()
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-4", "text": "Orchid depends on something unresolved"},
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	got, err := store.Get(ctx, resp.PrimaryRecord.ID)
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	if got.Interpretation == nil || got.Interpretation.Status != schema.InterpretationStatusTentative {
+		t.Fatalf("Interpretation = %+v, want tentative status", got.Interpretation)
+	}
+}
+
+func TestCaptureMemoryClearsResolverTargetsThatDoNotExist(t *testing.T) {
+	interpreter := &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			Status:       schema.InterpretationStatusTentative,
+			Summary:      "Invalid resolver target",
+			ProposedType: schema.MemoryTypeSemantic,
+		},
+		resolved: &schema.Interpretation{
+			Status: schema.InterpretationStatusResolved,
+			RelationCandidates: []schema.RelationCandidate{{
+				Predicate:      "depends_on",
+				TargetRecordID: "missing-record",
+				Confidence:     0.9,
+				Resolved:       true,
+			}},
+			ReferenceCandidates: []schema.ReferenceCandidate{{
+				Ref:            "missing-ref",
+				TargetRecordID: "missing-record",
+				Confidence:     0.9,
+				Resolved:       true,
+			}},
+			ExtractionConfidence: 0.9,
+		},
+	}
+	svc, store := newCaptureTestService(t, interpreter)
+	ctx := context.Background()
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-invalid-resolver", "text": "Orchid uses something missing"},
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+	for _, edge := range resp.Edges {
+		if edge.TargetID == "missing-record" {
+			t.Fatalf("Edges = %+v, want no edge to missing resolver target", resp.Edges)
+		}
+	}
+
+	got, err := store.Get(ctx, resp.PrimaryRecord.ID)
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	relation := got.Interpretation.RelationCandidates[0]
+	if relation.Resolved || relation.TargetRecordID != "" {
+		t.Fatalf("RelationCandidate = %+v, want unresolved with cleared target", relation)
+	}
+	reference := got.Interpretation.ReferenceCandidates[0]
+	if reference.Resolved || reference.TargetRecordID != "" {
+		t.Fatalf("ReferenceCandidate = %+v, want unresolved with cleared target", reference)
 	}
 }

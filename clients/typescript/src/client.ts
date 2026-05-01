@@ -6,11 +6,12 @@ import {
   type RpcTransport
 } from "./internal/grpc";
 import {
-  encodeJsonBytes,
   parseCaptureMemoryEnvelope,
   parseMetricsEnvelope,
   parseRecordEnvelope,
-  parseRetrieveGraphEnvelope
+  parseRetrieveGraphEnvelope,
+  toProtoValue,
+  toRpcMemoryRecord
 } from "./internal/json";
 import { nowRfc3339 } from "./internal/util";
 import {
@@ -79,7 +80,7 @@ export class MembraneClient {
     const request: CaptureMemoryRpcRequest = {
       source: options.source ?? DEFAULT_SOURCE,
       source_kind: options.sourceKind ?? SourceKind.AGENT_TURN,
-      content: encodeJsonBytes(content),
+      content: toProtoValue(content),
       reason_to_remember: options.reasonToRemember ?? "",
       proposed_type: options.proposedType ?? "",
       summary: options.summary ?? "",
@@ -90,7 +91,7 @@ export class MembraneClient {
     };
 
     if (options.context !== undefined) {
-      request.context = encodeJsonBytes(options.context);
+      request.context = toProtoValue(options.context);
     }
 
     const response = await this.transport.unary("CaptureMemory", request);
@@ -140,7 +141,7 @@ export class MembraneClient {
   async supersede(oldId: string, newRecord: MemoryRecord | JsonObject, actor: string, rationale: string): Promise<MemoryRecord> {
     const request = {
       old_id: oldId,
-      new_record: encodeJsonBytes(newRecord),
+      new_record: toRpcMemoryRecord(newRecord),
       actor,
       rationale
     };
@@ -152,7 +153,7 @@ export class MembraneClient {
   async fork(sourceId: string, forkedRecord: MemoryRecord | JsonObject, actor: string, rationale: string): Promise<MemoryRecord> {
     const request = {
       source_id: sourceId,
-      forked_record: encodeJsonBytes(forkedRecord),
+      forked_record: toRpcMemoryRecord(forkedRecord),
       actor,
       rationale
     };
@@ -179,7 +180,7 @@ export class MembraneClient {
   ): Promise<MemoryRecord> {
     const request = {
       ids: recordIds,
-      merged_record: encodeJsonBytes(mergedRecord),
+      merged_record: toRpcMemoryRecord(mergedRecord),
       actor,
       rationale
     };

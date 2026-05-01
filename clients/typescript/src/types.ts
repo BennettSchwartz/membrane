@@ -107,6 +107,59 @@ export const EntityKind = {
 
 export type EntityKind = (typeof EntityKind)[keyof typeof EntityKind];
 
+export const EntityType = {
+  PERSON: "Person",
+  ORGANIZATION: "Organization",
+  TEAM: "Team",
+  AGENT: "Agent",
+  PROJECT: "Project",
+  REPOSITORY: "Repository",
+  FILE: "File",
+  DIRECTORY: "Directory",
+  SYMBOL: "Symbol",
+  API: "API",
+  SERVICE: "Service",
+  DATABASE: "Database",
+  PACKAGE: "Package",
+  DEPENDENCY: "Dependency",
+  TOOL: "Tool",
+  COMMAND: "Command",
+  RUNTIME: "Runtime",
+  ENVIRONMENT: "Environment",
+  TASK: "Task",
+  ISSUE: "Issue",
+  PULL_REQUEST: "PullRequest",
+  DECISION: "Decision",
+  REQUIREMENT: "Requirement",
+  INCIDENT: "Incident",
+  DOCUMENT: "Document",
+  URL: "URL",
+  DATASET: "Dataset",
+  METRIC: "Metric",
+  CONCEPT: "Concept",
+  EVENT: "Event",
+  OTHER: "Other"
+} as const;
+
+export type EntityType = (typeof EntityType)[keyof typeof EntityType] | string;
+
+export const BuiltinEntityTypes = Object.values(EntityType);
+
+export const GraphPredicate = {
+  MENTIONS_ENTITY: "mentions_entity",
+  MENTIONED_IN: "mentioned_in",
+  SUBJECT_ENTITY: "subject_entity",
+  FACT_SUBJECT_OF: "fact_subject_of",
+  OBJECT_ENTITY: "object_entity",
+  FACT_OBJECT_OF: "fact_object_of",
+  DERIVED_FROM: "derived_from",
+  DERIVED_SEMANTIC: "derived_semantic",
+  REFERENCES_RECORD: "references_record",
+  REFERENCED_BY: "referenced_by"
+} as const;
+
+export type GraphPredicate = (typeof GraphPredicate)[keyof typeof GraphPredicate] | string;
+
 export const InterpretationStatus = {
   TENTATIVE: "tentative",
   RESOLVED: "resolved"
@@ -206,6 +259,7 @@ export interface SelectionResult {
   selected: MemoryRecord[];
   confidence: number;
   needs_more: boolean;
+  scores?: Record<string, number>;
 }
 
 export interface RetrieveResult {
@@ -442,10 +496,23 @@ export interface PlanGraphPayload {
   metrics?: PlanMetrics;
 }
 
+export interface EntityAlias {
+  value: string;
+  kind?: string;
+  locale?: string;
+}
+
+export interface EntityIdentifier {
+  namespace: string;
+  value: string;
+}
+
 export interface EntityPayload {
   kind: "entity";
   canonical_name: string;
-  entity_kind: EntityKind | string;
-  aliases?: string[];
+  primary_type?: EntityType;
+  types?: EntityType[];
+  aliases?: EntityAlias[];
+  identifiers?: EntityIdentifier[];
   summary?: string;
 }

@@ -1,86 +1,106 @@
 ---
 title: "Retrieval"
-description: "Trust-gated, layered memory retrieval with salience ranking."
+description: "Graph-aware, trust-gated retrieval for public API clients."
 ---
 
-Retrieval methods surface memory records that are relevant to the caller's current task. Every retrieval call requires a `TrustContext` that controls which records are visible based on sensitivity level and scope.
+Retrieval returns memory records the caller is allowed to see, ranked for the current task and expanded through graph relationships. The public daemon API exposes `RetrieveGraph` for task retrieval and `RetrieveByID` for direct record lookup.
 
-## Trust-aware retrieval
+Every retrieval call requires a `TrustContext`. The trust context controls sensitivity access and scoped visibility.
 
-Membrane enforces graduated access control on every read. A record is returned only when both conditions are met:
+---
 
-1. The record's sensitivity level is at or below the trust context's `max_sensitivity`.
-2. If the trust context specifies scopes, the record's scope must match one of them (unscoped records are visible to all callers).
+## Trust Rules
 
-Records that are exactly one sensitivity level above the caller's maximum are returned in **redacted form** — metadata only, with the payload removed. Records two or more levels above are not returned at all.
+Membrane enforces graduated access control on every read:
+
+1. A record at or below `trust.max_sensitivity` is returned in full.
+2. A record exactly one level above `trust.max_sensitivity` may be returned redacted.
+3. A record two or more levels above `trust.max_sensitivity` is omitted.
+4. If `trust.scopes` is non-empty, scoped records must match one of those values. Unscoped records are visible to all allowed callers.
 
 | Record sensitivity | Caller max | Result |
 |--------------------|------------|--------|
 | `low` | `medium` | Full record |
 | `medium` | `medium` | Full record |
-| `high` | `medium` | Redacted (metadata only) |
+| `high` | `medium` | Redacted metadata |
 | `hyper` | `medium` | Not returned |
 
-## Retrieval layer order
-
-When no `memory_types` filter is specified, `Retrieve` queries all five types in the following canonical order:
-
-```
-working → semantic → competence → plan_graph → episodic
-```
-
-Results are sorted by salience descending. When competence or plan_graph records are present, the selector runs applicability scoring before the final sort.
+Redacted records keep IDs, type, sensitivity, salience, tags, scope, and timestamps. Payload, provenance, relations, and audit log are stripped.
 
 ---
 
-## Retrieve
+## RetrieveGraph
 
-Performs layered retrieval across one or more memory types with trust filtering and salience ranking.
+```protobuf
+rpc RetrieveGraph(RetrieveGraphRequest) returns (RetrieveGraphResponse);
+```
+
+Retrieves ranked root memories for a task descriptor, then expands a bounded graph neighborhood around those roots. This is the preferred retrieval method for prompts because it returns both task-relevant roots and the entity, semantic, or provenance records connected to them.
 
 ### Request fields
 
 <ParamField path="task_descriptor" type="string">
-  Describes the current task. Used as the query for applicability scoring of competence and plan_graph records. When a Postgres + pgvector backend with embeddings is configured, this field drives semantic similarity search.
+  Natural-language description of the current task. With embeddings configured, this drives semantic similarity search.
 </ParamField>
 
-<ParamField path="trust" type="object" required>
-  Trust context that gates which records are visible.
+<ParamField path="trust" type="TrustContext" required>
+  Trust context that gates all returned records.
   <Expandable title="TrustContext fields">
     <ParamField path="trust.max_sensitivity" type="string" required>
-      Maximum sensitivity the caller may access: `public`, `low`, `medium`, `high`, or `hyper`.
+      Maximum sensitivity the caller may read in full: `public`, `low`, `medium`, `high`, or `hyper`.
     </ParamField>
     <ParamField path="trust.authenticated" type="boolean">
       Whether the caller has been authenticated.
     </ParamField>
     <ParamField path="trust.actor_id" type="string">
-      Identifier of the requesting agent or user.
+      Identifier of the requesting user, agent, or service.
     </ParamField>
     <ParamField path="trust.scopes" type="string[]">
-      Allowed visibility scopes. An empty list means all scopes are accessible.
+      Allowed scopes. An empty list means scoped filtering is not applied.
     </ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField path="memory_types" type="string[]">
-  Restrict retrieval to specific memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph`. When omitted, all types are queried in layer order.
+  Optional memory type filter. Valid values are `episodic`, `working`, `semantic`, `competence`, `plan_graph`, and `entity`.
 </ParamField>
 
 <ParamField path="min_salience" type="number">
-  Minimum salience threshold. Records with salience below this value are excluded. Must be non-negative and finite.
+  Minimum salience threshold. Records below this value are excluded before graph expansion.
 </ParamField>
 
-<ParamField path="limit" type="number">
-  Maximum number of records to return. `0` means no limit. Maximum is 10 000.
+<ParamField path="root_limit" type="number">
+  Maximum number of ranked root records. SDKs default to `10`.
+</ParamField>
+
+<ParamField path="node_limit" type="number">
+  Maximum total graph nodes to return, including roots. SDKs default to `25`.
+</ParamField>
+
+<ParamField path="edge_limit" type="number">
+  Maximum graph edges to return. SDKs default to `100`.
+</ParamField>
+
+<ParamField path="max_hops" type="number">
+  Number of relation hops to expand from each root. `0` returns only roots; SDKs default to `1`.
 </ParamField>
 
 ### Response fields
 
-<ResponseField name="records" type="bytes[]">
-  Array of JSON-encoded `MemoryRecord` objects, sorted by salience descending.
+<ResponseField name="nodes" type="GraphNode[]">
+  Retrieved records wrapped with `root` and `hop` metadata.
 </ResponseField>
 
-<ResponseField name="selection" type="bytes">
-  JSON-encoded `SelectionResult` when competence or plan_graph candidates were scored by the selector. May be null when no competence or plan_graph records exist in the result set.
+<ResponseField name="edges" type="GraphEdge[]">
+  Graph edges between returned records.
+</ResponseField>
+
+<ResponseField name="root_ids" type="string[]">
+  IDs of the records selected as ranked roots.
+</ResponseField>
+
+<ResponseField name="selection" type="SelectionResult">
+  Optional selector metadata when competence or plan graph candidates were scored.
 </ResponseField>
 
 ### Examples
@@ -88,89 +108,101 @@ Performs layered retrieval across one or more memory types with trust filtering 
 <CodeGroup>
 
 ```go Go
-resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
-    TaskDescriptor: "fix build error",
-    Trust: &retrieval.TrustContext{
-        MaxSensitivity: schema.SensitivityMedium,
-        Authenticated:  true,
-    },
+resp, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+    TaskDescriptor: "fix auth build error",
+    Trust: retrieval.NewTrustContext(
+        schema.SensitivityMedium,
+        true,
+        "build-agent",
+        []string{"project-auth"},
+    ),
     MemoryTypes: []schema.MemoryType{
-        schema.MemoryTypeCompetence,
+        schema.MemoryTypeEntity,
         schema.MemoryTypeSemantic,
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeEpisodic,
     },
+    RootLimit: 10,
+    NodeLimit: 25,
+    EdgeLimit: 100,
+    MaxHops:   1,
 })
+if err != nil {
+    log.Fatal(err)
+}
 
-for _, r := range resp.Records {
-    fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+for _, node := range resp.Nodes {
+    fmt.Printf("Found: %s (type=%s, root=%t, hop=%d)\n",
+        node.Record.ID,
+        node.Record.Type,
+        node.Root,
+        node.Hop,
+    )
 }
 ```
 
 ```typescript TypeScript
-const results = await client.retrieve("fix build error", {
+const graph = await client.retrieveGraph("fix auth build error", {
   trust: {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
-    actor_id: "ts-agent",
-    scopes: [],
+    actor_id: "build-agent",
+    scopes: ["project-auth"],
   },
-  memoryTypes: ["semantic", "competence"],
-  limit: 12,
+  memoryTypes: ["entity", "semantic", "competence", "episodic"],
+  rootLimit: 10,
+  nodeLimit: 25,
+  edgeLimit: 100,
+  maxHops: 1,
 });
 
-for (const r of results) {
-  console.log(`Found: ${r.id} (type=${r.type}, confidence=${r.confidence})`);
+for (const node of graph.nodes) {
+  console.log(`${node.record.id} ${node.record.type} root=${node.root} hop=${node.hop}`);
 }
 ```
 
 ```python Python
-results = client.retrieve(
-    task_descriptor="fix build error",
+graph = client.retrieve_graph(
+    "fix auth build error",
     trust=TrustContext(
         max_sensitivity=Sensitivity.MEDIUM,
         authenticated=True,
-        actor_id="py-agent",
+        actor_id="build-agent",
+        scopes=["project-auth"],
     ),
-    memory_types=["semantic", "competence"],
-    limit=12,
+    memory_types=["entity", "semantic", "competence", "episodic"],
+    root_limit=10,
+    node_limit=25,
+    edge_limit=100,
+    max_hops=1,
 )
 
-for r in results:
-    print(f"Found: {r.id} (type={r.type}, confidence={r.confidence:.2f})")
+for node in graph.nodes:
+    print(f"{node.record.id} {node.record.type.value} root={node.root} hop={node.hop}")
 ```
 
 </CodeGroup>
 
-### Trust-filtered retrieval example
+### Prompt Projection
 
-This pattern retrieves only records that the caller is authorised to see, with scope restriction to a single project:
+For LLM prompts, use the root nodes as the shortest high-signal context, or include all graph nodes when entity and provenance context matter:
 
-```go Go — scoped, authenticated retrieval
-resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
-    TaskDescriptor: "plan a safe migration",
-    Trust: retrieval.NewTrustContext(
-        schema.SensitivityMedium,
-        true,           // authenticated
-        "planner-agent",
-        []string{"project-acme"},
-    ),
-    MemoryTypes: []schema.MemoryType{
-        schema.MemoryTypeSemantic,
-        schema.MemoryTypeCompetence,
-        schema.MemoryTypeWorking,
-    },
-    Limit: 12,
-})
+```typescript
+const roots = graph.nodes.filter((node) => node.root).map((node) => node.record);
+const context = roots.map((record) => JSON.stringify(record)).join("\n");
 ```
 
-<Info>
-For LLM integration, map each returned record to a JSON string and include it in the system or user prompt. Records carry their `type`, `confidence`, `salience`, and structured `payload`, giving the model typed context rather than raw text.
-</Info>
+Use `rootLimit`, `nodeLimit`, and `maxHops` to keep prompt context bounded.
 
 ---
 
 ## RetrieveByID
 
-Fetches a single record by its UUID. The same trust rules apply: the record is returned only if its sensitivity is within the caller's trust context.
+```protobuf
+rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
+```
+
+Fetches a single record by UUID. The same trust rules apply. If the record does not exist or trust denies access, the RPC returns an error.
 
 ### Request fields
 
@@ -178,28 +210,14 @@ Fetches a single record by its UUID. The same trust rules apply: the record is r
   UUID of the record to retrieve.
 </ParamField>
 
-<ParamField path="trust" type="object" required>
-  Trust context that gates access.
-  <Expandable title="TrustContext fields">
-    <ParamField path="trust.max_sensitivity" type="string" required>
-      Maximum sensitivity the caller may access: `public`, `low`, `medium`, `high`, or `hyper`.
-    </ParamField>
-    <ParamField path="trust.authenticated" type="boolean">
-      Whether the caller has been authenticated.
-    </ParamField>
-    <ParamField path="trust.actor_id" type="string">
-      Identifier of the requesting agent or user.
-    </ParamField>
-    <ParamField path="trust.scopes" type="string[]">
-      Allowed visibility scopes.
-    </ParamField>
-  </Expandable>
+<ParamField path="trust" type="TrustContext" required>
+  Trust context that gates access to the record.
 </ParamField>
 
 ### Response fields
 
-<ResponseField name="record" type="bytes">
-  JSON-encoded `MemoryRecord`. Returns `NOT_FOUND` if the ID does not exist, or `PERMISSION_DENIED` if the trust context denies access.
+<ResponseField name="record" type="MemoryRecord">
+  The requested typed memory record.
 </ResponseField>
 
 ### Example
@@ -207,31 +225,51 @@ Fetches a single record by its UUID. The same trust rules apply: the record is r
 <CodeGroup>
 
 ```go Go
-rec, err := m.RetrieveByID(ctx, recordID, &retrieval.TrustContext{
-    MaxSensitivity: schema.SensitivityMedium,
-    Authenticated:  true,
-})
+record, err := m.RetrieveByID(ctx, recordID, retrieval.NewTrustContext(
+    schema.SensitivityHigh,
+    true,
+    "support-agent",
+    []string{"project-auth"},
+))
 if err != nil {
-    log.Printf("record not found or access denied: %v", err)
-    return
+    log.Fatal(err)
 }
-fmt.Printf("Record type: %s, salience: %.2f\n", rec.Type, rec.Salience)
+fmt.Println(record.ID, record.Type)
 ```
 
 ```typescript TypeScript
 const record = await client.retrieveById(recordId, {
   trust: {
-    max_sensitivity: Sensitivity.MEDIUM,
+    max_sensitivity: Sensitivity.HIGH,
     authenticated: true,
+    actor_id: "support-agent",
+    scopes: ["project-auth"],
   },
 });
 ```
 
 ```python Python
 record = client.retrieve_by_id(
-    id=record_id,
-    trust=TrustContext(max_sensitivity=Sensitivity.MEDIUM, authenticated=True),
+    record_id,
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.HIGH,
+        authenticated=True,
+        actor_id="support-agent",
+        scopes=["project-auth"],
+    ),
 )
 ```
 
 </CodeGroup>
+
+---
+
+## Layer Order
+
+When no `memory_types` filter is supplied, graph retrieval starts from the same layered ranking model used internally:
+
+```text
+working -> entity -> semantic -> competence -> plan_graph -> episodic
+```
+
+The graph expansion can add related records of any allowed type, subject to trust, node, edge, and hop limits.

@@ -128,6 +128,7 @@ Set `MEMBRANE_ENCRYPTION_KEY` before first run when using SQLite. Changing the k
 | `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN, used when `backend: postgres` |
 | `MEMBRANE_EMBEDDING_API_KEY` | API key for the embedding endpoint |
 | `MEMBRANE_LLM_API_KEY` | API key for the semantic extraction LLM endpoint |
+| `MEMBRANE_INGEST_LLM_API_KEY` | API key for the ingest-side interpretation endpoint |
 | `MEMBRANE_API_KEY` | Bearer token for gRPC client authentication |
 
 Environment variables are read at startup. If the same value is set both in the config file and an environment variable, the config file value takes precedence for most fields. Exception: `MEMBRANE_API_KEY` is read only from the environment when `api_key` is empty in the config.
@@ -146,6 +147,10 @@ decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
 selection_confidence_threshold: 0.7
+graph_default_root_limit: 10
+graph_default_node_limit: 25
+graph_default_edge_limit: 100
+graph_default_max_hops: 1
 rate_limit_per_second: 100
 
 # Embedding-backed retrieval
@@ -156,6 +161,11 @@ embedding_dimensions: 1536
 # LLM-backed semantic extraction
 llm_endpoint: "https://api.openai.com/v1/chat/completions"
 llm_model: "gpt-5-mini"
+
+# Optional ingest-side interpretation
+ingest_llm_enabled: true
+ingest_llm_endpoint: "https://api.openai.com/v1/chat/completions"
+ingest_llm_model: "gpt-5-mini"
 
 # TLS
 tls_cert_file: "/etc/membrane/tls.crt"

@@ -67,6 +67,13 @@ type Store interface {
 	Close() error
 }
 
+// EntityLookup is implemented by stores that maintain first-class entity
+// lookup indexes.
+type EntityLookup interface {
+	FindEntitiesByTerm(ctx context.Context, term, scope string, limit int) ([]*schema.MemoryRecord, error)
+	FindEntityByIdentifier(ctx context.Context, namespace, value, scope string) (*schema.MemoryRecord, error)
+}
+
 // ListOptions specifies filters for the List operation.
 type ListOptions struct {
 	// Type filters records by memory type. Empty means no filter.
