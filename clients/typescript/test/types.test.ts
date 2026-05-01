@@ -186,7 +186,7 @@ describe("payload types are structurally correct", () => {
 
   it("EntityPayload interface accepts ontology-backed identity data", () => {
     const alias: EntityAlias = { value: "Membrane", kind: "surface" };
-    const identifier: EntityIdentifier = { namespace: "github", value: "GustyCube/membrane" };
+    const identifier: EntityIdentifier = { namespace: "github", value: "BennettSchwartz/membrane" };
     const p: EntityPayload = {
       kind: "entity",
       canonical_name: "Membrane",

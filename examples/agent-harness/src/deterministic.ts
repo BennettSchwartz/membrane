@@ -12,7 +12,7 @@ import {
   TaskState,
   type CaptureMemoryResult,
   type MemoryRecord
-} from "@gustycube/membrane";
+} from "@bennettschwartz/membrane";
 
 import { startOrConnectMembrane } from "./membrane-daemon.js";
 import {

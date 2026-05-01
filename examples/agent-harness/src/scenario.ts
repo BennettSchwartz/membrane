@@ -14,8 +14,8 @@ import {
   type PlanGraphPayload,
   type Relation,
   type SemanticPayload
-} from "@gustycube/membrane";
-import { MembraneClient } from "@gustycube/membrane";
+} from "@bennettschwartz/membrane";
+import { MembraneClient } from "@bennettschwartz/membrane";
 
 export const HARNESS_SCOPE = "project:agent-harness-orion";
 export const HARNESS_ACTOR = "agent-harness";

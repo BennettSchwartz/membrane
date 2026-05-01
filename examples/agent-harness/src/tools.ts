@@ -6,8 +6,8 @@ import {
   type GraphNode,
   type MemoryRecord,
   type RetrieveGraphResult
-} from "@gustycube/membrane";
-import { MembraneClient } from "@gustycube/membrane";
+} from "@bennettschwartz/membrane";
+import { MembraneClient } from "@bennettschwartz/membrane";
 
 import {
   GRAPH_MEMORY_TYPES,

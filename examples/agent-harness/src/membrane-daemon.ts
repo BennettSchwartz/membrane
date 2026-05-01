@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MembraneClient } from "@gustycube/membrane";
+import { MembraneClient } from "@bennettschwartz/membrane";
 
 const READY_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 180_000;

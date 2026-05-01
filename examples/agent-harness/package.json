@@ -9,7 +9,7 @@
     "test:llm": "tsx src/llm-test.ts"
   },
   "dependencies": {
-    "@gustycube/membrane": "file:../../clients/typescript",
+    "@bennettschwartz/membrane": "file:../../clients/typescript",
     "dotenv": "^17.4.2",
     "openai": "^5.16.0"
   },
