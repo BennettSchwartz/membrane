@@ -1,6 +1,6 @@
 ---
 title: "OpenClaw plugin"
-description: "OpenClaw plugin that bridges to Membrane, giving your AI agents episodic memory. Ingests events, searches memory, and auto-injects context before each agent turn."
+description: "OpenClaw plugin that bridges to Membrane with graph-aware capture, search, and auto-context injection."
 ---
 
 ## What it does
@@ -10,7 +10,7 @@ description: "OpenClaw plugin that bridges to Membrane, giving your AI agents ep
     Automatically ingests agent replies, tool calls, and observations into Membrane via `after_agent_reply` and `after_tool_call` hooks.
   </Card>
   <Card title="Memory search" icon="magnifying-glass">
-    Exposes the `membrane_search` tool so agents can query episodic memory with natural language.
+    Exposes the `membrane_search` tool so agents can query graph-aware memory with natural language.
   </Card>
   <Card title="Auto-context" icon="bolt">
     Injects relevant memories into the agent's context before each turn via the `before_agent_start` hook — no explicit tool calls required.
@@ -100,7 +100,7 @@ All options live under `plugins.entries.openclaw-membrane.config` in `openclaw.y
 </ParamField>
 
 <ParamField path="context_types" type="array">
-  Memory types to include in context injection. Valid values: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`. Defaults to `["episodic", "semantic", "competence"]`.
+  Memory types to include in context injection. Valid values: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`. Defaults to `["episodic", "semantic", "competence"]`.
 </ParamField>
 
 ### Configuration summary table
@@ -112,13 +112,13 @@ All options live under `plugins.entries.openclaw-membrane.config` in `openclaw.y
 | `auto_context` | `true` | Auto-inject memories before each agent turn |
 | `context_limit` | `5` | Max memories to inject |
 | `min_salience` | `0.3` | Minimum salience score for retrieval |
-| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `semantic`, `competence`, `plan_graph` |
+| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `entity`, `semantic`, `competence`, `plan_graph` |
 
 ---
 
 ## `membrane_search` tool
 
-The plugin registers the `membrane_search` tool, which agents can call to query episodic memory:
+The plugin registers the `membrane_search` tool, which agents can call to query graph-aware memory:
 
 ```javascript
 membrane_search("what happened in yesterday's meeting", { limit: 10 })
@@ -135,7 +135,7 @@ membrane_search("what happened in yesterday's meeting", { limit: 10 })
 </ParamField>
 
 <ParamField path="memory_types" type="array">
-  Filter by memory type: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, `"plan_graph"`.
+  Filter by memory type: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`.
 </ParamField>
 
 <ParamField path="min_salience" type="number">
@@ -195,13 +195,13 @@ If the daemon is unreachable, the command reports the disconnected state without
 
 ## Ingestion behavior
 
-The plugin maps OpenClaw hooks to Membrane ingestion methods:
+The plugin maps OpenClaw hooks to `captureMemory` source kinds:
 
-| Hook | Membrane method | Condition |
-|------|----------------|-----------|
-| `after_tool_call` | `ingestToolOutput` | When `toolName` is present |
-| `after_agent_reply` | `ingestEvent` | Always |
-| Other hooks | `ingestObservation` | Fallback |
+| Hook | Capture source kind | Condition |
+|------|---------------------|-----------|
+| `after_tool_call` | `tool_output` | When `toolName` is present |
+| `after_agent_reply` | `event` | Always |
+| Other hooks | `observation` | Fallback |
 
 Tags are automatically built from the event: `hook:<name>`, `agent:<id>`, `tool:<name>`, `session:<key>`.
 
@@ -214,11 +214,11 @@ Ingestion failures are logged as warnings and do not interrupt the agent.
 ```text
 OpenClaw Agent
      │
-     ├── after_agent_reply ──→ ingestEvent()
-     ├── after_tool_call ────→ ingestToolOutput()
-     ├── before_agent_start ─→ retrieve() → inject context
+     ├── after_agent_reply ──→ captureMemory(sourceKind=event)
+     ├── after_tool_call ────→ captureMemory(sourceKind=tool_output)
+     ├── before_agent_start ─→ retrieveGraph() → inject context
      │
-     └── membrane_search ───→ retrieve() → return results
+     └── membrane_search ───→ retrieveGraph() → return results
                                   │
                                   ▼
                           Membrane (gRPC)

@@ -1,11 +1,11 @@
 ---
 title: "membrane"
-description: "Top-level package that wires all subsystems together and exposes the unified API surface."
+description: "Top-level Go package that wires all subsystems together and exposes the unified API surface."
 ---
 
 Import path: `github.com/BennettSchwartz/membrane/pkg/membrane`
 
-The `membrane` package is the entry point for the Go library. It initialises the storage backend, ingestion pipeline, retrieval service, decay scheduler, revision service, consolidation service, and metrics collector from a single `Config` struct.
+The `membrane` package is the embedded Go entry point. It initializes storage, ingestion, retrieval, decay, revision, consolidation, embeddings, and metrics from a single `Config`.
 
 ## Constructors
 
@@ -15,39 +15,22 @@ The `membrane` package is the entry point for the Go library. It initialises the
 func New(cfg *Config) (*Membrane, error)
 ```
 
-Initialises all subsystems from the provided `Config` and returns a ready-to-start `Membrane` instance. Returns an error if the configuration is invalid (for example, an unrecognised backend or an invalid default sensitivity).
+Initializes all subsystems from `Config` and returns a ready-to-start `Membrane`.
 
-<ParamField path="cfg" type="*Config" required>
-  Configuration for the Membrane instance. Use `DefaultConfig()` or `LoadConfig()` to obtain a populated struct.
-</ParamField>
+```go
+cfg := membrane.DefaultConfig()
+cfg.DBPath = "my-agent.db"
 
-<CodeGroup>
+m, err := membrane.New(cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer m.Stop()
 
-```go basic usage
-package main
-
-import (
-    "context"
-    "log"
-
-    "github.com/BennettSchwartz/membrane/pkg/membrane"
-)
-
-func main() {
-    cfg := membrane.DefaultConfig()
-    m, err := membrane.New(cfg)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer m.Stop()
-
-    if err := m.Start(context.Background()); err != nil {
-        log.Fatal(err)
-    }
+if err := m.Start(context.Background()); err != nil {
+    log.Fatal(err)
 }
 ```
-
-</CodeGroup>
 
 ### DefaultConfig
 
@@ -55,7 +38,7 @@ func main() {
 func DefaultConfig() *Config
 ```
 
-Returns a `*Config` populated with sensible defaults. All fields can be overridden before passing the struct to `New`.
+Returns defaults for SQLite storage, daemon listen address, schedulers, retrieval limits, and policy settings.
 
 ### LoadConfig
 
@@ -63,70 +46,93 @@ Returns a `*Config` populated with sensible defaults. All fields can be overridd
 func LoadConfig(path string) (*Config, error)
 ```
 
-Reads a YAML configuration file from `path` and returns a `*Config`. Fields absent from the file retain the values returned by `DefaultConfig`.
+Reads a YAML config file and overlays it onto `DefaultConfig`.
 
-<ParamField path="path" type="string" required>
-  Filesystem path to a YAML configuration file.
-</ParamField>
-
-<CodeGroup>
-
-```go load from file
-cfg, err := membrane.LoadConfig("/etc/membrane/config.yaml")
-if err != nil {
-    log.Fatal(err)
-}
-m, err := membrane.New(cfg)
-```
-
-</CodeGroup>
-
-## Lifecycle methods
-
-### Start
+## Lifecycle
 
 ```go
 func (m *Membrane) Start(ctx context.Context) error
-```
-
-Begins the background schedulers for decay and consolidation. If an embedding service is configured, it also starts a goroutine to backfill missing embeddings. Call `Start` once after `New` and before making any API calls.
-
-<ParamField path="ctx" type="context.Context" required>
-  Context used to control the lifetime of background schedulers.
-</ParamField>
-
-### Stop
-
-```go
 func (m *Membrane) Stop() error
 ```
 
-Gracefully shuts down both schedulers and closes the underlying storage. Returns any error from the store's `Close` call.
+`Start` begins background decay and consolidation schedulers. If embeddings are configured, it also backfills missing embeddings. `Stop` shuts down schedulers and closes the store.
 
-## Ingestion methods
+---
 
-All ingestion methods delegate to `pkg/ingestion.Service`. See the [ingestion reference](/api/go/ingestion) for request struct details.
+## Capture
 
 ```go
-func (m *Membrane) IngestEvent(ctx context.Context, req ingestion.IngestEventRequest) (*schema.MemoryRecord, error)
-func (m *Membrane) IngestToolOutput(ctx context.Context, req ingestion.IngestToolOutputRequest) (*schema.MemoryRecord, error)
-func (m *Membrane) IngestObservation(ctx context.Context, req ingestion.IngestObservationRequest) (*schema.MemoryRecord, error)
-func (m *Membrane) IngestOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error)
-func (m *Membrane) IngestWorkingState(ctx context.Context, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error)
+func (m *Membrane) CaptureMemory(ctx context.Context, req ingestion.CaptureMemoryRequest) (*ingestion.CaptureMemoryResponse, error)
 ```
 
-## Retrieval methods
-
-All retrieval methods delegate to `pkg/retrieval.Service`. See the [retrieval reference](/api/go/retrieval) for request and response struct details.
+Captures a graph-aware memory candidate and returns the primary record plus any linked records or edges.
 
 ```go
-func (m *Membrane) Retrieve(ctx context.Context, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error)
+capture, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+    Source:           "auth-agent",
+    SourceKind:       "tool_output",
+    Content:          map[string]any{
+        "tool_name": "go test",
+        "args":      map[string]any{"packages": []string{"./pkg/auth"}},
+        "result":    map[string]any{"exit_code": 0},
+    },
+    ReasonToRemember: "Successful auth package verification",
+    Summary:          "Auth package tests passed",
+    Tags:             []string{"auth", "tests"},
+    Scope:            "project-auth",
+    Sensitivity:      schema.SensitivityLow,
+})
+```
+
+```go
+func (m *Membrane) RecordOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error)
+```
+
+Attaches an outcome to an existing episodic record. This delegates to the lower-level ingestion service outcome path.
+
+---
+
+## Retrieval
+
+```go
+func (m *Membrane) RetrieveGraph(ctx context.Context, req *retrieval.RetrieveGraphRequest) (*retrieval.RetrieveGraphResponse, error)
 func (m *Membrane) RetrieveByID(ctx context.Context, id string, trust *retrieval.TrustContext) (*schema.MemoryRecord, error)
 ```
 
-## Revision methods
+`RetrieveGraph` returns ranked roots and a bounded graph neighborhood. When request limits are zero, the facade applies the graph defaults from `Config`.
 
-All revision methods delegate to `pkg/revision.Service`. See the [revision reference](/api/go/revision) for detailed behaviour.
+```go
+graph, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
+    TaskDescriptor: "debug auth retries",
+    Trust: retrieval.NewTrustContext(
+        schema.SensitivityMedium,
+        true,
+        "auth-agent",
+        []string{"project-auth"},
+    ),
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeEntity,
+        schema.MemoryTypeSemantic,
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeEpisodic,
+    },
+    RootLimit: 8,
+    NodeLimit: 20,
+    EdgeLimit: 80,
+    MaxHops:   1,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, node := range graph.Nodes {
+    fmt.Println(node.Record.ID, node.Record.Type, node.Root, node.Hop)
+}
+```
+
+---
+
+## Revision
 
 ```go
 func (m *Membrane) Supersede(ctx context.Context, oldID string, newRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
@@ -136,12 +142,16 @@ func (m *Membrane) Merge(ctx context.Context, ids []string, mergedRec *schema.Me
 func (m *Membrane) Contest(ctx context.Context, id, contestingRef, actor, rationale string) error
 ```
 
-## Decay methods
+Revision operations keep records auditable while allowing durable knowledge to change explicitly.
+
+## Reinforcement
 
 ```go
 func (m *Membrane) Reinforce(ctx context.Context, id, actor, rationale string) error
 func (m *Membrane) Penalize(ctx context.Context, id string, amount float64, actor, rationale string) error
 ```
+
+Use these after a record helps or misleads a downstream workflow.
 
 ## Metrics
 
@@ -149,7 +159,7 @@ func (m *Membrane) Penalize(ctx context.Context, id string, amount float64, acto
 func (m *Membrane) GetMetrics(ctx context.Context) (*metrics.Snapshot, error)
 ```
 
-Collects a point-in-time snapshot of substrate metrics. See `pkg/metrics.Snapshot` for field details.
+Returns a point-in-time metrics snapshot.
 
 ---
 
@@ -159,103 +169,81 @@ Collects a point-in-time snapshot of substrate metrics. See `pkg/metrics.Snapsho
 type Config struct { ... }
 ```
 
-All configurable parameters for a `Membrane` instance. Use the `yaml` struct tags to load values from a YAML file via `LoadConfig`.
-
-### Storage
+Important fields:
 
 <ParamField path="Backend" type="string" default="sqlite">
-  Storage backend. Accepted values: `sqlite`, `postgres`.
+  Storage backend: `sqlite` or `postgres`.
 </ParamField>
 
 <ParamField path="DBPath" type="string" default="membrane.db">
-  SQLite database file path. Only used when `Backend` is `sqlite`.
+  SQLite database path.
 </ParamField>
 
 <ParamField path="PostgresDSN" type="string">
-  PostgreSQL connection string. Required when `Backend` is `postgres`. Falls back to the `MEMBRANE_POSTGRES_DSN` environment variable.
+  PostgreSQL connection string. Falls back to `MEMBRANE_POSTGRES_DSN`.
 </ParamField>
-
-### Server
 
 <ParamField path="ListenAddr" type="string" default=":9090">
-  gRPC server listen address.
+  Daemon gRPC listen address.
 </ParamField>
 
-<ParamField path="TLSCertFile" type="string">
-  Path to the TLS certificate PEM file. Leave empty to run without TLS.
+<ParamField path="DefaultSensitivity" type="string" default="low">
+  Default sensitivity assigned during capture.
 </ParamField>
 
-<ParamField path="TLSKeyFile" type="string">
-  Path to the TLS private key PEM file.
+<ParamField path="GraphDefaultRootLimit" type="int" default="10">
+  Default graph root limit for `RetrieveGraph`.
+</ParamField>
+
+<ParamField path="GraphDefaultNodeLimit" type="int" default="25">
+  Default graph node limit for `RetrieveGraph`.
+</ParamField>
+
+<ParamField path="GraphDefaultEdgeLimit" type="int" default="100">
+  Default graph edge limit for `RetrieveGraph`.
+</ParamField>
+
+<ParamField path="GraphDefaultMaxHops" type="int" default="1">
+  Default graph expansion depth.
+</ParamField>
+
+<ParamField path="SelectionConfidenceThreshold" type="float64" default="0.7">
+  Minimum selector confidence for competence and plan graph candidates.
+</ParamField>
+
+<ParamField path="EmbeddingEndpoint" type="string">
+  HTTP endpoint used to generate embeddings. Semantic search is disabled when empty.
+</ParamField>
+
+<ParamField path="LLMEndpoint" type="string">
+  HTTP endpoint used for LLM-backed semantic extraction during consolidation.
+</ParamField>
+
+<ParamField path="IngestLLMEnabled" type="bool" default="false">
+  Enables ingest-side interpretation during `CaptureMemory`.
+</ParamField>
+
+<ParamField path="IngestLLMEndpoint" type="string">
+  HTTP endpoint used for ingest-side interpretation.
+</ParamField>
+
+<ParamField path="IngestLLMModel" type="string">
+  Chat model name sent to the ingest-side interpretation endpoint.
+</ParamField>
+
+<ParamField path="IngestLLMAPIKey" type="string">
+  Authentication key for the ingest-side interpretation endpoint. Falls back to `MEMBRANE_INGEST_LLM_API_KEY`.
 </ParamField>
 
 <ParamField path="APIKey" type="string">
-  Shared secret for authenticating gRPC clients. Authentication is disabled when empty. Falls back to the `MEMBRANE_API_KEY` environment variable.
-</ParamField>
-
-<ParamField path="RateLimitPerSecond" type="int" default="100">
-  Maximum requests per second per client. `0` disables rate limiting.
-</ParamField>
-
-### Scheduling
-
-<ParamField path="DecayInterval" type="time.Duration" default="1h">
-  How often the decay scheduler runs.
-</ParamField>
-
-<ParamField path="ConsolidationInterval" type="time.Duration" default="6h">
-  How often the consolidation scheduler runs.
-</ParamField>
-
-### Ingestion
-
-<ParamField path="DefaultSensitivity" type="string" default="low">
-  Default sensitivity level applied to ingested records when no override is provided. Must be one of the `Sensitivity` enum values: `public`, `low`, `medium`, `high`, `hyper`.
+  Bearer token for gRPC clients. Falls back to `MEMBRANE_API_KEY`.
 </ParamField>
 
 <ParamField path="EncryptionKey" type="string">
-  SQLCipher encryption key for the SQLite database. The database is unencrypted when empty. Falls back to the `MEMBRANE_ENCRYPTION_KEY` environment variable.
+  SQLCipher key for SQLite. Falls back to `MEMBRANE_ENCRYPTION_KEY`.
 </ParamField>
 
-### Retrieval
-
-<ParamField path="SelectionConfidenceThreshold" type="float64" default="0.7">
-  Minimum confidence score for the retrieval selector to accept a `competence` or `plan_graph` candidate without flagging `NeedsMore`.
-</ParamField>
-
-### Embeddings
-
-<ParamField path="EmbeddingEndpoint" type="string">
-  HTTP endpoint used to generate vector embeddings. Semantic search is disabled when empty.
-</ParamField>
-
-<ParamField path="EmbeddingModel" type="string">
-  Embedding model name sent to the endpoint.
-</ParamField>
-
-<ParamField path="EmbeddingDimensions" type="int" default="1536">
-  Output dimension of the embedding model.
-</ParamField>
-
-<ParamField path="EmbeddingAPIKey" type="string">
-  Authentication key for the embedding endpoint. Falls back to the `MEMBRANE_EMBEDDING_API_KEY` environment variable.
-</ParamField>
-
-### LLM (consolidation)
-
-<ParamField path="LLMEndpoint" type="string">
-  HTTP endpoint used for semantic fact extraction during consolidation.
-</ParamField>
-
-<ParamField path="LLMModel" type="string">
-  Chat model name sent to the LLM endpoint.
-</ParamField>
-
-<ParamField path="LLMAPIKey" type="string">
-  Authentication key for the LLM endpoint. Falls back to the `MEMBRANE_LLM_API_KEY` environment variable.
-</ParamField>
-
-### YAML example
+### YAML Example
 
 ```yaml membrane.yaml
 backend: postgres
@@ -265,10 +253,17 @@ decay_interval: 1h
 consolidation_interval: 6h
 default_sensitivity: low
 selection_confidence_threshold: 0.7
+graph_default_root_limit: 10
+graph_default_node_limit: 25
+graph_default_edge_limit: 100
+graph_default_max_hops: 1
 embedding_endpoint: "https://api.openai.com/v1/embeddings"
 embedding_model: "text-embedding-3-small"
 embedding_dimensions: 1536
 llm_endpoint: "https://api.openai.com/v1/chat/completions"
-llm_model: "gpt-4o-mini"
+llm_model: "gpt-5-mini"
+ingest_llm_enabled: true
+ingest_llm_endpoint: "https://api.openai.com/v1/chat/completions"
+ingest_llm_model: "gpt-5-mini"
 rate_limit_per_second: 100
 ```
