@@ -253,29 +253,6 @@ func main() {
 }
 ```
 
-## Agent Harness
-
-The official harness in [examples/agent-harness](examples/agent-harness) tests
-Membrane as optional OpenAI-compatible model tools.
-
-It starts or connects to `membraned`, seeds a coherent incident scenario in
-SQLite, verifies that all five memory layers are connected through entities, and
-runs both deterministic and live LLM checks.
-
-```bash
-npm --prefix clients/typescript run build
-cd examples/agent-harness
-npm install
-npm run test:deterministic
-
-# Optional live run with OpenRouter or OpenAI credentials
-OPENROUTER_API_KEY=... npm run test:llm
-```
-
-The live test uses natural-language prompts and `tool_choice: "auto"`; it
-asserts that the model chooses retrieval and capture tools when those actions
-are useful, instead of forcing tool calls in the harness.
-
 ## Documentation
 
 The docs site lives in [docs](docs), is built with Docusaurus, and is deployed
@@ -345,7 +322,7 @@ clients/typescript/   TypeScript SDK
 clients/python/       Python SDK
 cmd/membraned/        Daemon entrypoint
 docs/                 Docusaurus docs content
-examples/             Runnable examples, including the agent harness
+examples/             Reference examples and experiments
 pkg/                  Core Go packages
 tests/                Evaluation and integration tests
 ```
@@ -358,15 +335,7 @@ Run the checks most often used before committing:
 make build
 make test
 npm --prefix clients/typescript run build
-npm --prefix examples/agent-harness run typecheck
-npm --prefix examples/agent-harness run test:deterministic
 npm run docs:build
-```
-
-Live harness testing needs an OpenRouter or OpenAI-compatible key:
-
-```bash
-OPENROUTER_API_KEY=... npm --prefix examples/agent-harness run test:llm
 ```
 
 ## Contributing
