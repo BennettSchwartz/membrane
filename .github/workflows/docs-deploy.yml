@@ -1,0 +1,51 @@
+name: Cloudflare Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "src/**"
+      - "static/**"
+      - "docusaurus.config.js"
+      - "sidebars.js"
+      - "package.json"
+      - "package-lock.json"
+      - "wrangler.jsonc"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build docs
+        run: npm run docs:build
+
+      - name: Deploy docs to Cloudflare Workers
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx wrangler deploy
+
+      - name: Skip deploy without Cloudflare token
+        if: env.CLOUDFLARE_API_TOKEN == ''
+        run: |
+          echo "::notice::Set CLOUDFLARE_API_TOKEN as a repository secret to enable automatic docs deployment."
