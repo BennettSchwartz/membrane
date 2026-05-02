@@ -566,11 +566,6 @@ func (pw *PayloadWrapper) UnmarshalJSON(data []byte) error {
 	case "entity":
 		payload = &EntityPayload{}
 	default:
-		// Unknown kind - store as raw JSON
-		var raw map[string]any
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return err
-		}
 		pw.Payload = nil
 		return nil
 	}

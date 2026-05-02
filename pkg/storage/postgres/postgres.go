@@ -21,6 +21,8 @@ import (
 //go:embed schema.sql
 var ddl string
 
+var sqlOpen = sql.Open
+
 // EmbeddingConfig controls the vector schema created for Postgres-backed stores.
 type EmbeddingConfig struct {
 	Dimensions int
@@ -42,7 +44,7 @@ func Open(dsn string, cfg EmbeddingConfig) (*PostgresStore, error) {
 		cfg.Dimensions = 1536
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	db, err := sqlOpen("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
@@ -68,6 +70,9 @@ func Open(dsn string, cfg EmbeddingConfig) (*PostgresStore, error) {
 
 // Close closes the underlying database connection.
 func (s *PostgresStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
 	return s.db.Close()
 }
 
@@ -242,7 +247,12 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 }
 
 func (s *PostgresStore) Create(ctx context.Context, rec *schema.MemoryRecord) error {
-	return createRecord(ctx, s.db, rec)
+	if err := rec.Validate(); err != nil {
+		return err
+	}
+	return storage.WithTransaction(ctx, s, func(tx storage.Transaction) error {
+		return tx.Create(ctx, rec)
+	})
 }
 
 func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecord, error) {
@@ -330,6 +340,9 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		}
 		rec.Tags = append(rec.Tags, tag)
 	}
+	if err := tagRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tags: %w", err)
+	}
 
 	provRows, err := q.QueryContext(ctx,
 		`SELECT kind, ref, hash, created_by, timestamp
@@ -351,8 +364,11 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		src.CreatedBy = createdBy.String
 		rec.Provenance.Sources = append(rec.Provenance.Sources, src)
 	}
+	if err := provRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provenance_sources: %w", err)
+	}
 
-	rec.Relations, err = getRelations(ctx, q, id)
+	rec.Relations, err = getRelations(ctx, q, id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +389,9 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 			return nil, fmt.Errorf("scan audit_log: %w", err)
 		}
 		rec.AuditLog = append(rec.AuditLog, entry)
+	}
+	if err := auditRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit_log: %w", err)
 	}
 
 	return rec, nil
@@ -515,7 +534,12 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 }
 
 func (s *PostgresStore) Update(ctx context.Context, rec *schema.MemoryRecord) error {
-	return updateRecord(ctx, s.db, rec)
+	if err := rec.Validate(); err != nil {
+		return err
+	}
+	return storage.WithTransaction(ctx, s, func(tx storage.Transaction) error {
+		return tx.Update(ctx, rec)
+	})
 }
 
 func deleteRecord(ctx context.Context, q queryable, id string) error {
@@ -587,6 +611,9 @@ func listRecords(ctx context.Context, q queryable, opts storage.ListOptions) ([]
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ids: %w", err)
+	}
 
 	return getRecordsBatch(ctx, q, ids)
 }
@@ -630,6 +657,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		rec.AuditLog = []schema.AuditEntry{}
 		recMap[rec.ID] = rec
 	}
+	if err := baseRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate memory_records: %w", err)
+	}
 
 	dpRows, err := q.QueryContext(ctx, fmt.Sprintf(
 		`SELECT record_id, curve, half_life_seconds, min_salience, max_age_seconds, reinforcement_gain,
@@ -668,6 +698,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			}
 		}
 	}
+	if err := dpRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate decay_profiles: %w", err)
+	}
 
 	plRows, err := q.QueryContext(ctx, fmt.Sprintf(
 		`SELECT record_id, payload_json FROM payloads WHERE record_id IN (%s)`, placeholders), idArgs...)
@@ -690,6 +723,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			}
 			rec.Payload = wrapper.Payload
 		}
+	}
+	if err := plRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate payloads: %w", err)
 	}
 
 	intRows, err := q.QueryContext(ctx, fmt.Sprintf(
@@ -714,6 +750,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			rec.Interpretation = &interpretation
 		}
 	}
+	if err := intRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate interpretations: %w", err)
+	}
 
 	tagRows, err := q.QueryContext(ctx, fmt.Sprintf(
 		`SELECT record_id, tag FROM tags WHERE record_id IN (%s)`, placeholders), idArgs...)
@@ -729,6 +768,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		if rec, ok := recMap[recordID]; ok {
 			rec.Tags = append(rec.Tags, tag)
 		}
+	}
+	if err := tagRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate tags: %w", err)
 	}
 
 	provRows, err := q.QueryContext(ctx, fmt.Sprintf(
@@ -754,6 +796,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			rec.Provenance.Sources = append(rec.Provenance.Sources, src)
 		}
 	}
+	if err := provRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate provenance_sources: %w", err)
+	}
 
 	relRows, err := q.QueryContext(ctx, fmt.Sprintf(
 		`SELECT source_id, predicate, target_id, weight, created_at
@@ -778,6 +823,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			rec.Relations = append(rec.Relations, rel)
 		}
 	}
+	if err := relRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate relations: %w", err)
+	}
 
 	auditRows, err := q.QueryContext(ctx, fmt.Sprintf(
 		`SELECT record_id, action, actor, timestamp, rationale
@@ -797,6 +845,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		if rec, ok := recMap[recordID]; ok {
 			rec.AuditLog = append(rec.AuditLog, entry)
 		}
+	}
+	if err := auditRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate audit_log: %w", err)
 	}
 
 	records := make([]*schema.MemoryRecord, 0, len(ids))
@@ -894,7 +945,7 @@ func addRelation(ctx context.Context, q queryable, sourceID string, rel schema.R
 	return nil
 }
 
-func getRelations(ctx context.Context, q queryable, id string) ([]schema.Relation, error) {
+func getRelations(ctx context.Context, q queryable, id string, requireSource bool) ([]schema.Relation, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT predicate, target_id, weight, created_at
 		 FROM relations WHERE source_id = $1 ORDER BY id`,
@@ -917,7 +968,21 @@ func getRelations(ctx context.Context, q queryable, id string) ([]schema.Relatio
 		}
 		rels = append(rels, rel)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate relations: %w", err)
+	}
 	if rels == nil {
+		if !requireSource {
+			return []schema.Relation{}, nil
+		}
+		var exists int
+		err := q.QueryRowContext(ctx, `SELECT 1 FROM memory_records WHERE id = $1`, id).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, storage.ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("check record existence: %w", err)
+		}
 		rels = []schema.Relation{}
 	}
 	return rels, nil
@@ -928,7 +993,7 @@ func (s *PostgresStore) AddRelation(ctx context.Context, sourceID string, rel sc
 }
 
 func (s *PostgresStore) GetRelations(ctx context.Context, id string) ([]schema.Relation, error) {
-	return getRelations(ctx, s.db, id)
+	return getRelations(ctx, s.db, id, true)
 }
 
 func replaceEntityIndexes(ctx context.Context, q queryable, rec *schema.MemoryRecord) error {
@@ -1154,6 +1219,9 @@ func (s *PostgresStore) SearchByEmbedding(ctx context.Context, query []float32, 
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trigger embedding results: %w", err)
+	}
 	return ids, nil
 }
 
@@ -1189,6 +1257,9 @@ func (s *PostgresStore) ClaimUnextractedEpisodics(ctx context.Context, limit int
 			return nil, fmt.Errorf("scan claimed episodic extraction record: %w", err)
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed episodic extraction records: %w", err)
 	}
 	return ids, nil
 }
@@ -1373,7 +1444,7 @@ func (t *postgresTx) GetRelations(ctx context.Context, id string) ([]schema.Rela
 	if err := t.checkClosed(); err != nil {
 		return nil, err
 	}
-	return getRelations(ctx, t.tx, id)
+	return getRelations(ctx, t.tx, id, true)
 }
 
 func (t *postgresTx) Commit() error {

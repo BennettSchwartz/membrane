@@ -189,11 +189,17 @@ func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, pay
 // Validate performs basic validation on the MemoryRecord.
 // Returns an error if required fields are missing or invalid.
 func (mr *MemoryRecord) Validate() error {
+	if mr == nil {
+		return &ValidationError{Field: "record", Message: "record is required"}
+	}
 	if mr.ID == "" {
 		return &ValidationError{Field: "id", Message: "id is required"}
 	}
 	if mr.Type == "" {
 		return &ValidationError{Field: "type", Message: "type is required"}
+	}
+	if !IsValidMemoryType(mr.Type) {
+		return &ValidationError{Field: "type", Message: "type must be one of: episodic, working, semantic, competence, plan_graph, entity"}
 	}
 	if mr.Sensitivity == "" {
 		return &ValidationError{Field: "sensitivity", Message: "sensitivity is required"}
@@ -209,6 +215,9 @@ func (mr *MemoryRecord) Validate() error {
 	}
 	if mr.Payload == nil {
 		return &ValidationError{Field: "payload", Message: "payload is required"}
+	}
+	if MemoryType(mr.Payload.PayloadKind()) != mr.Type {
+		return &ValidationError{Field: "payload", Message: "payload kind must match memory type"}
 	}
 	return nil
 }

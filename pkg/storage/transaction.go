@@ -14,12 +14,13 @@ func WithTransaction(ctx context.Context, s Store, fn func(tx Transaction) error
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 
+	shouldRollback := true
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
 			panic(p) // re-panic after rollback
 		}
-		if err != nil {
+		if shouldRollback && err != nil {
 			_ = tx.Rollback()
 		}
 	}()
@@ -28,6 +29,7 @@ func WithTransaction(ctx context.Context, s Store, fn func(tx Transaction) error
 		return err
 	}
 
+	shouldRollback = false
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}

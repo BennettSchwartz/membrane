@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -19,6 +20,19 @@ func TestMemoryRecordValidateRejectsInvalidSensitivity(t *testing.T) {
 	}
 	if verr.Field != "sensitivity" {
 		t.Fatalf("expected sensitivity field error, got %q", verr.Field)
+	}
+}
+
+func TestMemoryRecordValidateRejectsInvalidTypeAndPayloadMismatch(t *testing.T) {
+	var nilRecord *MemoryRecord
+	if err := nilRecord.Validate(); err == nil {
+		t.Fatalf("Validate nil record error = nil")
+	}
+	if err := NewMemoryRecord("id-1", MemoryType("unknown"), SensitivityLow, &SemanticPayload{Kind: "semantic"}).Validate(); err == nil {
+		t.Fatalf("Validate invalid memory type error = nil")
+	}
+	if err := NewMemoryRecord("id-2", MemoryTypeSemantic, SensitivityLow, &WorkingPayload{Kind: "working", ThreadID: "thread", State: TaskStatePlanning}).Validate(); err == nil {
+		t.Fatalf("Validate mismatched payload error = nil")
 	}
 }
 
@@ -145,5 +159,41 @@ func TestMemoryRecordJSONRoundTripPreservesInterpretationAndEntityPayload(t *tes
 	}
 	if len(got.Interpretation.Mentions) != 1 || got.Interpretation.Mentions[0].CanonicalEntityID != "entity-1" {
 		t.Fatalf("Interpretation mentions = %+v, want canonical entity link", got.Interpretation.Mentions)
+	}
+}
+
+func TestMemoryRecordUnmarshalAndValidateBranches(t *testing.T) {
+	var invalid MemoryRecord
+	if err := invalid.UnmarshalJSON([]byte(`{`)); err == nil {
+		t.Fatalf("direct UnmarshalJSON invalid JSON error = nil, want error")
+	}
+	if err := invalid.UnmarshalJSON([]byte(`{"id":"rec-1","type":"semantic","sensitivity":"low"}`)); err == nil {
+		t.Fatalf("UnmarshalJSON missing payload error = nil, want payload error")
+	}
+
+	rec := NewMemoryRecord("valid", MemoryTypeSemantic, SensitivityLow, &SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "Go",
+		Predicate: "is",
+		Object:    "typed",
+		Validity:  Validity{Mode: ValidityModeGlobal},
+	})
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("Validate valid record: %v", err)
+	}
+}
+
+type failingPayload struct{}
+
+func (failingPayload) PayloadKind() string { return "failing" }
+func (failingPayload) isPayload()          {}
+func (failingPayload) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("forced payload marshal failure")
+}
+
+func TestMemoryRecordMarshalJSONReturnsPayloadError(t *testing.T) {
+	rec := NewMemoryRecord("bad-payload", MemoryTypeSemantic, SensitivityLow, failingPayload{})
+	if _, err := json.Marshal(rec); err == nil {
+		t.Fatalf("Marshal MemoryRecord with failing payload error = nil")
 	}
 }

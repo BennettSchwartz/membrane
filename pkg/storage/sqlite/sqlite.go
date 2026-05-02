@@ -20,6 +20,8 @@ import (
 //go:embed schema.sql
 var ddl string
 
+var sqlOpen = sql.Open
+
 // SQLiteStore implements storage.Store backed by a SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
@@ -29,13 +31,14 @@ type SQLiteStore struct {
 // If encryptionKey is non-empty, the database is encrypted using SQLCipher.
 // It initializes the database schema on first use.
 func Open(dsn string, encryptionKey string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite3", dsn+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sqlOpen("sqlite3", dsnWithOptions(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
 	if encryptionKey != "" {
-		if _, err := db.Exec("PRAGMA key = ?", encryptionKey); err != nil {
+		escapedKey := strings.ReplaceAll(encryptionKey, "'", "''")
+		if _, err := db.Exec("PRAGMA key = '" + escapedKey + "'"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("set encryption key: %w", err)
 		}
@@ -56,6 +59,14 @@ func Open(dsn string, encryptionKey string) (*SQLiteStore, error) {
 	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+func dsnWithOptions(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + "_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"
 }
 
 // Close closes the underlying database connection.
@@ -221,7 +232,12 @@ func createRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 }
 
 func (s *SQLiteStore) Create(ctx context.Context, rec *schema.MemoryRecord) error {
-	return createRecord(ctx, s.db, rec)
+	if err := rec.Validate(); err != nil {
+		return err
+	}
+	return storage.WithTransaction(ctx, s, func(tx storage.Transaction) error {
+		return tx.Create(ctx, rec)
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -315,6 +331,9 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		}
 		rec.Tags = append(rec.Tags, tag)
 	}
+	if err := tagRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tags: %w", err)
+	}
 
 	// Provenance sources.
 	provRows, err := q.QueryContext(ctx,
@@ -337,9 +356,12 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		src.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
 		rec.Provenance.Sources = append(rec.Provenance.Sources, src)
 	}
+	if err := provRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provenance_sources: %w", err)
+	}
 
 	// Relations.
-	rec.Relations, err = getRelations(ctx, q, id)
+	rec.Relations, err = getRelations(ctx, q, id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -361,6 +383,9 @@ func getRecord(ctx context.Context, q queryable, id string) (*schema.MemoryRecor
 		}
 		entry.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
 		rec.AuditLog = append(rec.AuditLog, entry)
+	}
+	if err := auditRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit_log: %w", err)
 	}
 
 	return rec, nil
@@ -508,7 +533,12 @@ func updateRecord(ctx context.Context, q queryable, rec *schema.MemoryRecord) er
 }
 
 func (s *SQLiteStore) Update(ctx context.Context, rec *schema.MemoryRecord) error {
-	return updateRecord(ctx, s.db, rec)
+	if err := rec.Validate(); err != nil {
+		return err
+	}
+	return storage.WithTransaction(ctx, s, func(tx storage.Transaction) error {
+		return tx.Update(ctx, rec)
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -592,6 +622,9 @@ func listRecords(ctx context.Context, q queryable, opts storage.ListOptions) ([]
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ids: %w", err)
+	}
 
 	return getRecordsBatch(ctx, q, ids)
 }
@@ -652,6 +685,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		rec.AuditLog = []schema.AuditEntry{}
 		recMap[rec.ID] = rec
 	}
+	if err := baseRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate memory_records: %w", err)
+	}
 
 	// 2. Fetch decay profiles.
 	dpQuery := fmt.Sprintf(
@@ -688,6 +724,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			}
 		}
 	}
+	if err := dpRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate decay_profiles: %w", err)
+	}
 
 	// 3. Fetch payloads.
 	plQuery := fmt.Sprintf(
@@ -709,6 +748,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			}
 			rec.Payload = wrapper.Payload
 		}
+	}
+	if err := plRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate payloads: %w", err)
 	}
 
 	// 4. Fetch tags.
@@ -732,6 +774,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			rec.Interpretation = &interpretation
 		}
 	}
+	if err := intRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate interpretations: %w", err)
+	}
 
 	// 4. Fetch tags.
 	tagQuery := fmt.Sprintf(
@@ -749,6 +794,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		if rec, ok := recMap[recordID]; ok {
 			rec.Tags = append(rec.Tags, tag)
 		}
+	}
+	if err := tagRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate tags: %w", err)
 	}
 
 	// 5. Fetch provenance sources.
@@ -774,6 +822,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		if rec, ok := recMap[recordID]; ok {
 			rec.Provenance.Sources = append(rec.Provenance.Sources, src)
 		}
+	}
+	if err := provRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate provenance_sources: %w", err)
 	}
 
 	// 6. Fetch relations.
@@ -801,6 +852,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 			rec.Relations = append(rec.Relations, rel)
 		}
 	}
+	if err := relRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate relations: %w", err)
+	}
 
 	// 7. Fetch audit log.
 	auditQuery := fmt.Sprintf(
@@ -822,6 +876,9 @@ func getRecordsBatch(ctx context.Context, q queryable, ids []string) ([]*schema.
 		if rec, ok := recMap[recordID]; ok {
 			rec.AuditLog = append(rec.AuditLog, entry)
 		}
+	}
+	if err := auditRows.Err(); err != nil {
+		return nil, fmt.Errorf("batch iterate audit_log: %w", err)
 	}
 
 	// Return records in the original ID order.
@@ -937,7 +994,7 @@ func addRelation(ctx context.Context, q queryable, sourceID string, rel schema.R
 	return nil
 }
 
-func getRelations(ctx context.Context, q queryable, id string) ([]schema.Relation, error) {
+func getRelations(ctx context.Context, q queryable, id string, requireSource bool) ([]schema.Relation, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT predicate, target_id, weight, created_at
 		 FROM relations WHERE source_id = ? ORDER BY id`, id)
@@ -960,7 +1017,21 @@ func getRelations(ctx context.Context, q queryable, id string) ([]schema.Relatio
 		rel.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
 		rels = append(rels, rel)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate relations: %w", err)
+	}
 	if rels == nil {
+		if !requireSource {
+			return []schema.Relation{}, nil
+		}
+		var exists int
+		err := q.QueryRowContext(ctx, `SELECT 1 FROM memory_records WHERE id = ?`, id).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return nil, storage.ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("check record existence: %w", err)
+		}
 		rels = []schema.Relation{}
 	}
 	return rels, nil
@@ -971,7 +1042,7 @@ func (s *SQLiteStore) AddRelation(ctx context.Context, sourceID string, rel sche
 }
 
 func (s *SQLiteStore) GetRelations(ctx context.Context, id string) ([]schema.Relation, error) {
-	return getRelations(ctx, s.db, id)
+	return getRelations(ctx, s.db, id, true)
 }
 
 // ----------------------------------------------------------------------------
@@ -1215,7 +1286,7 @@ func (t *sqliteTx) GetRelations(ctx context.Context, id string) ([]schema.Relati
 	if err := t.checkClosed(); err != nil {
 		return nil, err
 	}
-	return getRelations(ctx, t.tx, id)
+	return getRelations(ctx, t.tx, id, true)
 }
 
 func (t *sqliteTx) Commit() error {
