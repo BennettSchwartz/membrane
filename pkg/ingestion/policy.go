@@ -142,6 +142,9 @@ func (pe *PolicyEngine) validate(candidate *MemoryCandidate) error {
 		if candidate.OutcomeStatus == "" {
 			return fmt.Errorf("ingestion policy: outcome status is required for outcome candidates")
 		}
+		if !schema.IsValidOutcomeStatus(candidate.OutcomeStatus) {
+			return fmt.Errorf("ingestion policy: invalid outcome status %q", candidate.OutcomeStatus)
+		}
 	case CandidateKindWorkingState:
 		if candidate.ThreadID == "" {
 			return fmt.Errorf("ingestion policy: thread ID is required for working state candidates")

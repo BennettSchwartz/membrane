@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,219 @@ func newCaptureTestService(t *testing.T, interpreter Interpreter) (*Service, *sq
 	return NewService(store, classifier, policy), store
 }
 
+func TestCaptureMemoryDefaultsSensitivityAndPropagatesPrepareErrors(t *testing.T) {
+	store := &listCaptureStore{errAt: 1}
+	svc := &Service{store: store}
+
+	_, err := svc.CaptureMemory(context.Background(), CaptureMemoryRequest{
+		Source:     "tester",
+		SourceKind: "event",
+		Content:    map[string]any{"summary": "remember this"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ingestion: fetch candidates") {
+		t.Fatalf("CaptureMemory prepare error = %v, want fetch candidates error", err)
+	}
+}
+
+func TestCaptureMemoryDirectNilInterpretationAndErrorBranches(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	svc, _ := newCaptureTestService(t, nil)
+	resp, err := svc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"ref": "nil-interpretation", "summary": "nil interpretation"},
+	}, ts, nil, nil)
+	if err != nil {
+		t.Fatalf("captureMemory nil interpretation: %v", err)
+	}
+	if resp.PrimaryRecord == nil || resp.PrimaryRecord.Interpretation == nil {
+		t.Fatalf("response = %+v, want primary record with fallback interpretation", resp)
+	}
+
+	if _, err := svc.captureMemory(ctx, CaptureMemoryRequest{SourceKind: "event"}, ts, nil, nil); err == nil {
+		t.Fatalf("captureMemory invalid primary error = nil")
+	}
+
+	_, base := newCaptureTestService(t, nil)
+	updateErr := errors.New("update failed")
+	updateSvc := NewService(&updateFailStore{Store: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	if _, err := updateSvc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "working_state",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"thread_id": "thread", "state": string(schema.TaskStatePlanning)},
+	}, ts, &schema.Interpretation{}, nil); !errors.Is(err, updateErr) {
+		t.Fatalf("captureMemory update primary error = %v, want %v", err, updateErr)
+	}
+}
+
+func TestCaptureMemoryDirectReferenceBranchesAndFinalizeError(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	svc, store := newCaptureTestService(t, nil)
+	entity := newObservationEntity("entity-reference-target", "Orchid", "")
+	if err := store.Create(ctx, entity); err != nil {
+		t.Fatalf("Create entity: %v", err)
+	}
+	resp, err := svc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"id": "evt-entity-ref", "text": "references entity"},
+	}, ts, &schema.Interpretation{
+		Mentions:            []schema.Mention{{Surface: "New Entity", EntityKind: schema.EntityKindProject}},
+		ReferenceCandidates: []schema.ReferenceCandidate{{TargetEntityID: entity.ID}},
+	}, []*schema.MemoryRecord{entity})
+	if err != nil {
+		t.Fatalf("captureMemory entity reference: %v", err)
+	}
+	ref := resp.PrimaryRecord.Interpretation.ReferenceCandidates[0]
+	if !ref.Resolved || ref.TargetEntityID != entity.ID || ref.TargetRecordID != "" || ref.Confidence != 1 {
+		t.Fatalf("entity reference candidate = %+v, want resolved entity target with default confidence", ref)
+	}
+	mention := resp.PrimaryRecord.Interpretation.Mentions[0]
+	if mention.CanonicalEntityID == "" || mention.Confidence != 1 {
+		t.Fatalf("mention = %+v, want resolved entity with default confidence", mention)
+	}
+
+	selfResp, err := svc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"id": "evt-self", "text": "references itself"},
+	}, ts, &schema.Interpretation{
+		ReferenceCandidates: []schema.ReferenceCandidate{{Ref: "evt-self"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("captureMemory self reference: %v", err)
+	}
+	selfRef := selfResp.PrimaryRecord.Interpretation.ReferenceCandidates[0]
+	if !selfRef.Resolved || selfRef.TargetRecordID != selfResp.PrimaryRecord.ID {
+		t.Fatalf("self reference candidate = %+v, want resolved to primary record", selfRef)
+	}
+
+	_, base := newCaptureTestService(t, nil)
+	finalErr := errors.New("final update failed")
+	finalSvc := NewService(&updateFailAtStore{Store: base, failAt: 3, err: finalErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	_, err = finalSvc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"id": "evt-final-fails", "text": "final update fails"},
+	}, ts, &schema.Interpretation{}, nil)
+	if !errors.Is(err, finalErr) {
+		t.Fatalf("captureMemory final update error = %v, want %v", err, finalErr)
+	}
+}
+
+func TestCaptureMemoryReferenceAndSemanticErrorBranches(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	target := newHelperSemanticRecord("reference-target", "target")
+
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "reference forward edge", failAt: 1},
+		{name: "reference inverse edge", failAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, base := newCaptureTestService(t, nil)
+			if err := base.Create(ctx, target); err != nil {
+				t.Fatalf("Create target: %v", err)
+			}
+			svc := NewService(&relationFailAtStore{Store: base, failAt: tc.failAt}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+			_, err := svc.captureMemory(ctx, CaptureMemoryRequest{
+				Source:      "tester",
+				SourceKind:  "event",
+				Sensitivity: schema.SensitivityLow,
+				Content:     map[string]any{"id": "evt-reference-fails", "text": "reference write fails"},
+			}, ts, &schema.Interpretation{
+				ReferenceCandidates: []schema.ReferenceCandidate{{TargetRecordID: target.ID}},
+			}, []*schema.MemoryRecord{target})
+			if err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
+				t.Fatalf("captureMemory reference write error = %v, want forced relation failure", err)
+			}
+		})
+	}
+
+	_, relationBase := newCaptureTestService(t, nil)
+	relationTarget := newHelperSemanticRecord("relation-target", "target")
+	if err := relationBase.Create(ctx, relationTarget); err != nil {
+		t.Fatalf("Create relation target: %v", err)
+	}
+	relationSvc := NewService(&relationFailAtStore{Store: relationBase, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	_, err := relationSvc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"id": "evt-relation-fails", "text": "relation write fails"},
+	}, ts, &schema.Interpretation{
+		RelationCandidates: []schema.RelationCandidate{{Predicate: "depends_on", TargetRecordID: relationTarget.ID}},
+	}, []*schema.MemoryRecord{relationTarget})
+	if err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
+		t.Fatalf("captureMemory relation candidate error = %v, want forced relation failure", err)
+	}
+
+	_, base := newCaptureTestService(t, nil)
+	svc := NewService(&relationFailAtStore{Store: base, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	_, err = svc.captureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"subject": "Orchid", "predicate": "runs_on", "object": "staging"},
+	}, ts, &schema.Interpretation{ProposedType: schema.MemoryTypeSemantic, ExtractionConfidence: 1}, nil)
+	if err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
+		t.Fatalf("captureMemory semantic creation error = %v, want forced relation failure", err)
+	}
+}
+
+func TestCreatePrimaryRecordPropagatesBranchErrors(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	svc, _ := newCaptureTestService(t, nil)
+
+	for _, tc := range []struct {
+		name string
+		req  CaptureMemoryRequest
+	}{
+		{name: "working_state", req: CaptureMemoryRequest{SourceKind: "working_state"}},
+		{name: "tool_output", req: CaptureMemoryRequest{SourceKind: "tool_output"}},
+		{name: "event", req: CaptureMemoryRequest{SourceKind: "event"}},
+	} {
+		t.Run("validation "+tc.name, func(t *testing.T) {
+			if _, err := svc.createPrimaryRecord(ctx, tc.req, ts); err == nil {
+				t.Fatalf("createPrimaryRecord %s validation error = nil", tc.name)
+			}
+		})
+	}
+
+	_, base := newCaptureTestService(t, nil)
+	updateErr := errors.New("update failed")
+	failSvc := NewService(&updateFailStore{Store: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	if _, err := failSvc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "tool_output",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"tool_name": "rg", "result": "ok"},
+	}, ts); !errors.Is(err, updateErr) {
+		t.Fatalf("createPrimaryRecord tool_output update error = %v, want %v", err, updateErr)
+	}
+	if _, err := failSvc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Sensitivity: schema.SensitivityLow,
+		Content:     map[string]any{"ref": "evt-update-fails", "summary": "event update fails"},
+	}, ts); !errors.Is(err, updateErr) {
+		t.Fatalf("createPrimaryRecord event update error = %v, want %v", err, updateErr)
+	}
+}
+
 func TestCaptureMemoryCreatesPrimaryRecordEntityAndEdges(t *testing.T) {
 	svc, store := newCaptureTestService(t, nil)
 	ctx := context.Background()
@@ -128,6 +342,117 @@ func TestCaptureMemoryCreatesPrimaryRecordEntityAndEdges(t *testing.T) {
 	}
 }
 
+func TestCreatePrimaryRecordUsesContentIDAsEventRef(t *testing.T) {
+	svc, _ := newCaptureTestService(t, nil)
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	rec, err := svc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"id": "evt-123", "text": "lowercase event"},
+		Summary:     "event summary",
+		Sensitivity: schema.SensitivityLow,
+	}, ts)
+	if err != nil {
+		t.Fatalf("createPrimaryRecord with id: %v", err)
+	}
+	payload := rec.Payload.(*schema.EpisodicPayload)
+	if len(payload.Timeline) != 1 || payload.Timeline[0].Ref != "evt-123" {
+		t.Fatalf("Timeline = %+v, want ref evt-123", payload.Timeline)
+	}
+
+	rec, err = svc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"text": "lowercase event without id"},
+		Summary:     "event summary",
+		Sensitivity: schema.SensitivityLow,
+	}, ts)
+	if err != nil {
+		t.Fatalf("createPrimaryRecord without id: %v", err)
+	}
+	payload = rec.Payload.(*schema.EpisodicPayload)
+	if len(payload.Timeline) != 1 || payload.Timeline[0].Ref == "" || payload.Timeline[0].Ref == "id" {
+		t.Fatalf("Timeline = %+v, want generated non-literal ref", payload.Timeline)
+	}
+}
+
+func TestCreatePrimaryRecordCapturesWorkingState(t *testing.T) {
+	svc, _ := newCaptureTestService(t, nil)
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	rec, err := svc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:     "tester",
+		SourceKind: "working_state",
+		Content: map[string]any{
+			"thread_id":          "thread-1",
+			"state":              "not-a-valid-state",
+			"next_actions":       []any{"run tests"},
+			"open_questions":     []any{"which env?"},
+			"active_constraints": []any{map[string]any{"type": "env", "key": "target", "value": "staging", "required": true}},
+		},
+		ReasonToRemember: "track current task",
+		Tags:             []string{"working"},
+		Scope:            "project:alpha",
+		Sensitivity:      schema.SensitivityLow,
+	}, ts)
+	if err != nil {
+		t.Fatalf("createPrimaryRecord working_state: %v", err)
+	}
+	payload, ok := rec.Payload.(*schema.WorkingPayload)
+	if !ok {
+		t.Fatalf("Payload type = %T, want working payload", rec.Payload)
+	}
+	if payload.ThreadID != "thread-1" || payload.State != schema.TaskStateExecuting {
+		t.Fatalf("working payload thread/state = %q/%q, want thread-1/executing", payload.ThreadID, payload.State)
+	}
+	if payload.ContextSummary != "track current task" || len(payload.NextActions) != 1 || len(payload.OpenQuestions) != 1 || len(payload.ActiveConstraints) != 1 {
+		t.Fatalf("working payload details = %+v, want captured context/action/question/constraint", payload)
+	}
+}
+
+func TestCreatePrimaryRecordCapturesToolOutputContext(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	rec, err := svc.createPrimaryRecord(ctx, CaptureMemoryRequest{
+		Source:     "tester",
+		SourceKind: "tool_output",
+		Content: map[string]any{
+			"tool_name":  "rg",
+			"args":       map[string]any{"pattern": "TODO"},
+			"result":     "found matches",
+			"depends_on": []string{"tool-prev"},
+		},
+		Context:          map[string]any{"cwd": "/repo"},
+		ReasonToRemember: "search result explains the next edit",
+		Tags:             []string{"search"},
+		Scope:            "project:alpha",
+		Sensitivity:      schema.SensitivityLow,
+	}, ts)
+	if err != nil {
+		t.Fatalf("createPrimaryRecord tool_output: %v", err)
+	}
+
+	stored, err := store.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("Get stored tool output: %v", err)
+	}
+	payload, ok := stored.Payload.(*schema.EpisodicPayload)
+	if !ok {
+		t.Fatalf("Payload type = %T, want episodic", stored.Payload)
+	}
+	if len(payload.ToolGraph) != 1 || payload.ToolGraph[0].Tool != "rg" || payload.ToolGraph[0].DependsOn[0] != "tool-prev" {
+		t.Fatalf("ToolGraph = %+v, want captured tool node", payload.ToolGraph)
+	}
+	if payload.Environment == nil || payload.Environment.Context["reason_to_remember"] != "search result explains the next edit" {
+		t.Fatalf("Environment context = %+v, want capture context", payload.Environment)
+	}
+}
+
 func TestCaptureMemoryRollsBackWhenRelationWriteFails(t *testing.T) {
 	base, err := sqlitestore.Open(":memory:", "")
 	if err != nil {
@@ -164,9 +489,19 @@ func TestCaptureMemoryWorkingStateCreatesWorkingPrimaryRecord(t *testing.T) {
 	ctx := context.Background()
 
 	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
-		Source:      "tester",
-		SourceKind:  "working_state",
-		Content:     map[string]any{"thread_id": "thread-1", "state": "planning", "context_summary": "Investigating Orchid"},
+		Source:     "tester",
+		SourceKind: "working_state",
+		Content: map[string]any{
+			"thread_id":       "thread-1",
+			"state":           "planning",
+			"context_summary": "Investigating Orchid",
+			"active_constraints": []schema.Constraint{{
+				Type:     "environment",
+				Key:      "region",
+				Value:    "us-east",
+				Required: true,
+			}},
+		},
 		Scope:       "project:alpha",
 		Sensitivity: schema.SensitivityLow,
 	})
@@ -178,6 +513,10 @@ func TestCaptureMemoryWorkingStateCreatesWorkingPrimaryRecord(t *testing.T) {
 	}
 	if len(resp.CreatedRecords) != 0 {
 		t.Fatalf("CreatedRecords len = %d, want 0 for plain working state capture", len(resp.CreatedRecords))
+	}
+	payload := resp.PrimaryRecord.Payload.(*schema.WorkingPayload)
+	if len(payload.ActiveConstraints) != 1 || payload.ActiveConstraints[0].Key != "region" {
+		t.Fatalf("ActiveConstraints = %+v, want typed constraint preserved", payload.ActiveConstraints)
 	}
 }
 

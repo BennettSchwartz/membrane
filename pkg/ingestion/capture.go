@@ -174,9 +174,6 @@ func (s *Service) captureMemory(ctx context.Context, req CaptureMemoryRequest, t
 		if err != nil {
 			return nil, err
 		}
-		if entity == nil {
-			continue
-		}
 		mention.CanonicalEntityID = entity.ID
 		if mention.Confidence == 0 {
 			mention.Confidence = 1.0
@@ -473,11 +470,13 @@ func (s *Service) fetchCaptureCandidates(ctx context.Context, req CaptureMemoryR
 	if err != nil {
 		return nil, err
 	}
-	global, err := s.store.List(ctx, storage.ListOptions{Scope: "", Limit: captureCandidateSearchPool})
-	if err != nil {
-		return nil, err
+	if req.Scope != "" {
+		global, err := s.store.List(ctx, storage.ListOptions{Scope: "", Limit: captureCandidateSearchPool})
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, global...)
 	}
-	records = append(records, global...)
 	seen := make(map[string]struct{}, len(records))
 	type scoredCandidate struct {
 		record *schema.MemoryRecord
@@ -655,9 +654,6 @@ func findMatchingEntity(mention *schema.Mention, candidates []*schema.MemoryReco
 			continue
 		}
 		for _, term := range queryTerms {
-			if term == "" {
-				continue
-			}
 			if strings.EqualFold(entity.CanonicalName, term) {
 				return rec
 			}
@@ -939,7 +935,11 @@ func captureCandidateScore(rec *schema.MemoryRecord, req CaptureMemoryRequest, i
 		}
 	}
 	if !rec.CreatedAt.IsZero() {
-		score += 1.0 / (1.0 + time.Since(rec.CreatedAt).Hours()/24.0)
+		ageHours := time.Since(rec.CreatedAt).Hours()
+		if ageHours < 0 {
+			ageHours = 0
+		}
+		score += 1.0 / (1.0 + ageHours/24.0)
 	}
 	return score
 }
@@ -1030,7 +1030,16 @@ func recordContainsReference(rec *schema.MemoryRecord, ref string) bool {
 
 func containsNormalized(candidate, needle string) bool {
 	value := normalizeMatchTerm(candidate)
-	return value != "" && (value == needle || strings.Contains(value, needle) || strings.Contains(needle, value))
+	return value != "" && (value == needle || strings.Contains(value, needle) || containsNormalizedToken(needle, value))
+}
+
+func containsNormalizedToken(haystack, needle string) bool {
+	for _, token := range strings.Fields(haystack) {
+		if token == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeMatchTerm(value string) string {
@@ -1357,6 +1366,22 @@ func stringList(value any) []string {
 }
 
 func constraintList(value any) []schema.Constraint {
+	if constraints, ok := value.([]schema.Constraint); ok {
+		return constraints
+	}
+	if items, ok := value.([]map[string]any); ok {
+		out := make([]schema.Constraint, 0, len(items))
+		for _, obj := range items {
+			out = append(out, schema.Constraint{
+				Type:     stringValue(obj, "type"),
+				Key:      stringValue(obj, "key"),
+				Value:    obj["value"],
+				Required: boolValue(obj["required"]),
+			})
+		}
+		return out
+	}
+
 	items, ok := value.([]any)
 	if !ok {
 		return nil

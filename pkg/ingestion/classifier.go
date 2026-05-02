@@ -131,6 +131,10 @@ func NewClassifier() *Classifier {
 //   - Outcomes update existing episodic records (returned as episodic).
 //   - Working state changes produce working memory.
 func (c *Classifier) Classify(candidate *MemoryCandidate) schema.MemoryType {
+	if candidate == nil {
+		return schema.MemoryTypeEpisodic
+	}
+
 	switch candidate.Kind {
 	case CandidateKindEvent:
 		return schema.MemoryTypeEpisodic

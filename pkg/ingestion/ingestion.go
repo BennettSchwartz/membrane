@@ -231,12 +231,14 @@ func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequ
 		ts = time.Now().UTC()
 	}
 
+	toolNodeID := uuid.New().String()
 	candidate := &MemoryCandidate{
 		Kind:          CandidateKindToolOutput,
 		Source:        req.Source,
 		Timestamp:     ts,
 		Tags:          req.Tags,
 		Scope:         req.Scope,
+		EventRef:      toolNodeID,
 		ToolName:      req.ToolName,
 		ToolArgs:      req.Args,
 		ToolResult:    req.Result,
@@ -251,7 +253,6 @@ func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequ
 		return nil, fmt.Errorf("ingestion: classify tool output: %w", err)
 	}
 
-	toolNodeID := uuid.New().String()
 	payload := schema.EpisodicPayload{
 		Kind: "episodic",
 		Timeline: []schema.TimelineEvent{
@@ -415,10 +416,25 @@ func (s *Service) IngestOutcome(ctx context.Context, req IngestOutcomeRequest) (
 		ts = time.Now().UTC()
 	}
 
+	candidate := &MemoryCandidate{
+		Kind:           CandidateKindOutcome,
+		Source:         req.Source,
+		Timestamp:      ts,
+		TargetRecordID: req.TargetRecordID,
+		OutcomeStatus:  req.OutcomeStatus,
+	}
+	memType := s.classifier.Classify(candidate)
+	if _, err := s.policy.Apply(candidate, memType); err != nil {
+		return nil, fmt.Errorf("ingestion: classify outcome: %w", err)
+	}
+
 	// Retrieve the existing record.
 	record, err := s.store.Get(ctx, req.TargetRecordID)
 	if err != nil {
 		return nil, fmt.Errorf("ingestion: get target record for outcome: %w", err)
+	}
+	if record == nil {
+		return nil, fmt.Errorf("ingestion: target record %s was nil", req.TargetRecordID)
 	}
 
 	// Verify the target is an episodic record with an EpisodicPayload.
@@ -518,6 +534,7 @@ func (s *Service) buildRecord(
 	lifecycle.LastReinforcedAt = now
 
 	provenanceKind := provenanceKindForCandidate(candidate.Kind)
+	provenanceRef := provenanceRefForCandidate(candidate)
 
 	return &schema.MemoryRecord{
 		ID:          id,
@@ -534,7 +551,7 @@ func (s *Service) buildRecord(
 			Sources: []schema.ProvenanceSource{
 				{
 					Kind:      provenanceKind,
-					Ref:       candidate.EventRef,
+					Ref:       provenanceRef,
 					CreatedBy: candidate.Source,
 					Timestamp: candidate.Timestamp,
 				},
@@ -567,5 +584,26 @@ func provenanceKindForCandidate(kind CandidateKind) schema.ProvenanceKind {
 		return schema.ProvenanceKindOutcome
 	default:
 		return schema.ProvenanceKindEvent
+	}
+}
+
+func provenanceRefForCandidate(candidate *MemoryCandidate) string {
+	if candidate == nil {
+		return ""
+	}
+	if candidate.EventRef != "" {
+		return candidate.EventRef
+	}
+	switch candidate.Kind {
+	case CandidateKindObservation:
+		return candidate.Source
+	case CandidateKindWorkingState:
+		return candidate.ThreadID
+	case CandidateKindOutcome:
+		return candidate.TargetRecordID
+	case CandidateKindToolOutput:
+		return candidate.ToolName
+	default:
+		return candidate.Source
 	}
 }
