@@ -62,10 +62,7 @@ func (c *HTTPLLMClient) Extract(ctx context.Context, content string) ([]Triple, 
 		"temperature": 0,
 	}
 
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal llm request: %w", err)
-	}
+	data, _ := json.Marshal(body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(data))
 	if err != nil {
@@ -154,9 +151,6 @@ func stripMarkdownFences(s string) string {
 	}
 
 	lines := strings.Split(trimmed, "\n")
-	if len(lines) == 0 {
-		return trimmed
-	}
 	lines = lines[1:]
 	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
 		lines = lines[:len(lines)-1]

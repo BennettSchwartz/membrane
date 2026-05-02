@@ -138,6 +138,52 @@ func TestSemanticExtractorExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("links extracted semantic records back to canonical entities", func(t *testing.T) {
+		store := &fakeEntityExtractionStore{fakeExtractionStore: newFakeExtractionStore()}
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		bennett := newEntityRecord("entity-bennett", "bennett")
+		goEntity := newEntityRecord("entity-go", "go")
+		store.records[bennett.ID] = bennett
+		store.records[goEntity.ID] = goEntity
+		store.entityMatches = map[string][]*schema.MemoryRecord{
+			"bennett": {bennett},
+			"go":      {goEntity},
+		}
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 1 || skipped != 0 {
+			t.Fatalf("created=%d skipped=%d, want 1/0", created, skipped)
+		}
+		var semantic *schema.MemoryRecord
+		for _, rec := range store.records {
+			if rec.Type == schema.MemoryTypeSemantic {
+				semantic = rec
+				break
+			}
+		}
+		if semantic == nil {
+			t.Fatalf("semantic record was not created")
+		}
+		payload := semantic.Payload.(*schema.SemanticPayload)
+		if payload.Subject != "entity-bennett" || payload.Object != "entity-go" {
+			t.Fatalf("semantic payload = %+v, want canonical entity IDs", payload)
+		}
+		if !hasRelation(store.records["entity-bennett"].Relations, "fact_subject_of", semantic.ID) {
+			t.Fatalf("subject entity relations = %+v, want inverse semantic link", store.records["entity-bennett"].Relations)
+		}
+		if !hasRelation(store.records["entity-go"].Relations, "fact_object_of", semantic.ID) {
+			t.Fatalf("object entity relations = %+v, want inverse semantic link", store.records["entity-go"].Relations)
+		}
+	})
+
 	t.Run("claim failure returns an error", func(t *testing.T) {
 		store := newFakeExtractionStore()
 		store.claimErr = errors.New("db down")
@@ -162,6 +208,264 @@ func TestSemanticExtractorCleansStaleClaims(t *testing.T) {
 	}
 }
 
+func TestDedupeTriplesTrimsSkipsAndDedupes(t *testing.T) {
+	got := dedupeTriples([]Triple{
+		{Subject: " Bennett ", Predicate: " prefers ", Object: " Go "},
+		{Subject: "Bennett", Predicate: "prefers", Object: "Go"},
+		{Subject: "", Predicate: "prefers", Object: "Go"},
+		{Subject: "Bennett", Predicate: "", Object: "Go"},
+		{Subject: "Bennett", Predicate: "prefers", Object: ""},
+		{Subject: "Bennett", Predicate: "uses", Object: "Membrane"},
+	})
+	want := []Triple{
+		{Subject: "Bennett", Predicate: "prefers", Object: "Go"},
+		{Subject: "Bennett", Predicate: "uses", Object: "Membrane"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("dedupeTriples len = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dedupeTriples[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSemanticExtractorFailurePaths(t *testing.T) {
+	t.Run("missing dependencies are a no-op", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		for _, extractor := range []*SemanticExtractor{
+			NewSemanticExtractor(store, store, &fakeReinforcer{}, nil),
+			NewSemanticExtractor(store, nil, &fakeReinforcer{}, &fakeLLMClient{}),
+			NewSemanticExtractor(nil, store, &fakeReinforcer{}, &fakeLLMClient{}),
+		} {
+			created, skipped, err := extractor.Extract(context.Background())
+			if err != nil || created != 0 || skipped != 0 {
+				t.Fatalf("Extract with missing dependency = created:%d skipped:%d err:%v, want no-op", created, skipped, err)
+			}
+		}
+	})
+
+	t.Run("clean stale claims error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.cleanErr = errors.New("clean failed")
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, &fakeLLMClient{})
+
+		_, _, err := extractor.Extract(context.Background())
+		if err == nil || !errors.Is(err, store.cleanErr) {
+			t.Fatalf("Extract clean error = %v, want %v", err, store.cleanErr)
+		}
+	})
+
+	t.Run("get claimed record error releases claim", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.claimQueue = []string{"episode-1"}
+		store.getErr = errors.New("get failed")
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, &fakeLLMClient{})
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+		if !store.released["episode-1"] {
+			t.Fatalf("claim was not released after get error")
+		}
+	})
+
+	t.Run("missing claimed record is completed without release", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.claimQueue = []string{"missing"}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, &fakeLLMClient{})
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 0 {
+			t.Fatalf("created=%d skipped=%d, want 0/0", created, skipped)
+		}
+		if store.released["missing"] {
+			t.Fatalf("missing record claim should not be released")
+		}
+	})
+
+	t.Run("mark empty episodic error keeps skipped", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = &schema.MemoryRecord{
+			ID:      "episode-1",
+			Type:    schema.MemoryTypeEpisodic,
+			Payload: &schema.EpisodicPayload{Kind: "episodic"},
+		}
+		store.claimQueue = []string{"episode-1"}
+		store.markErr = errors.New("mark failed")
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, &fakeLLMClient{})
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+	})
+
+	t.Run("find exact error marks processing error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.findErr = errors.New("lookup failed")
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+		if got := store.marked["episode-1"]; got != 0 {
+			t.Fatalf("marked triple count = %d, want 0", got)
+		}
+	})
+
+	t.Run("reinforce error marks processing error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.existingSemantic["bennett\x00prefers\x00go"] = &schema.MemoryRecord{ID: "semantic-1"}
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{err: errors.New("reinforce failed")}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+	})
+
+	t.Run("existing exact match without reinforcer completes", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.existingSemantic["bennett\x00prefers\x00go"] = &schema.MemoryRecord{ID: "semantic-1"}
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, nil, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 0 {
+			t.Fatalf("created=%d skipped=%d, want 0/0", created, skipped)
+		}
+	})
+
+	t.Run("transaction create error marks processing error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.createErr = errors.New("create failed")
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+	})
+
+	t.Run("transaction relation error marks processing error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.addRelationErr = errors.New("relation failed")
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+	})
+
+	t.Run("entity inverse relation error marks processing error", func(t *testing.T) {
+		store := &fakeEntityExtractionStore{fakeExtractionStore: newFakeExtractionStore()}
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		bennett := newEntityRecord("entity-bennett", "bennett")
+		store.records[bennett.ID] = bennett
+		store.entityMatches = map[string][]*schema.MemoryRecord{
+			"bennett": {bennett},
+		}
+		store.addRelationErr = errors.New("inverse relation failed")
+		store.addRelationErrAt = 2
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 0 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 0/1", created, skipped)
+		}
+	})
+
+	t.Run("mark created episodic error keeps skipped", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.records["episode-1"] = newTestEpisodic("episode-1", "user_input", "Bennett prefers Go")
+		store.claimQueue = []string{"episode-1"}
+		store.markErr = errors.New("mark failed")
+		llm := &fakeLLMClient{triplesByRecord: map[string][]Triple{
+			"user_input: Bennett prefers Go\noutcome: success": {{Subject: "bennett", Predicate: "prefers", Object: "go"}},
+		}}
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, llm)
+
+		created, skipped, err := extractor.Extract(context.Background())
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if created != 1 || skipped != 1 {
+			t.Fatalf("created=%d skipped=%d, want 1/1", created, skipped)
+		}
+	})
+
+	t.Run("release claim returns error", func(t *testing.T) {
+		store := newFakeExtractionStore()
+		store.releaseErr = errors.New("release failed")
+		extractor := NewSemanticExtractor(store, store, &fakeReinforcer{}, &fakeLLMClient{})
+
+		err := extractor.releaseClaim(context.Background(), "episode-1")
+		if err == nil || !errors.Is(err, store.releaseErr) {
+			t.Fatalf("releaseClaim error = %v, want %v", err, store.releaseErr)
+		}
+	})
+}
+
 type fakeLLMClient struct {
 	err             error
 	calls           int
@@ -181,9 +485,13 @@ func (f *fakeLLMClient) Extract(_ context.Context, content string) ([]Triple, er
 
 type fakeReinforcer struct {
 	calls []string
+	err   error
 }
 
 func (f *fakeReinforcer) Reinforce(_ context.Context, id, _, _ string) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.calls = append(f.calls, id)
 	return nil
 }
@@ -191,11 +499,21 @@ func (f *fakeReinforcer) Reinforce(_ context.Context, id, _, _ string) error {
 type fakeExtractionStore struct {
 	records          map[string]*schema.MemoryRecord
 	existingSemantic map[string]*schema.MemoryRecord
+	entityMatches    map[string][]*schema.MemoryRecord
 	claimQueue       []string
 	marked           map[string]int
 	released         map[string]bool
 	cleanCalls       int
+	addRelationCalls int
 	claimErr         error
+	cleanErr         error
+	getErr           error
+	findErr          error
+	markErr          error
+	releaseErr       error
+	createErr        error
+	addRelationErr   error
+	addRelationErrAt int
 }
 
 func newFakeExtractionStore() *fakeExtractionStore {
@@ -217,30 +535,60 @@ func (f *fakeExtractionStore) ClaimUnextractedEpisodics(_ context.Context, _ int
 }
 
 func (f *fakeExtractionStore) MarkEpisodicExtracted(_ context.Context, recordID string, tripleCount int) error {
+	if f.markErr != nil {
+		return f.markErr
+	}
 	f.marked[recordID] = tripleCount
 	return nil
 }
 
 func (f *fakeExtractionStore) ReleaseEpisodicClaim(_ context.Context, recordID string) error {
+	if f.releaseErr != nil {
+		return f.releaseErr
+	}
 	f.released[recordID] = true
 	return nil
 }
 
 func (f *fakeExtractionStore) CleanStaleExtractionClaims(_ context.Context, _ time.Duration) error {
+	if f.cleanErr != nil {
+		return f.cleanErr
+	}
 	f.cleanCalls++
 	return nil
 }
 
 func (f *fakeExtractionStore) FindSemanticExact(_ context.Context, subject, predicate, object string) (*schema.MemoryRecord, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
 	return f.existingSemantic[subject+"\x00"+predicate+"\x00"+object], nil
 }
 
 func (f *fakeExtractionStore) Create(_ context.Context, record *schema.MemoryRecord) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	f.records[record.ID] = record
 	return nil
 }
 
+type fakeEntityExtractionStore struct {
+	*fakeExtractionStore
+}
+
+func (f *fakeEntityExtractionStore) FindEntitiesByTerm(_ context.Context, term, _ string, _ int) ([]*schema.MemoryRecord, error) {
+	return append([]*schema.MemoryRecord(nil), f.entityMatches[term]...), nil
+}
+
+func (f *fakeEntityExtractionStore) FindEntityByIdentifier(context.Context, string, string, string) (*schema.MemoryRecord, error) {
+	return nil, storage.ErrNotFound
+}
+
 func (f *fakeExtractionStore) Get(_ context.Context, id string) (*schema.MemoryRecord, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	record, ok := f.records[id]
 	if !ok {
 		return nil, storage.ErrNotFound
@@ -275,6 +623,14 @@ func (f *fakeExtractionStore) AddAuditEntry(_ context.Context, _ string, _ schem
 }
 
 func (f *fakeExtractionStore) AddRelation(_ context.Context, sourceID string, rel schema.Relation) error {
+	f.addRelationCalls++
+	if f.addRelationErrAt > 0 {
+		if f.addRelationCalls == f.addRelationErrAt {
+			return f.addRelationErr
+		}
+	} else if f.addRelationErr != nil {
+		return f.addRelationErr
+	}
 	record, ok := f.records[sourceID]
 	if !ok {
 		return storage.ErrNotFound

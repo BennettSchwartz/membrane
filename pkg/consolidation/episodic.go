@@ -47,6 +47,10 @@ func (c *EpisodicConsolidator) Consolidate(ctx context.Context) (int, error) {
 	compressed := 0
 
 	for _, rec := range records {
+		if rec.Lifecycle.Pinned {
+			continue
+		}
+
 		// Skip records that are not old enough.
 		if now.Sub(rec.CreatedAt) < compressionAgeThreshold {
 			continue

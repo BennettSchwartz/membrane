@@ -219,8 +219,10 @@ func convertToolGraphToPlan(toolNodes []schema.ToolNode) ([]schema.PlanNode, []s
 // If the episode has timeline events the first event kind is used;
 // otherwise a generic label is returned.
 func inferIntent(ep *schema.EpisodicPayload) string {
-	if len(ep.Timeline) > 0 {
-		return ep.Timeline[0].EventKind
+	for _, event := range ep.Timeline {
+		if event.EventKind != "" {
+			return event.EventKind
+		}
 	}
 	return "unknown"
 }

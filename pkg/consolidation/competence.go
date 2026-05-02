@@ -86,6 +86,9 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		}
 
 		tools := extractToolNames(ep.ToolGraph)
+		if len(tools) == 0 {
+			continue
+		}
 		sig := toolSignature(tools)
 
 		g, found := groups[sig]
@@ -233,7 +236,11 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 func extractToolNames(nodes []schema.ToolNode) []string {
 	names := make([]string, 0, len(nodes))
 	for _, n := range nodes {
-		names = append(names, n.Tool)
+		tool := strings.TrimSpace(n.Tool)
+		if tool == "" {
+			continue
+		}
+		names = append(names, tool)
 	}
 	return names
 }
@@ -264,14 +271,22 @@ func buildProvenanceSources(records []*schema.MemoryRecord, now time.Time) []sch
 }
 
 func deriveMaxSensitivity(records []*schema.MemoryRecord) schema.Sensitivity {
-	maxSensitivity := schema.SensitivityLow
+	maxSensitivity := schema.SensitivityPublic
 	maxLevel := sensitivityRank(maxSensitivity)
+	seenValid := false
 	for _, rec := range records {
 		level := sensitivityRank(rec.Sensitivity)
-		if level > maxLevel {
+		if level < 0 {
+			continue
+		}
+		if !seenValid || level > maxLevel {
 			maxLevel = level
 			maxSensitivity = rec.Sensitivity
+			seenValid = true
 		}
+	}
+	if !seenValid {
+		return schema.SensitivityLow
 	}
 	return maxSensitivity
 }
