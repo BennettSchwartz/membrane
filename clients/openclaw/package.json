@@ -28,7 +28,9 @@
     "README.md"
   ],
   "scripts": {
+    "prebuild": "npm --prefix ../typescript run build",
     "build": "rm -rf dist && tsc",
+    "pretest": "npm --prefix ../typescript run build",
     "test": "vitest run"
   },
   "dependencies": {
