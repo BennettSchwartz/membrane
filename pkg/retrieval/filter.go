@@ -60,7 +60,7 @@ func Redact(record *schema.MemoryRecord) *schema.MemoryRecord {
 		Confidence:  record.Confidence,
 		Salience:    record.Salience,
 		Scope:       record.Scope,
-		Tags:        record.Tags,
+		Tags:        append([]string(nil), record.Tags...),
 		CreatedAt:   record.CreatedAt,
 		UpdatedAt:   record.UpdatedAt,
 		// Lifecycle is kept but zeroed out for redacted records

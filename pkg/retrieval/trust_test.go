@@ -44,6 +44,32 @@ func TestTrustAllowsRedactedHonorsScope(t *testing.T) {
 	}
 }
 
+func TestTrustAllowsScopeAndSensitivityBranches(t *testing.T) {
+	trust := NewTrustContext(schema.SensitivityLow, true, "actor", []string{"project:a"})
+
+	if trust.Allows(nil) {
+		t.Fatalf("Allows(nil) = true, want false")
+	}
+	if trust.AllowsRedacted(nil) {
+		t.Fatalf("AllowsRedacted(nil) = true, want false")
+	}
+	if !trust.Allows(&schema.MemoryRecord{Sensitivity: schema.SensitivityLow, Scope: ""}) {
+		t.Fatalf("expected unscoped low-sensitivity record to be allowed")
+	}
+	if trust.Allows(&schema.MemoryRecord{Sensitivity: schema.SensitivityLow, Scope: "project:b"}) {
+		t.Fatalf("expected out-of-scope low-sensitivity record to be denied")
+	}
+	if trust.Allows(&schema.MemoryRecord{Sensitivity: schema.SensitivityMedium, Scope: "project:a"}) {
+		t.Fatalf("expected too-sensitive record to be denied for full access")
+	}
+	if trust.AllowsRedacted(&schema.MemoryRecord{Sensitivity: schema.SensitivityLow, Scope: "project:a"}) {
+		t.Fatalf("expected fully allowed record to not require redacted access")
+	}
+	if trust.allowsScope(nil) {
+		t.Fatalf("allowsScope(nil) = true, want false")
+	}
+}
+
 func TestFilterBySensitivitySkipsInvalidValues(t *testing.T) {
 	records := []*schema.MemoryRecord{
 		{ID: "ok-low", Sensitivity: schema.SensitivityLow},

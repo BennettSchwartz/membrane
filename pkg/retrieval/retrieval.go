@@ -118,7 +118,7 @@ func NewServiceWithVectorRanker(store storage.Store, selector *Selector, embeddi
 // salience filtering, runs competence/plan_graph results through the selector,
 // sorts by salience descending, and applies the limit.
 func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error) {
-	if req.Trust == nil {
+	if req == nil || req.Trust == nil {
 		return nil, ErrNilTrust
 	}
 
@@ -194,9 +194,7 @@ func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*Retrie
 func rankRecordsWithSelection(records []*schema.MemoryRecord, selection *SelectionResult) []*schema.MemoryRecord {
 	ranked := make([]*schema.MemoryRecord, 0, len(records))
 	seen := make(map[string]struct{}, len(records))
-	selectedIDs := make(map[string]struct{}, len(selection.Selected))
 	for _, rec := range selection.Selected {
-		selectedIDs[rec.ID] = struct{}{}
 		ranked = append(ranked, rec)
 		seen[rec.ID] = struct{}{}
 	}
@@ -204,9 +202,6 @@ func rankRecordsWithSelection(records []*schema.MemoryRecord, selection *Selecti
 	remaining := make([]*schema.MemoryRecord, 0, len(records))
 	for _, rec := range records {
 		if _, ok := seen[rec.ID]; ok {
-			continue
-		}
-		if _, ok := selectedIDs[rec.ID]; ok {
 			continue
 		}
 		remaining = append(remaining, rec)
@@ -271,7 +266,22 @@ func rankByVector(ctx context.Context, records []*schema.MemoryRecord, ranker Ve
 
 	result := make([]*schema.MemoryRecord, 0, len(records))
 	seen := make(map[string]struct{}, len(matched))
+	if selection != nil {
+		for _, rec := range selection.Selected {
+			if _, ok := byID[rec.ID]; !ok {
+				continue
+			}
+			if _, ok := seen[rec.ID]; ok {
+				continue
+			}
+			result = append(result, rec)
+			seen[rec.ID] = struct{}{}
+		}
+	}
 	for _, s := range matched {
+		if _, ok := seen[s.rec.ID]; ok {
+			continue
+		}
 		result = append(result, s.rec)
 		seen[s.rec.ID] = struct{}{}
 	}

@@ -12,6 +12,7 @@ import (
 // RetrieveGraphRequest expands ranked root memories into a bounded graph.
 type RetrieveGraphRequest struct {
 	TaskDescriptor string
+	QueryEmbedding []float32
 	Trust          *TrustContext
 	MemoryTypes    []schema.MemoryType
 	MinSalience    float64
@@ -63,6 +64,7 @@ func (svc *Service) RetrieveGraph(ctx context.Context, req *RetrieveGraphRequest
 
 	baseResp, err := svc.Retrieve(ctx, &RetrieveRequest{
 		TaskDescriptor: req.TaskDescriptor,
+		QueryEmbedding: req.QueryEmbedding,
 		Trust:          req.Trust,
 		MemoryTypes:    req.MemoryTypes,
 		MinSalience:    req.MinSalience,
@@ -84,9 +86,6 @@ func (svc *Service) RetrieveGraph(ctx context.Context, req *RetrieveGraphRequest
 	rootIDs := make([]string, 0, len(roots))
 	queue := make([]GraphNode, 0, len(roots))
 	for _, rec := range roots {
-		if rec == nil {
-			continue
-		}
 		node := GraphNode{Record: rec, Root: true, Hop: 0}
 		nodeByID[rec.ID] = node
 		rootIDs = append(rootIDs, rec.ID)
@@ -116,19 +115,19 @@ func (svc *Service) RetrieveGraph(ctx context.Context, req *RetrieveGraphRequest
 			if _, ok := seenEdges[edgeKey]; ok {
 				continue
 			}
-			target, err := svc.store.Get(ctx, rel.TargetID)
-			if err != nil {
-				continue
-			}
-			if !req.Trust.Allows(target) {
-				if req.Trust.AllowsRedacted(target) {
-					target = Redact(target)
-				} else {
+			if _, ok := nodeByID[rel.TargetID]; !ok {
+				target, err := svc.store.Get(ctx, rel.TargetID)
+				if err != nil {
 					continue
 				}
-			}
+				if !req.Trust.Allows(target) {
+					if req.Trust.AllowsRedacted(target) {
+						target = Redact(target)
+					} else {
+						continue
+					}
+				}
 
-			if _, ok := nodeByID[target.ID]; !ok {
 				if len(nodeByID) >= nodeLimit {
 					continue
 				}

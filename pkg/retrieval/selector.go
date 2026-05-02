@@ -192,9 +192,5 @@ func (s *Selector) computeRecency(record *schema.MemoryRecord) float64 {
 	const halfLifeSeconds = 30 * 24 * 3600.0
 	// Exponential decay: score = 0.5^(elapsed / halfLife)
 	// Use the identity: 0.5^x = exp(-x * ln(2))
-	score := math.Exp(-elapsed * math.Log(2) / halfLifeSeconds)
-	if score < 0 {
-		return 0
-	}
-	return score
+	return math.Exp(-elapsed * math.Log(2) / halfLifeSeconds)
 }
