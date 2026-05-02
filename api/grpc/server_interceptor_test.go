@@ -82,7 +82,10 @@ func TestClientIdentity(t *testing.T) {
 func TestRateLimiterAndClientEviction(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiterAt(2, now)
-	if !limiter.allowAt(now) || !limiter.allowAt(now) {
+	if !limiter.allowAt(now) {
+		t.Fatalf("expected first initial burst token to allow request")
+	}
+	if !limiter.allowAt(now) {
 		t.Fatalf("expected initial burst tokens to allow two requests")
 	}
 	if limiter.allowAt(now) {

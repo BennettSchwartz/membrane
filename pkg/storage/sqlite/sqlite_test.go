@@ -1467,12 +1467,6 @@ func expectSQLiteBatchEmptyRelationRows(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}))
 }
 
-func expectSQLiteBatchEmptyAuditRows(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`SELECT record_id, action, actor, timestamp, rationale FROM audit_log WHERE record_id IN`).
-		WithArgs("batch-1", "batch-2", "batch-3", "batch-4").
-		WillReturnRows(sqlmock.NewRows([]string{"record_id", "action", "actor", "timestamp", "rationale"}))
-}
-
 func TestGetRecordsBatchErrorBranches(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 1, 16, 30, 0, 0, time.UTC)

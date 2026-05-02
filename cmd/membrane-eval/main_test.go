@@ -35,7 +35,6 @@ type fakeEmbeddingSearcher struct {
 	ids       []string
 	err       error
 	query     []float32
-	limit     int
 	calls     int
 	lastLimit int
 }
