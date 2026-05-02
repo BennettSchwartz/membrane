@@ -35,9 +35,19 @@ type Membrane struct {
 	consolScheduler *consolidation.Scheduler
 }
 
+var (
+	openSQLiteStore = func(path, encryptionKey string) (storage.Store, error) {
+		return sqlite.Open(path, encryptionKey)
+	}
+	openPostgresStore = postgres.Open
+)
+
 // New initialises all subsystems from the provided Config and returns a
 // ready-to-start Membrane instance.
 func New(cfg *Config) (*Membrane, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
 	if !schema.IsValidSensitivity(schema.Sensitivity(cfg.DefaultSensitivity)) {
 		return nil, fmt.Errorf("membrane: invalid default sensitivity %q", cfg.DefaultSensitivity)
 	}
@@ -53,7 +63,7 @@ func New(cfg *Config) (*Membrane, error) {
 		if encKey == "" {
 			encKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
 		}
-		store, err = sqlite.Open(cfg.DBPath, encKey)
+		store, err = openSQLiteStore(cfg.DBPath, encKey)
 		if err != nil {
 			return nil, fmt.Errorf("membrane: open sqlite store: %w", err)
 		}
@@ -64,7 +74,7 @@ func New(cfg *Config) (*Membrane, error) {
 		if cfg.PostgresDSN == "" {
 			return nil, fmt.Errorf("membrane: postgres_dsn is required when backend=postgres")
 		}
-		pgStore, err = postgres.Open(cfg.PostgresDSN, postgres.EmbeddingConfig{
+		pgStore, err = openPostgresStore(cfg.PostgresDSN, postgres.EmbeddingConfig{
 			Dimensions: cfg.EmbeddingDimensions,
 			Model:      cfg.EmbeddingModel,
 		})
@@ -126,9 +136,6 @@ func New(cfg *Config) (*Membrane, error) {
 	if embService != nil && pgStore != nil {
 		selector = retrieval.NewSelectorWithEmbedding(cfg.SelectionConfidenceThreshold, embService)
 		retrievalSvc = retrieval.NewServiceWithVectorRanker(store, selector, embService, pgStore)
-	} else if embService != nil {
-		selector = retrieval.NewSelectorWithEmbedding(cfg.SelectionConfidenceThreshold, embService)
-		retrievalSvc = retrieval.NewServiceWithEmbedding(store, selector, embService)
 	} else {
 		selector = retrieval.NewSelector(cfg.SelectionConfidenceThreshold)
 		retrievalSvc = retrieval.NewService(store, selector)
@@ -223,8 +230,10 @@ func (m *Membrane) RetrieveGraph(ctx context.Context, req *retrieval.RetrieveGra
 	if req.EdgeLimit <= 0 {
 		req.EdgeLimit = m.config.GraphDefaultEdgeLimit
 	}
-	if req.MaxHops <= 0 {
+	if req.MaxHops == 0 {
 		req.MaxHops = m.config.GraphDefaultMaxHops
+	} else if req.MaxHops < 0 {
+		req.MaxHops = 0
 	}
 	return m.retrieval.RetrieveGraph(ctx, req)
 }

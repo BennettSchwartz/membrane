@@ -116,6 +116,10 @@ func (s *Service) Reinforce(ctx context.Context, id string, actor string, ration
 // Penalize reduces a record's salience by the given amount, floored at
 // MinSalience, and adds an audit entry.
 func (s *Service) Penalize(ctx context.Context, id string, amount float64, actor string, rationale string) error {
+	if amount < 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return fmt.Errorf("penalize: amount must be non-negative and finite")
+	}
+
 	return storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
 		record, err := tx.Get(ctx, id)
 		if err != nil {

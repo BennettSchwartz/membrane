@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -96,6 +97,9 @@ func (s *Service) BackfillMissing(ctx context.Context) (int, error) {
 			if len(existing) > 0 {
 				continue
 			}
+			if triggerText(rec) == "" {
+				continue
+			}
 			if err := s.EmbedRecord(ctx, rec); err != nil {
 				continue
 			}
@@ -125,14 +129,15 @@ func triggerText(rec *schema.MemoryRecord) string {
 		if payload.ContextSummary != "" {
 			parts = append(parts, payload.ContextSummary)
 		}
-		parts = append(parts, string(payload.State))
+		if payload.State != "" {
+			parts = append(parts, string(payload.State))
+		}
 		if len(payload.NextActions) > 0 {
 			parts = append(parts, strings.Join(payload.NextActions, " "))
 		}
 		return strings.Join(parts, " ")
 	case *schema.SemanticPayload:
-		obj, _ := payload.Object.(string)
-		return payload.Subject + " " + payload.Predicate + " " + obj
+		return strings.TrimSpace(payload.Subject + " " + payload.Predicate + " " + semanticObjectText(payload.Object))
 	case *schema.CompetencePayload:
 		signals := make([]string, 0, len(payload.Triggers))
 		for _, trig := range payload.Triggers {
@@ -141,7 +146,7 @@ func triggerText(rec *schema.MemoryRecord) string {
 			}
 		}
 		if len(signals) > 0 {
-			return payload.SkillName + " " + strings.Join(signals, " ")
+			return strings.TrimSpace(payload.SkillName + " " + strings.Join(signals, " "))
 		}
 		return payload.SkillName
 	case *schema.PlanGraphPayload:
@@ -160,6 +165,23 @@ func triggerText(rec *schema.MemoryRecord) string {
 	}
 }
 
+func semanticObjectText(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		data, err := json.Marshal(v)
+		if err == nil {
+			return string(data)
+		}
+		return fmt.Sprint(v)
+	}
+}
+
 func cosineSimilarity(a, b []float32) float64 {
 	var dot, normA, normB float64
 	for i := range a {
@@ -172,11 +194,18 @@ func cosineSimilarity(a, b []float32) float64 {
 	}
 	sim := dot / (math.Sqrt(normA) * math.Sqrt(normB))
 	sim = (sim + 1.0) / 2.0
-	if sim < 0 {
+	return clamp01(sim)
+}
+
+func clamp01(value float64) float64 {
+	if math.IsNaN(value) {
+		return 0.5
+	}
+	if value < 0 {
 		return 0
 	}
-	if sim > 1 {
+	if value > 1 {
 		return 1
 	}
-	return sim
+	return value
 }

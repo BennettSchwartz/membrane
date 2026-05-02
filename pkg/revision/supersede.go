@@ -37,14 +37,16 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 			return err
 		}
 
+		// Assign a new ID before linking the old record to the replacement.
+		if newRecord.ID == "" {
+			newRecord.ID = uuid.New().String()
+		}
+
 		// 2. Retract the old record (set salience to 0, mark semantic as retracted).
 		retractRecord(oldRec)
 
 		// For semantic payloads, also record the superseded-by link.
 		if sp, ok := oldRec.Payload.(*schema.SemanticPayload); ok {
-			if sp.Revision == nil {
-				sp.Revision = &schema.RevisionState{}
-			}
 			sp.Revision.SupersededBy = newRecord.ID
 		}
 
@@ -53,16 +55,7 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 			return fmt.Errorf("update old record %s: %w", oldID, err)
 		}
 
-		// 3. Assign a new ID if not already set.
-		if newRecord.ID == "" {
-			newRecord.ID = uuid.New().String()
-		}
-
 		// 4. Set provenance to reference old record.
-		// Initialize Sources slice if nil.
-		if newRecord.Provenance.Sources == nil {
-			newRecord.Provenance.Sources = make([]schema.ProvenanceSource, 0, 1)
-		}
 		newRecord.Provenance.Sources = append(newRecord.Provenance.Sources, schema.ProvenanceSource{
 			Kind:      schema.ProvenanceKindEvent,
 			Ref:       oldID,

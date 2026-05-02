@@ -44,6 +44,9 @@ func NewServiceWithEmbedder(store storage.Store, embedder Embedder) *Service {
 // ensureRevisable checks that a record exists and is not episodic.
 // Returns an error if the record cannot be revised.
 func ensureRevisable(rec *schema.MemoryRecord) error {
+	if rec == nil {
+		return fmt.Errorf("record is required")
+	}
 	if rec.Type == schema.MemoryTypeEpisodic {
 		return fmt.Errorf("%w: record %s", ErrEpisodicImmutable, rec.ID)
 	}
@@ -53,6 +56,9 @@ func ensureRevisable(rec *schema.MemoryRecord) error {
 // ensureEvidence checks that semantic records being created via revision
 // include at least one evidence reference in their payload.
 func ensureEvidence(rec *schema.MemoryRecord) error {
+	if rec == nil {
+		return fmt.Errorf("revision record is required")
+	}
 	if rec.Type != schema.MemoryTypeSemantic {
 		return nil
 	}

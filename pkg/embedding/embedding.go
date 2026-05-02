@@ -47,10 +47,7 @@ func (c *HTTPClient) Embed(ctx context.Context, text string) ([]float32, error) 
 	if c.dimensions > 0 {
 		body["dimensions"] = c.dimensions
 	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal embedding request: %w", err)
-	}
+	data, _ := json.Marshal(body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(data))
 	if err != nil {
