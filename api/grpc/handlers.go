@@ -74,10 +74,7 @@ func validateValuePayload(name string, value *structpb.Value) error {
 	if value == nil {
 		return nil
 	}
-	data, err := json.Marshal(value.AsInterface())
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid %s value: %v", name, err)
-	}
+	data, _ := json.Marshal(value.AsInterface())
 	return validateJSONPayload(name, data)
 }
 
@@ -108,6 +105,9 @@ var _ pb.MembraneServiceServer = (*Handler)(nil)
 
 // CaptureMemory converts the gRPC request and delegates to Membrane.CaptureMemory.
 func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryRequest) (*pb.CaptureMemoryResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if err := validateStringField("source", req.Source); err != nil {
 		return nil, err
 	}
@@ -118,6 +118,9 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 		return nil, err
 	}
 	if err := validateStringField("summary", req.Summary); err != nil {
+		return nil, err
+	}
+	if err := validateStringField("scope", req.Scope); err != nil {
 		return nil, err
 	}
 	if err := validateTags(req.Tags); err != nil {
@@ -165,8 +168,14 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 
 // RetrieveGraph converts the gRPC request and delegates to Membrane.RetrieveGraph.
 func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphRequest) (*pb.RetrieveGraphResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
+	}
+	if err := validateStringField("task_descriptor", req.TaskDescriptor); err != nil {
+		return nil, err
 	}
 	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
 		return nil, err
@@ -177,14 +186,15 @@ func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphReques
 	for _, v := range []struct {
 		name  string
 		value int32
+		min   int32
 	}{
-		{name: "root_limit", value: req.RootLimit},
-		{name: "node_limit", value: req.NodeLimit},
-		{name: "edge_limit", value: req.EdgeLimit},
-		{name: "max_hops", value: req.MaxHops},
+		{name: "root_limit", value: req.RootLimit, min: 0},
+		{name: "node_limit", value: req.NodeLimit, min: 0},
+		{name: "edge_limit", value: req.EdgeLimit, min: 0},
+		{name: "max_hops", value: req.MaxHops, min: -1},
 	} {
-		if v.value < 0 || v.value > maxLimit {
-			return nil, status.Errorf(codes.InvalidArgument, "%s must be between 0 and %d", v.name, maxLimit)
+		if v.value < v.min || v.value > maxLimit {
+			return nil, status.Errorf(codes.InvalidArgument, "%s must be between %d and %d", v.name, v.min, maxLimit)
 		}
 	}
 
@@ -215,6 +225,9 @@ func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphReques
 
 // RetrieveByID converts the gRPC request and delegates to Membrane.RetrieveByID.
 func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest) (*pb.MemoryRecordResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
 	}
@@ -234,6 +247,9 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest)
 
 // Supersede converts the gRPC request and delegates to Membrane.Supersede.
 func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.MemoryRecordResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	newRec, err := memoryRecordFromPB(req.NewRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid new_record: %v", err)
@@ -249,6 +265,9 @@ func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.
 
 // Fork converts the gRPC request and delegates to Membrane.Fork.
 func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryRecordResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	forkedRec, err := memoryRecordFromPB(req.ForkedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid forked_record: %v", err)
@@ -264,6 +283,9 @@ func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryReco
 
 // Retract converts the gRPC request and delegates to Membrane.Retract.
 func (h *Handler) Retract(ctx context.Context, req *pb.RetractRequest) (*pb.RetractResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if err := h.membrane.Retract(ctx, req.Id, req.Actor, req.Rationale); err != nil {
 		return nil, serviceErr(err)
 	}
@@ -272,6 +294,9 @@ func (h *Handler) Retract(ctx context.Context, req *pb.RetractRequest) (*pb.Retr
 
 // Merge converts the gRPC request and delegates to Membrane.Merge.
 func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRecordResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if len(req.Ids) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "ids must not be empty")
 	}
@@ -293,6 +318,9 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 
 // Reinforce converts the gRPC request and delegates to Membrane.Reinforce.
 func (h *Handler) Reinforce(ctx context.Context, req *pb.ReinforceRequest) (*pb.ReinforceResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if err := validateStringField("actor", req.Actor); err != nil {
 		return nil, err
 	}
@@ -308,6 +336,9 @@ func (h *Handler) Reinforce(ctx context.Context, req *pb.ReinforceRequest) (*pb.
 
 // Penalize converts the gRPC request and delegates to Membrane.Penalize.
 func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.PenalizeResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if req.Amount < 0 || math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
 		return nil, status.Error(codes.InvalidArgument, "amount must be non-negative and finite")
 	}
@@ -331,16 +362,15 @@ func (h *Handler) GetMetrics(ctx context.Context, _ *pb.GetMetricsRequest) (*pb.
 		return nil, serviceErr(err)
 	}
 
-	value, err := valueToPB(snap)
-	if err != nil {
-		return nil, internalErr(fmt.Errorf("marshal metrics: %w", err))
-	}
-
+	value, _ := valueToPB(snap)
 	return &pb.MetricsResponse{Snapshot: value}, nil
 }
 
 // Contest converts the gRPC request and delegates to Membrane.Contest.
 func (h *Handler) Contest(ctx context.Context, req *pb.ContestRequest) (*pb.ContestResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
 	if err := validateStringField("actor", req.Actor); err != nil {
 		return nil, err
 	}
@@ -394,9 +424,7 @@ func valueToPB(value any) (*structpb.Value, error) {
 		return nil, err
 	}
 	var normalized any
-	if err := json.Unmarshal(data, &normalized); err != nil {
-		return nil, err
-	}
+	_ = json.Unmarshal(data, &normalized)
 	return structpb.NewValue(normalized)
 }
 
@@ -514,6 +542,10 @@ func memoryRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	relations, err := relationsFromPB(rec.Relations)
+	if err != nil {
+		return nil, err
+	}
 	return &schema.MemoryRecord{
 		ID:             rec.Id,
 		Type:           schema.MemoryType(rec.Type),
@@ -526,7 +558,7 @@ func memoryRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
 		UpdatedAt:      updatedAt,
 		Lifecycle:      lifecycle,
 		Provenance:     provenance,
-		Relations:      relationsFromPB(rec.Relations),
+		Relations:      relations,
 		Payload:        payload,
 		Interpretation: interpretationFromPB(rec.Interpretation),
 		AuditLog:       auditLog,
@@ -647,13 +679,16 @@ func relationsToPB(relations []schema.Relation) []*pb.Relation {
 	return out
 }
 
-func relationsFromPB(relations []*pb.Relation) []schema.Relation {
+func relationsFromPB(relations []*pb.Relation) ([]schema.Relation, error) {
 	out := make([]schema.Relation, 0, len(relations))
-	for _, relation := range relations {
+	for i, relation := range relations {
 		if relation == nil {
 			continue
 		}
-		createdAt, _ := parseTimeValue(relation.CreatedAt)
+		createdAt, err := parseTimeValue(relation.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("relations[%d].created_at: %w", i, err)
+		}
 		out = append(out, schema.Relation{
 			Predicate: relation.Predicate,
 			TargetID:  relation.TargetId,
@@ -661,7 +696,7 @@ func relationsFromPB(relations []*pb.Relation) []schema.Relation {
 			CreatedAt: createdAt,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func graphEdgesToPB(edges []schema.GraphEdge) []*pb.GraphEdge {
@@ -947,9 +982,9 @@ func payloadFromPB(payload *pb.Payload) (schema.Payload, error) {
 	case *pb.Payload_Semantic:
 		return semanticPayloadFromPB(p.Semantic)
 	case *pb.Payload_Competence:
-		return competencePayloadFromPB(p.Competence), nil
+		return competencePayloadFromPB(p.Competence)
 	case *pb.Payload_PlanGraph:
-		return planGraphPayloadFromPB(p.PlanGraph), nil
+		return planGraphPayloadFromPB(p.PlanGraph)
 	case *pb.Payload_Entity:
 		return entityPayloadFromPB(p.Entity), nil
 	default:
@@ -1370,9 +1405,9 @@ func competencePayloadToPB(payload *schema.CompetencePayload) (*pb.CompetencePay
 	}, nil
 }
 
-func competencePayloadFromPB(payload *pb.CompetencePayload) *schema.CompetencePayload {
+func competencePayloadFromPB(payload *pb.CompetencePayload) (*schema.CompetencePayload, error) {
 	if payload == nil {
-		return nil
+		return nil, nil
 	}
 	triggers := make([]schema.Trigger, 0, len(payload.Triggers))
 	for _, trigger := range payload.Triggers {
@@ -1396,6 +1431,10 @@ func competencePayloadFromPB(payload *pb.CompetencePayload) *schema.CompetencePa
 			Validation: step.Validation,
 		})
 	}
+	performance, err := performanceStatsFromPB(payload.Performance)
+	if err != nil {
+		return nil, err
+	}
 	return &schema.CompetencePayload{
 		Kind:          payload.Kind,
 		SkillName:     payload.SkillName,
@@ -1404,9 +1443,9 @@ func competencePayloadFromPB(payload *pb.CompetencePayload) *schema.CompetencePa
 		RequiredTools: payload.RequiredTools,
 		FailureModes:  payload.FailureModes,
 		Fallbacks:     payload.Fallbacks,
-		Performance:   performanceStatsFromPB(payload.Performance),
+		Performance:   performance,
 		Version:       payload.Version,
-	}
+	}, nil
 }
 
 func performanceStatsToPB(stats *schema.PerformanceStats) *pb.PerformanceStats {
@@ -1422,18 +1461,21 @@ func performanceStatsToPB(stats *schema.PerformanceStats) *pb.PerformanceStats {
 	}
 }
 
-func performanceStatsFromPB(stats *pb.PerformanceStats) *schema.PerformanceStats {
+func performanceStatsFromPB(stats *pb.PerformanceStats) (*schema.PerformanceStats, error) {
 	if stats == nil {
-		return nil
+		return nil, nil
 	}
-	lastUsedAt, _ := parseTimePtr(stats.LastUsedAt)
+	lastUsedAt, err := parseTimePtr(stats.LastUsedAt)
+	if err != nil {
+		return nil, fmt.Errorf("performance.last_used_at: %w", err)
+	}
 	return &schema.PerformanceStats{
 		SuccessCount: stats.SuccessCount,
 		FailureCount: stats.FailureCount,
 		SuccessRate:  stats.SuccessRate,
 		AvgLatencyMs: stats.AvgLatencyMs,
 		LastUsedAt:   lastUsedAt,
-	}
+	}, nil
 }
 
 func planGraphPayloadToPB(payload *schema.PlanGraphPayload) (*pb.PlanGraphPayload, error) {
@@ -1487,9 +1529,9 @@ func planGraphPayloadToPB(payload *schema.PlanGraphPayload) (*pb.PlanGraphPayloa
 	}, nil
 }
 
-func planGraphPayloadFromPB(payload *pb.PlanGraphPayload) *schema.PlanGraphPayload {
+func planGraphPayloadFromPB(payload *pb.PlanGraphPayload) (*schema.PlanGraphPayload, error) {
 	if payload == nil {
-		return nil
+		return nil, nil
 	}
 	nodes := make([]schema.PlanNode, 0, len(payload.Nodes))
 	for _, node := range payload.Nodes {
@@ -1514,6 +1556,10 @@ func planGraphPayloadFromPB(payload *pb.PlanGraphPayload) *schema.PlanGraphPaylo
 			Kind: schema.EdgeKind(edge.Kind),
 		})
 	}
+	metrics, err := planMetricsFromPB(payload.Metrics)
+	if err != nil {
+		return nil, err
+	}
 	return &schema.PlanGraphPayload{
 		Kind:          payload.Kind,
 		PlanID:        payload.PlanId,
@@ -1524,8 +1570,8 @@ func planGraphPayloadFromPB(payload *pb.PlanGraphPayload) *schema.PlanGraphPaylo
 		OutputsSchema: valueMapFromPB(payload.OutputsSchema),
 		Nodes:         nodes,
 		Edges:         edges,
-		Metrics:       planMetricsFromPB(payload.Metrics),
-	}
+		Metrics:       metrics,
+	}, nil
 }
 
 func planMetricsToPB(metrics *schema.PlanMetrics) *pb.PlanMetrics {
@@ -1540,17 +1586,20 @@ func planMetricsToPB(metrics *schema.PlanMetrics) *pb.PlanMetrics {
 	}
 }
 
-func planMetricsFromPB(metrics *pb.PlanMetrics) *schema.PlanMetrics {
+func planMetricsFromPB(metrics *pb.PlanMetrics) (*schema.PlanMetrics, error) {
 	if metrics == nil {
-		return nil
+		return nil, nil
 	}
-	lastExecutedAt, _ := parseTimePtr(metrics.LastExecutedAt)
+	lastExecutedAt, err := parseTimePtr(metrics.LastExecutedAt)
+	if err != nil {
+		return nil, fmt.Errorf("plan_metrics.last_executed_at: %w", err)
+	}
 	return &schema.PlanMetrics{
 		AvgLatencyMs:   metrics.AvgLatencyMs,
 		FailureRate:    metrics.FailureRate,
 		ExecutionCount: metrics.ExecutionCount,
 		LastExecutedAt: lastExecutedAt,
-	}
+	}, nil
 }
 
 // marshalMemoryRecordResponse converts a MemoryRecord into a typed MemoryRecordResponse.
