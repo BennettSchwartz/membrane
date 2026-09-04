@@ -1,0 +1,17 @@
+{
+  "tags": [
+    "github-actions",
+    "go",
+    "grpc",
+    "node",
+    "react",
+    "workers"
+  ],
+  "sentinels": [
+    "go.mod",
+    "package.json",
+    "wrangler.jsonc"
+  ],
+  "detectedAt": "2026-05-12T02:22:54.133Z",
+  "rootPath": ".."
+}
