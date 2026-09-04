@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "docs/**"
+      - "tools/docs-image-size/**"
       - "src/**"
       - "static/**"
       - "docusaurus.config.js"
@@ -22,30 +23,40 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      HAS_CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
+      - name: Test image parsers
+        run: npm run test:docs-image-size
+
       - name: Build docs
         run: npm run docs:build
 
       - name: Deploy docs to Cloudflare Workers
-        if: env.CLOUDFLARE_API_TOKEN != ''
+        if: env.HAS_CLOUDFLARE_TOKEN == 'true'
         run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Skip deploy without Cloudflare token
-        if: env.CLOUDFLARE_API_TOKEN == ''
+        if: env.HAS_CLOUDFLARE_TOKEN != 'true'
         run: |
           echo "::notice::Set CLOUDFLARE_API_TOKEN as a repository secret to enable automatic docs deployment."

@@ -1,11 +1,15 @@
 {
   "name": "membrane-docs",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "docs:dev": "docusaurus start --host 0.0.0.0",
     "docs:build": "docusaurus build",
     "docs:serve": "docusaurus serve --host 0.0.0.0",
-    "docs:deploy": "npm run docs:build && wrangler deploy"
+    "docs:deploy": "npm run docs:build && wrangler deploy",
+    "test:docs-image-size": "npm --prefix tools/docs-image-size test"
   },
   "dependencies": {
     "@docusaurus/core": "3.9.2",
@@ -18,6 +22,19 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
-    "wrangler": "4.86.0"
+    "image-size": "file:tools/docs-image-size",
+    "wrangler": "4.128.0"
+  },
+  "overrides": {
+    "@docusaurus/bundler": {
+      "webpackbar": "7.0.0"
+    },
+    "image-size": "$image-size",
+    "qs": "6.16.0",
+    "serialize-javascript": "^7.0.5",
+    "sockjs": {
+      "uuid": "11.1.1"
+    },
+    "webpack": "5.110.3"
   }
 }

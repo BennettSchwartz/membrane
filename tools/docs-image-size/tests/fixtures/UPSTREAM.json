@@ -1,0 +1,27 @@
+[
+  {
+    "file": "sample.icns",
+    "source": "https://raw.githubusercontent.com/image-size/image-size/v2.0.2/specs/images/valid/icns/sample.icns",
+    "sha256": "bf7238090d0411a4fef549ccdcf7dc9765f7f4648a94395f1455b2a6c2e367df"
+  },
+  {
+    "file": "sample.heic",
+    "source": "https://raw.githubusercontent.com/image-size/image-size/v2.0.2/specs/images/valid/heif/sample.heic",
+    "sha256": "aa6ddde0a0fc27cd08cda2a63e268a1547eb18b66cc48eb6c3ce04b5eb191dc6"
+  },
+  {
+    "file": "sample.avif",
+    "source": "https://raw.githubusercontent.com/image-size/image-size/v2.0.2/specs/images/valid/heif/sample.avif",
+    "sha256": "762548580260828d60d87a5a7a8a44a77c9b9734a29ebcd6be037c94c37c63a8"
+  },
+  {
+    "file": "sample.jxl",
+    "source": "https://raw.githubusercontent.com/image-size/image-size/v2.0.2/specs/images/valid/jxl/sample.jxl",
+    "sha256": "90a356d8120ef3f379b77943fe6d89e387daac9eb81add14b4c3c559fd36a26d"
+  },
+  {
+    "file": "1x2-flipped-big-endian.jpg",
+    "source": "https://raw.githubusercontent.com/image-size/image-size/v2.0.2/specs/images/valid/jpg/1x2-flipped-big-endian.jpg",
+    "sha256": "d235a8311475d3f8af74cc10508d300ac2070088608c47cd51a477370da310aa"
+  }
+]

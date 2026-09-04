@@ -1,0 +1,1258 @@
+--- a/lib/detector.cjs
++++ b/lib/detector.cjs
+@@ -28,21 +28,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -150,8 +151,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -159,14 +160,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -247,10 +250,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize2(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+@@ -485,6 +497,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/detector.mjs
++++ b/lib/detector.mjs
+@@ -26,21 +26,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -148,8 +149,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -157,14 +158,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -245,10 +248,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize2(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+@@ -483,6 +495,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/fromFile.cjs
++++ b/lib/fromFile.cjs
+@@ -54,21 +54,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -176,8 +177,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -185,14 +186,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -273,10 +276,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -511,6 +523,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/fromFile.mjs
++++ b/lib/fromFile.mjs
+@@ -31,21 +31,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -153,8 +154,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -162,14 +163,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -250,10 +253,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -488,6 +500,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/index.cjs
++++ b/lib/index.cjs
+@@ -30,21 +30,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -152,8 +153,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -161,14 +162,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -249,10 +252,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -487,6 +499,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/index.mjs
++++ b/lib/index.mjs
+@@ -26,21 +26,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -148,8 +149,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -157,14 +158,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -245,10 +248,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -483,6 +495,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/lookup.cjs
++++ b/lib/lookup.cjs
+@@ -28,21 +28,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -150,8 +151,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -159,14 +160,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -247,10 +250,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -485,6 +497,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/lookup.mjs
++++ b/lib/lookup.mjs
+@@ -26,21 +26,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -148,8 +149,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -157,14 +158,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -245,10 +248,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize2 = getImageSize2(imageHeader[0]);
+       images.push(imageSize2);
+       imageOffset += imageHeader[1];
+@@ -483,6 +495,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/types/heif.cjs
++++ b/lib/types/heif.cjs
+@@ -6,21 +6,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -48,8 +49,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -57,14 +58,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+--- a/lib/types/heif.mjs
++++ b/lib/types/heif.mjs
+@@ -4,21 +4,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -46,8 +47,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -55,14 +56,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+--- a/lib/types/icns.cjs
++++ b/lib/types/icns.cjs
+@@ -68,10 +68,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+--- a/lib/types/icns.mjs
++++ b/lib/types/icns.mjs
+@@ -66,10 +66,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+--- a/lib/types/index.cjs
++++ b/lib/types/index.cjs
+@@ -28,21 +28,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -150,8 +151,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -159,14 +160,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -247,10 +250,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize2(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+@@ -485,6 +497,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/types/index.mjs
++++ b/lib/types/index.mjs
+@@ -26,21 +26,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -148,8 +149,8 @@
+   },
+   calculate(input) {
+     const metaBox = findBox(input, "meta", 0);
+-    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12);
+-    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8);
++    const iprpBox = metaBox && findBox(input, "iprp", metaBox.offset + 12, metaBox.offset + metaBox.size);
++    const ipcoBox = iprpBox && findBox(input, "ipco", iprpBox.offset + 8, iprpBox.offset + iprpBox.size);
+     if (!ipcoBox) {
+       throw new TypeError("Invalid HEIF, no ipco box found");
+     }
+@@ -157,14 +158,16 @@
+     const images = [];
+     let currentOffset = ipcoBox.offset + 8;
+     while (currentOffset < ipcoBox.offset + ipcoBox.size) {
+-      const ispeBox = findBox(input, "ispe", currentOffset);
++      const ispeBox = findBox(input, "ispe", currentOffset, ipcoBox.offset + ipcoBox.size);
+       if (!ispeBox) break;
++      if (ispeBox.size < 20) throw new TypeError("Invalid HEIF image spatial extents box");
+       const rawWidth = readUInt32BE(input, ispeBox.offset + 12);
+       const rawHeight = readUInt32BE(input, ispeBox.offset + 16);
+-      const clapBox = findBox(input, "clap", currentOffset);
++      const clapBox = findBox(input, "clap", currentOffset, ipcoBox.offset + ipcoBox.size);
+       let width = rawWidth;
+       let height = rawHeight;
+       if (clapBox && clapBox.offset < ipcoBox.offset + ipcoBox.size) {
++        if (clapBox.size < 16) throw new TypeError("Invalid HEIF clean aperture box");
+         const cropRight = readUInt32BE(input, clapBox.offset + 12);
+         width = rawWidth - cropRight;
+       }
+@@ -245,10 +248,19 @@
+   calculate(input) {
+     const inputLength = input.length;
+     const fileLength = readUInt32BE(input, FILE_LENGTH_OFFSET);
++    if (fileLength < 8) throw new TypeError("Invalid ICNS file length");
+     let imageOffset = SIZE_HEADER2;
+     const images = [];
+     while (imageOffset < fileLength && imageOffset < inputLength) {
++      // fromFile reads a prefix: payload bytes may be absent, but each entry
++      // must have a complete header and fit the declared file span.
++      if (Math.min(fileLength, inputLength) - imageOffset < 8) {
++        throw new TypeError("Invalid ICNS entry header");
++      }
+       const imageHeader = readImageHeader(input, imageOffset);
++      if (imageHeader[1] < 8 || imageHeader[1] > fileLength - imageOffset) {
++        throw new TypeError("Invalid ICNS entry length");
++      }
+       const imageSize = getImageSize2(imageHeader[0]);
+       images.push(imageSize);
+       imageOffset += imageHeader[1];
+@@ -483,6 +495,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/types/jp2.cjs
++++ b/lib/types/jp2.cjs
+@@ -6,21 +6,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+--- a/lib/types/jp2.mjs
++++ b/lib/types/jp2.mjs
+@@ -4,21 +4,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+--- a/lib/types/jxl.cjs
++++ b/lib/types/jxl.cjs
+@@ -47,21 +47,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -116,6 +117,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/types/jxl.mjs
++++ b/lib/types/jxl.mjs
+@@ -45,21 +45,22 @@
+ var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+ var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+@@ -114,6 +115,7 @@
+   while (offset < input.length) {
+     const jxlpBox = findBox(input, "jxlp", offset);
+     if (!jxlpBox) break;
++    if (jxlpBox.size < 12) throw new TypeError("Invalid JXL partial codestream box");
+     partialStreams.push(
+       input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size)
+     );
+--- a/lib/types/utils.cjs
++++ b/lib/types/utils.cjs
+@@ -28,21 +28,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 
+--- a/lib/types/utils.mjs
++++ b/lib/types/utils.mjs
+@@ -26,21 +26,22 @@
+   return methods[methodName](input, offset);
+ }
+ function readBox(input, offset) {
+-  if (input.length - offset < 4) return;
++  // A matched box must contain its complete header and advance the cursor.
++  if (offset < 0 || input.length - offset < 8) return;
+   const boxSize = readUInt32BE(input, offset);
+-  if (input.length - offset < boxSize) return;
++  if (boxSize < 8 || input.length - offset < boxSize) return;
+   return {
+     name: toUTF8String(input, 4 + offset, 8 + offset),
+     offset,
+     size: boxSize
+   };
+ }
+-function findBox(input, boxName, currentOffset) {
+-  while (currentOffset < input.length) {
++function findBox(input, boxName, currentOffset, endOffset = input.length) {
++  while (currentOffset < endOffset) {
+     const box = readBox(input, currentOffset);
+-    if (!box) break;
++    if (!box || box.size > endOffset - currentOffset) break;
+     if (box.name === boxName) return box;
+-    currentOffset += box.size > 0 ? box.size : 8;
++    currentOffset += box.size;
+   }
+ }
+ 

@@ -1,0 +1,48 @@
+// lib/types/utils.ts
+var decoder = new TextDecoder();
+var toUTF8String = (input, start = 0, end = input.length) => decoder.decode(input.slice(start, end));
+var toHexString = (input, start = 0, end = input.length) => input.slice(start, end).reduce((memo, i) => memo + `0${i.toString(16)}`.slice(-2), "");
+var getView = (input, offset) => new DataView(input.buffer, input.byteOffset + offset);
+var readInt16LE = (input, offset = 0) => getView(input, offset).getInt16(0, true);
+var readUInt16BE = (input, offset = 0) => getView(input, offset).getUint16(0, false);
+var readUInt16LE = (input, offset = 0) => getView(input, offset).getUint16(0, true);
+var readUInt24LE = (input, offset = 0) => {
+  const view = getView(input, offset);
+  return view.getUint16(0, true) + (view.getUint8(2) << 16);
+};
+var readInt32LE = (input, offset = 0) => getView(input, offset).getInt32(0, true);
+var readUInt32BE = (input, offset = 0) => getView(input, offset).getUint32(0, false);
+var readUInt32LE = (input, offset = 0) => getView(input, offset).getUint32(0, true);
+var readUInt64 = (input, offset, isBigEndian) => getView(input, offset).getBigUint64(0, !isBigEndian);
+var methods = {
+  readUInt16BE,
+  readUInt16LE,
+  readUInt32BE,
+  readUInt32LE
+};
+function readUInt(input, bits, offset = 0, isBigEndian = false) {
+  const endian = isBigEndian ? "BE" : "LE";
+  const methodName = `readUInt${bits}${endian}`;
+  return methods[methodName](input, offset);
+}
+function readBox(input, offset) {
+  // A matched box must contain its complete header and advance the cursor.
+  if (offset < 0 || input.length - offset < 8) return;
+  const boxSize = readUInt32BE(input, offset);
+  if (boxSize < 8 || input.length - offset < boxSize) return;
+  return {
+    name: toUTF8String(input, 4 + offset, 8 + offset),
+    offset,
+    size: boxSize
+  };
+}
+function findBox(input, boxName, currentOffset, endOffset = input.length) {
+  while (currentOffset < endOffset) {
+    const box = readBox(input, currentOffset);
+    if (!box || box.size > endOffset - currentOffset) break;
+    if (box.name === boxName) return box;
+    currentOffset += box.size;
+  }
+}
+
+export { findBox, readInt16LE, readInt32LE, readUInt, readUInt16BE, readUInt16LE, readUInt24LE, readUInt32BE, readUInt32LE, readUInt64, toHexString, toUTF8String };

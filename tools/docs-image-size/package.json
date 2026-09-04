@@ -1,0 +1,79 @@
+{
+  "description": "get dimensions of any image file",
+  "main": "./lib/index.cjs",
+  "module": "./lib/index.mjs",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./lib/index.d.ts",
+        "default": "./lib/index.mjs"
+      },
+      "require": {
+        "types": "./lib/index.d.ts",
+        "default": "./lib/index.cjs"
+      }
+    },
+    "./fromFile": {
+      "import": {
+        "types": "./lib/fromFile.d.ts",
+        "default": "./lib/fromFile.mjs"
+      },
+      "require": {
+        "types": "./lib/fromFile.d.ts",
+        "default": "./lib/fromFile.cjs"
+      }
+    },
+    "./types/*": {
+      "import": {
+        "types": "./lib/types/*.d.ts",
+        "default": "./lib/types/*.mjs"
+      },
+      "require": {
+        "types": "./lib/types/*.d.ts",
+        "default": "./lib/types/*.cjs"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=16.x"
+  },
+  "keywords": [
+    "image",
+    "size",
+    "dimensions",
+    "resolution",
+    "width",
+    "height",
+    "avif",
+    "bmp",
+    "cur",
+    "gif",
+    "heic",
+    "heif",
+    "icns",
+    "ico",
+    "jpeg",
+    "jxl",
+    "png",
+    "psd",
+    "svg",
+    "tga",
+    "tiff",
+    "webp"
+  ],
+  "author": "netroy <aditya@netroy.in> (http://netroy.in/)",
+  "license": "MIT",
+  "name": "@membrane/image-size",
+  "version": "2.0.2-patch.0",
+  "private": true,
+  "files": [
+    "lib",
+    "LICENSE",
+    "UPSTREAM.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/parser.test.cjs"
+  }
+}
