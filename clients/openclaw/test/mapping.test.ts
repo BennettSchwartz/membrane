@@ -76,7 +76,8 @@ describe("buildTags", () => {
     expect(tags).toContain("hook:after_tool_call");
     expect(tags).toContain("agent:main");
     expect(tags).toContain("tool:exec");
-    expect(tags).toContain("session:agent:main:main");
+    expect(tags).not.toContain("session:agent:main:main");
+    expect(tags.some((tag) => tag.startsWith("session_hash:"))).toBe(false);
   });
 
   it("omits missing fields", () => {

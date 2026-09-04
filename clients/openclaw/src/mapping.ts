@@ -47,6 +47,5 @@ export function buildTags(event: OpenClawEvent): string[] {
   const tags: string[] = [`hook:${event.hook}`];
   if (event.agentId) tags.push(`agent:${event.agentId}`);
   if (event.toolName) tags.push(`tool:${event.toolName}`);
-  if (event.sessionKey) tags.push(`session:${event.sessionKey}`);
   return tags;
 }

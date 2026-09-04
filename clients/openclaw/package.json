@@ -1,7 +1,7 @@
 {
   "name": "@vainplex/openclaw-membrane",
   "version": "0.4.0",
-  "description": "Membrane bridge plugin for OpenClaw — episodic memory ingestion, search, and auto-context injection",
+  "description": "Membrane bridge plugin for OpenClaw — graph-aware memory ingestion, search, and auto-context injection",
   "license": "MIT",
   "author": "Vainplex <dev@vainplex.de>",
   "repository": {
@@ -25,7 +25,8 @@
   "files": [
     "dist",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "prebuild": "npm --prefix ../typescript run build",
@@ -33,14 +34,16 @@
     "pretest": "npm --prefix ../typescript run build",
     "test": "vitest run"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@bennettschwartz/membrane": "^0.2.0"
   },
   "devDependencies": {
+    "@bennettschwartz/membrane": "file:../typescript",
+    "@types/node": "^22.10.2",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   }
 }
