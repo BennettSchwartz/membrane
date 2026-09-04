@@ -6,13 +6,35 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  availability:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.credentials.outputs.enabled }}
+    steps:
+      - name: Check live evaluation credentials
+        id: credentials
+        env:
+          HAS_EMBEDDING_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY != '' }}
+          MANUAL_REQUEST: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$HAS_EMBEDDING_KEY" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$MANUAL_REQUEST" = "true" ]; then
+            echo "::error::MEMBRANE_EMBEDDING_API_KEY is required for manually requested live evaluations."
+            exit 1
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Live embedding evaluation skipped: configure MEMBRANE_EMBEDDING_API_KEY to enable it. Local and PostgreSQL integration checks run in CI."
+          fi
+
   eval:
+    needs: availability
+    if: needs.availability.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     env:
-      MEMBRANE_EMBEDDING_API_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY }}
       MEMBRANE_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
 
     services:
@@ -32,12 +54,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.24'
           cache: true
@@ -61,36 +84,58 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Run retrieval eval
-        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
+      - name: Require embedding API key
         run: |
-          go run ./cmd/membrane-eval \
-            -dataset tests/data/recall_dataset.jsonl \
-            -postgres-dsn "postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable" \
-            -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
-            -embedding-model "openai/text-embedding-3-small" \
-            -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
-            -embedding-dimensions 1536 \
-            | tee eval-retrieval.txt
+          if [ -z "$MEMBRANE_EMBEDDING_API_KEY" ]; then
+            echo "::error::MEMBRANE_EMBEDDING_API_KEY secret is required for Postgres + pgvector evals."
+            exit 1
+          fi
+        env:
+          MEMBRANE_EMBEDDING_API_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY }}
+
+      - name: Run retrieval eval
+        run: |
+          make eval-vector | tee eval-retrieval.txt
+        env:
+          MEMBRANE_EMBEDDING_API_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY }}
 
       - name: Reset database for lifecycle eval
-        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
         run: |
           PGPASSWORD=membrane psql -h 127.0.0.1 -U membrane -d membrane_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE EXTENSION vector; GRANT ALL ON SCHEMA public TO membrane;"
 
       - name: Run lifecycle eval
-        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
         run: |
-          go run ./cmd/membrane-eval-lifecycle \
-            -postgres-dsn "postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable" \
-            -embedding-endpoint "https://openrouter.ai/api/v1/embeddings" \
-            -embedding-model "openai/text-embedding-3-small" \
-            -embedding-api-key "$MEMBRANE_EMBEDDING_API_KEY" \
-            -embedding-dimensions 1536 \
-            | tee eval-lifecycle.txt
+          make eval-lifecycle | tee eval-lifecycle.txt
+        env:
+          MEMBRANE_EMBEDDING_API_KEY: ${{ secrets.MEMBRANE_EMBEDDING_API_KEY }}
+
+      - name: Upload eval outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: eval-results
+          path: |
+            eval-retrieval.txt
+            eval-lifecycle.txt
+          if-no-files-found: error
+
+  update-readme:
+    needs: eval
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Download eval outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: eval-results
 
       - name: Update README with eval results
-        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
         run: |
           DATE=$(date +%Y-%m-%d)
 
@@ -202,7 +247,6 @@ jobs:
             ' README.md > README.md.tmp && mv README.md.tmp README.md
 
       - name: Commit and push README if changed
-        if: ${{ env.MEMBRANE_EMBEDDING_API_KEY != '' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -12,10 +12,11 @@ Thank you for your interest in contributing to Membrane!
 
 ### Prerequisites
 
-- Go 1.22 or later
+- Go 1.24 or later
 - Make
 - Protocol Buffers compiler (`protoc` >= 3.20) for gRPC work
-- Node.js 20+ (for TypeScript client development)
+- Node.js 20.19+ (for TypeScript client development)
+- Node.js 22+ (for documentation builds and deployment tooling)
 - Python 3.10+ (for Python client development)
 
 ### Building
@@ -23,15 +24,20 @@ Thank you for your interest in contributing to Membrane!
 ```bash
 make build    # Build the daemon binary
 make test     # Run all tests
+make verify   # Run repo-wide pre-commit checks
 make lint     # Run linters (go vet + staticcheck)
 make fmt      # Format code
+make check-postgres-only-selftest # Exercise the Postgres-only guard fixtures
+make check-postgres-only          # Verify no SQLite runtime storage artifacts remain
 ```
 
 ### Python Client
 
 ```bash
 python -m pip install -e "clients/python[dev]"
-python -m pytest clients/python/tests/
+make check-python-proto-sync
+make check-python-package
+make py-test
 ```
 
 ### TypeScript Client
@@ -49,17 +55,18 @@ make ts-build
 - Follow standard Go conventions and idioms
 - Run `make fmt` before committing
 - Run `make lint` to catch common issues
+- Keep runtime storage Postgres-only; `make verify` runs the Postgres-only guard and its self-test, including checks for SQLite imports, driver packages, and file-backed database examples
 - Write table-driven tests where appropriate
 
 ## Testing
 
 - All new code must include tests
-- Run `make test` to verify all tests pass
+- Run `make test` for Go changes and `make verify` before broad or release-facing changes
 - Aim for meaningful coverage of business logic
 
 ## Pull Request Process
 
-1. Ensure your code passes `make lint` and `make test`
+1. Ensure your code passes `make lint` and `make verify`
 2. Update documentation if your changes affect public APIs
 3. Write a clear PR description explaining what changed and why
 4. Keep PRs focused - one feature or fix per PR
@@ -87,7 +94,7 @@ To release a new version of the TypeScript SDK to npm:
 ### Prerequisites
 
 - You must have `NPM_TOKEN` set as a repository secret in GitHub
-- The token must have publish permissions for the `@membrane` npm scope
+- The token must have publish permissions for the `@bennettschwartz` npm scope
 
 ### Version and Tag Requirements
 
@@ -106,10 +113,11 @@ release workflow. TypeScript npm publishes are opt-in and only run for
 1. ✅ Ensure all tests pass (`npm test`)
 2. ✅ Update `CHANGELOG.md` if it exists
 3. ✅ Bump version in `clients/typescript/package.json`
-4. ✅ Commit version changes
-5. ✅ Create git tag: `git tag ts-v1.2.3`
-6. ✅ Push tag: `git push origin ts-v1.2.3`
-7. ✅ GitHub Actions will automatically publish to npm
+4. ✅ Inspect package contents (`npm pack --dry-run --json`)
+5. ✅ Commit version changes
+6. ✅ Create git tag: `git tag ts-v1.2.3`
+7. ✅ Push tag: `git push origin ts-v1.2.3`
+8. ✅ GitHub Actions will automatically publish to npm
 
 ## Commit Messages
 

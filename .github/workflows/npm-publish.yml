@@ -7,26 +7,27 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish-typescript-client:
+  build-typescript-client:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '20'
+          node-version: '20.19'
           registry-url: 'https://registry.npmjs.org'
           cache: npm
           cache-dependency-path: clients/typescript/package-lock.json
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.24'
           cache: true
@@ -61,8 +62,41 @@ jobs:
         run: npm run build
         working-directory: clients/typescript
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance
+      - name: Inspect package contents
+        run: npm pack --dry-run --json
         working-directory: clients/typescript
+
+      - name: Pack package artifact
+        run: npm pack --json
+        working-directory: clients/typescript
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: typescript-client-package
+          path: clients/typescript/*.tgz
+          if-no-files-found: error
+
+  publish-typescript-client:
+    needs: build-typescript-client
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20.19'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: typescript-client-package
+
+      - name: Publish to npm
+        run: npm publish ./*.tgz --access public --provenance --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

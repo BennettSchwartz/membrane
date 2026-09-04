@@ -59,7 +59,7 @@ build/
 .wrangler/
 node_modules/
 
-# SQLite databases (for development)
+# Local database files
 *.db
 *.db-journal
 *.db-shm

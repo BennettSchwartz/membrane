@@ -15,16 +15,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.24'
           cache: true
 
       - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@latest
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       - name: Lint GitHub workflows
         run: |
@@ -36,21 +36,27 @@ jobs:
       go_core: ${{ steps.filter.outputs.go_core }}
       python_client: ${{ steps.filter.outputs.python_client }}
       typescript_client: ${{ steps.filter.outputs.typescript_client }}
+      openclaw_client: ${{ steps.filter.outputs.openclaw_client }}
+      agent_harness: ${{ steps.filter.outputs.agent_harness }}
+      docs_site: ${{ steps.filter.outputs.docs_site }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Detect changed paths
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
         with:
           filters: |
             go_core:
               - 'api/**'
               - 'cmd/**'
+              - 'internal/**'
               - 'pkg/**'
+              - 'scripts/**'
               - 'tests/**'
+              - 'tools/eval/**'
               - 'go.mod'
               - 'go.sum'
               - 'Makefile'
@@ -63,6 +69,29 @@ jobs:
               - 'clients/python/**'
               - 'api/proto/membrane/v1/membrane.proto'
               - '.github/workflows/ci.yml'
+            openclaw_client:
+              - 'clients/openclaw/**'
+              - 'clients/typescript/**'
+              - 'api/proto/membrane/v1/membrane.proto'
+              - '.github/workflows/ci.yml'
+            agent_harness:
+              - 'examples/agent-harness/**'
+              - 'clients/typescript/**'
+              - 'api/proto/membrane/v1/membrane.proto'
+              - '.github/workflows/ci.yml'
+            docs_site:
+              - 'docs/**'
+              - 'tools/docs-image-size/**'
+              - 'src/**'
+              - 'static/**'
+              - 'docusaurus.config.js'
+              - 'sidebars.js'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/docs-deploy.yml'
 
   build-and-test:
     needs: detect-changes
@@ -87,19 +116,27 @@ jobs:
         go-version: ['1.24', '1.25', '1.26']
     env:
       TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
+      MEMBRANE_RUNTIME_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_runtime_test?sslmode=disable
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
 
       - name: Download dependencies
         run: go mod download
+
+      - name: Install protobuf generators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.0
 
       - name: Wait for Postgres
         run: |
@@ -112,6 +149,11 @@ jobs:
           done
           echo "Postgres did not become ready in time" >&2
           exit 1
+
+      - name: Create runtime integration database
+        run: |
+          PGPASSWORD=membrane psql -h 127.0.0.1 -U membrane -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE membrane_runtime_test OWNER membrane;"
 
       - name: Check formatting
         run: |
@@ -126,11 +168,30 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Verify Go proto sync
+        run: |
+          ./scripts/check-go-proto-sync_test.sh
+          make check-go-proto-sync
+
+      - name: Test Postgres-only guard
+        run: make check-postgres-only-selftest
+
+      - name: Verify Postgres-only runtime storage
+        run: make check-postgres-only
+
+      - name: Verify Postgres-only eval script
+        run: make eval-script-test
+
       - name: Build
         run: go build ./...
 
       - name: Run tests with coverage
         run: go test -v -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Run Postgres runtime integration tests
+        env:
+          MEMBRANE_TEST_POSTGRES_DSN: ${{ env.MEMBRANE_RUNTIME_TEST_POSTGRES_DSN }}
+        run: go test -v -race -count=1 -p 1 ./api/grpc ./cmd/membrane-eval ./cmd/membrane-eval-lifecycle ./tests
 
       - name: Vet
         run: go vet ./...
@@ -138,33 +199,61 @@ jobs:
       - name: Install and run staticcheck
         if: matrix.go-version == '1.26'
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           staticcheck ./...
 
   typescript-client:
     needs: detect-changes
     if: needs.detect-changes.outputs.typescript_client == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: membrane_test
+          POSTGRES_USER: membrane
+          POSTGRES_PASSWORD: membrane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U membrane -d membrane_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MEMBRANE_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '20'
+          node-version: '20.19'
           cache: npm
           cache-dependency-path: clients/typescript/package-lock.json
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.24'
           cache: true
 
       - name: Download Go dependencies
         run: go mod download
+
+      - name: Wait for Postgres
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres (${attempt}/30)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
 
       - name: Install TypeScript client dependencies
         run: npm ci
@@ -182,22 +271,202 @@ jobs:
         run: npm test
         working-directory: clients/typescript
 
-  python-client:
+  openclaw-client:
     needs: detect-changes
-    if: needs.detect-changes.outputs.python_client == 'true'
+    if: needs.detect-changes.outputs.openclaw_client == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20.19'
+
+      - name: Install TypeScript client dependencies
+        run: npm ci
+        working-directory: clients/typescript
+
+      - name: Install OpenClaw plugin dependencies
+        run: npm install --package-lock=false
+        working-directory: clients/openclaw
+
+      - name: Test OpenClaw plugin
+        run: npm test
+        working-directory: clients/openclaw
+
+      - name: Build OpenClaw plugin
+        run: npm run build
+        working-directory: clients/openclaw
+
+      - name: Inspect OpenClaw package contents
+        run: npm pack --dry-run --json
+        working-directory: clients/openclaw
+
+  agent-harness:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.agent_harness == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: membrane_test
+          POSTGRES_USER: membrane
+          POSTGRES_PASSWORD: membrane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U membrane -d membrane_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MEMBRANE_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20.19'
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Wait for Postgres
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres (${attempt}/30)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
+
+      - name: Install TypeScript client dependencies
+        run: npm ci
+        working-directory: clients/typescript
+
+      - name: Build TypeScript client
+        run: npm run build
+        working-directory: clients/typescript
+
+      - name: Install agent harness dependencies
+        run: npm ci
+        working-directory: examples/agent-harness
+
+      - name: Typecheck agent harness
+        run: npm run typecheck
+        working-directory: examples/agent-harness
+
+      - name: Test agent harness tools
+        run: npm test
+        working-directory: examples/agent-harness
+
+      - name: Test deterministic agent harness
+        run: npm run test:deterministic
+        working-directory: examples/agent-harness
+
+  python-client:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python_client == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: membrane_test
+          POSTGRES_USER: membrane
+          POSTGRES_PASSWORD: membrane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U membrane -d membrane_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MEMBRANE_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Wait for Postgres
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U membrane -d membrane_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres (${attempt}/30)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
 
       - name: Install Python client dependencies
         run: python -m pip install -e "clients/python[dev]"
 
+      - name: Verify Python proto sync
+        run: python clients/python/scripts/check_proto_sync.py
+
+      - name: Verify Python package contents
+        run: python clients/python/scripts/check_package.py
+
       - name: Test Python client
         run: python -m pytest clients/python/tests/
+
+  docs-site:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.docs_site == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install docs dependencies
+        run: npm ci
+
+      - name: Audit docs dependencies
+        run: npm audit --audit-level=moderate
+
+      - name: Test docs image parsers
+        run: npm run test:docs-image-size
+
+      - name: Build docs
+        run: npm run docs:build
