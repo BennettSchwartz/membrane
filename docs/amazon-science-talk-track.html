@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Membrane Amazon Science Talk Track</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5b6673;
+      --line: #d7dde4;
+      --paper: #fbfcfd;
+      --panel: #ffffff;
+      --blue: #1166cc;
+      --blue-soft: #e9f2ff;
+      --green: #138a5e;
+      --green-soft: #e9f8f1;
+      --amber: #a86100;
+      --amber-soft: #fff3df;
+      --rose: #b4234a;
+      --rose-soft: #fff0f4;
+      --violet: #6f45c8;
+      --violet-soft: #f2edff;
+      --shadow: 0 18px 50px rgba(24, 38, 56, 0.10);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 24px 18px;
+      border-right: 1px solid var(--line);
+      background: #f5f8fb;
+      overflow: auto;
+    }
+
+    aside h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    aside p {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: #233041;
+      font-size: 14px;
+    }
+
+    nav a:hover {
+      background: #e7edf4;
+      text-decoration: none;
+    }
+
+    main {
+      padding: 40px 7vw 72px;
+    }
+
+    .hero {
+      max-width: 1120px;
+      padding: 34px 34px 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero h1 {
+      margin: 0 0 12px;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 1.03;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 850px;
+      margin: 0;
+      color: #354153;
+      font-size: 19px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f7fafc;
+      color: #354153;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    section {
+      max-width: 1120px;
+      margin-top: 26px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(24, 38, 56, 0.055);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 8px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 5px;
+      background: #eef2f6;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .time {
+      display: inline-block;
+      margin-bottom: 10px;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .talk {
+      border-left: 4px solid var(--blue);
+      padding: 12px 14px;
+      background: var(--blue-soft);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+
+    .technical {
+      border-left: 4px solid var(--green);
+      padding: 12px 14px;
+      background: var(--green-soft);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--amber);
+      padding: 12px 14px;
+      background: var(--amber-soft);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+
+    .research {
+      border-left: 4px solid var(--violet);
+      padding: 12px 14px;
+      background: var(--violet-soft);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+
+    .bridge {
+      margin-top: 16px;
+      padding: 10px 12px;
+      border: 1px dashed #a9b6c5;
+      border-radius: var(--radius);
+      color: #3d4856;
+      background: #fafcff;
+      font-size: 15px;
+    }
+
+    .bridge strong {
+      color: #1d2a3a;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .card {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .card p {
+      margin: 0;
+      color: #465365;
+      font-size: 14px;
+    }
+
+    .card p + p {
+      margin-top: 9px;
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 10px;
+      margin: 18px 0;
+    }
+
+    .flow-step {
+      position: relative;
+      flex: 1 1 230px;
+      min-height: 128px;
+      padding: 14px 16px;
+      border: 1px solid #c8d3df;
+      border-radius: var(--radius);
+      background: #f8fbff;
+    }
+
+    .flow-step::after {
+      content: "->";
+      position: absolute;
+      right: -19px;
+      top: 31px;
+      color: var(--blue);
+      font-weight: 850;
+    }
+
+    .flow-step:last-child::after {
+      content: "";
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 5px;
+      color: #1d2a3a;
+    }
+
+    .flow-step span {
+      color: #4e5c6d;
+      font-size: 13px;
+    }
+
+    .flow-step em {
+      display: block;
+      margin-top: 8px;
+      color: #253244;
+      font-size: 13px;
+      font-style: normal;
+      font-weight: 720;
+    }
+
+    .record {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .field {
+      padding: 12px 13px;
+      border: 1px solid #d8e1ea;
+      border-radius: 6px;
+      background: #fbfdff;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .field small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .field p {
+      margin: 8px 0 0;
+      color: #455265;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.45;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .contrast {
+      padding: 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .contrast.bad {
+      border-color: #f2b8c8;
+      background: var(--rose-soft);
+    }
+
+    .contrast.good {
+      border-color: #b5dfce;
+      background: var(--green-soft);
+    }
+
+    .contrast h3 {
+      margin-top: 0;
+    }
+
+    .slide-cue {
+      margin-top: 16px;
+      padding: 11px 12px;
+      border-radius: var(--radius);
+      background: #f1f4f8;
+      color: #394557;
+      font-size: 14px;
+    }
+
+    .qa {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .qa .card {
+      border-left: 4px solid var(--blue);
+    }
+
+    .mini-list {
+      margin: 8px 0 0 18px;
+      padding: 0;
+    }
+
+    .mini-list li {
+      margin: 5px 0;
+    }
+
+    @media (max-width: 940px) {
+      .shell {
+        display: block;
+      }
+
+      aside {
+        position: relative;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+
+      main {
+        padding: 24px 18px 54px;
+      }
+
+      .grid,
+      .two-col,
+      .record {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-step::after {
+        display: none;
+      }
+    }
+
+    @media print {
+      aside {
+        display: none;
+      }
+
+      .shell {
+        display: block;
+      }
+
+      main {
+        padding: 0;
+      }
+
+      section,
+      .hero {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h2>Membrane Talk Track</h2>
+      <p>30-minute technical presenter guide for Amazon Science. Not a verbatim script.</p>
+      <nav>
+        <a href="#open">0. Opening</a>
+        <a href="#problem">1. Problem</a>
+        <a href="#thesis">2. Thesis</a>
+        <a href="#memory-model">3. Memory Model</a>
+        <a href="#architecture">4. Architecture</a>
+        <a href="#capture">5. CaptureMemory</a>
+        <a href="#retrieve">6. RetrieveGraph</a>
+        <a href="#revision">7. Revision + Decay</a>
+        <a href="#competence">8. Competence</a>
+        <a href="#plans">9. Plan Graphs</a>
+        <a href="#trust">10. Trust</a>
+        <a href="#eval">11. Evaluation</a>
+        <a href="#close">12. Close + Q&A</a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="hero" id="open">
+        <h1>Membrane: Typed, Revisable Memory for Long-Lived Agents</h1>
+        <p>
+          Use this as a guided talk track. The goal is to sound technical and precise without reading a script:
+          explain why flat agent memory is insufficient, then show how Membrane models memory as structured,
+          graph-connected, trust-aware state with lifecycle semantics.
+        </p>
+        <div class="meta">
+          <span class="pill">Audience: Amazon Science</span>
+          <span class="pill">Length: 30 minutes</span>
+          <span class="pill">Tone: research systems, not product pitch</span>
+          <span class="pill">Primary APIs: CaptureMemory + RetrieveGraph</span>
+        </div>
+      </div>
+
+      <section id="problem">
+        <span class="time">0:00-3:00</span>
+        <h2>1. Open With The Failure Mode</h2>
+        <div class="talk">
+          <p>
+            Start by saying that most LLM agent memory is still closer to retrieval than learning.
+            A typical system stores chat logs, tool outputs, summaries, or notes, embeds them, and retrieves
+            similar text later. That is useful, but it collapses very different kinds of knowledge into the
+            same object: a raw error log, a durable fact, a temporary task state, and a reusable procedure
+            all become "chunks."
+          </p>
+          <p>
+            The result is that the agent can remember something similar happened, but it has trouble knowing
+            what kind of thing it remembered, whether it is still true, whether it is safe to reveal, what
+            evidence supports it, and whether it should be replaced by newer evidence.
+          </p>
+        </div>
+
+        <div class="two-col">
+          <div class="contrast bad">
+            <h3>Flat Memory / RAG Framing</h3>
+            <p>
+              "Find text similar to the current query." The system mostly optimizes recall over stored
+              snippets. Lifecycle, contradiction, trust, and procedural reuse are usually bolted on elsewhere.
+            </p>
+          </div>
+          <div class="contrast good">
+            <h3>Membrane Framing</h3>
+            <p>
+              "Manage memory as typed agent state." The system stores evidence, facts, active state,
+              procedures, entities, and plans with different schemas, policies, and revision rules.
+            </p>
+          </div>
+        </div>
+
+        <div class="technical">
+          <p>
+            Technical detail to add: in Membrane, the unit of memory is not a text chunk. It is a
+            <code>MemoryRecord</code> with a typed payload, sensitivity, confidence, salience, scope, tags,
+            provenance, graph relations, lifecycle metadata, and an audit log. That record envelope is what
+            enables later policy decisions.
+          </p>
+        </div>
+
+        <div class="bridge">
+          <strong>Bridge to next section:</strong> "So the project is basically asking: if agents are going
+          to live for days, weeks, or months, what should their memory substrate look like?"
+        </div>
+      </section>
+
+      <section id="thesis">
+        <span class="time">3:00-5:00</span>
+        <h2>2. State The Thesis Clearly</h2>
+        <div class="talk">
+          <p>
+            The thesis is that agent memory needs lifecycle semantics. Memory should not just be retrieved;
+            it should be captured, classified, revised, reinforced, decayed, redacted, and eventually pruned
+            when it stops being useful.
+          </p>
+          <p>
+            Say that Membrane separates <strong>remembering</strong> from <strong>learning</strong>.
+            Remembering is capture: preserve evidence from an event, observation, tool call, or task state.
+            Learning is consolidation and revision: decide which patterns become durable facts, procedures,
+            or reusable plans, and update them when outcomes change.
+          </p>
+        </div>
+
+        <div class="flow">
+          <div class="flow-step">
+            <strong>Raw experience</strong>
+            <span>The agent observes user requests, tool calls, errors, code changes, outputs, and task outcomes.</span>
+            <em>Say: this is evidence, not yet durable knowledge.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Typed capture</strong>
+            <span><code>CaptureMemory</code> turns that evidence into typed records with source, scope, sensitivity, salience, provenance, and graph links.</span>
+            <em>Say: capture preserves enough structure for later policy decisions.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Consolidation</strong>
+            <span>Background jobs scan episodes and promote repeated or useful patterns into semantic facts, competence records, and plan graphs.</span>
+            <em>Say: this is where recall starts becoming learning.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Retrieval</strong>
+            <span><code>RetrieveGraph</code> returns ranked roots plus a bounded neighborhood of connected entities, facts, episodes, procedures, and plans.</span>
+            <em>Say: the output is graph-shaped context, not top-k chunks.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Revision</strong>
+            <span>Outcomes can reinforce or penalize records; contradictory evidence can supersede, fork, contest, merge, or retract them.</span>
+            <em>Say: stale memory is handled explicitly, not left as contradictory text.</em>
+          </div>
+        </div>
+
+        <div class="research">
+          <p>
+            Research angle: this converts "memory" from a prompt engineering primitive into a systems problem.
+            It introduces testable questions about schemas, promotion criteria, contradiction handling,
+            sensitivity enforcement, forgetting, and long-horizon task improvement.
+          </p>
+        </div>
+      </section>
+
+      <section id="memory-model">
+        <span class="time">5:00-10:00</span>
+        <h2>3. Explain The Six Memory Types</h2>
+        <p>
+          Do not present the types as a taxonomy slide and move on. The important point is that each memory
+          type answers a different operational question and therefore deserves different lifecycle rules.
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3><code>episodic</code></h3>
+            <p>
+              Raw evidence: tool calls, errors, agent turns, observations, incidents, and outcomes.
+              It answers "what happened?" It should be high fidelity but aggressively decayed.
+            </p>
+            <p>
+              Technical talking point: episodic records are the evidence substrate. You do not edit an
+              episode to make it semantically correct later; instead, higher-level semantic or competence
+              records are revised while the original episode remains provenance.
+            </p>
+          </div>
+          <div class="card">
+            <h3><code>working</code></h3>
+            <p>
+              Resumable state for an active task: current goal, constraints, next actions, open questions,
+              and context summary. It answers "what are we doing right now?"
+            </p>
+            <p>
+              Technical talking point: this is how an agent can resume without replaying the entire transcript.
+              It stores compact task state with lifecycle rules, so it should disappear or decay when the task
+              is no longer active.
+            </p>
+          </div>
+          <div class="card">
+            <h3><code>entity</code></h3>
+            <p>
+              Canonical named things: services, files, repos, projects, people, APIs, databases, tools,
+              incidents, and concepts. Entities form the graph spine.
+            </p>
+            <p>
+              Technical talking point: entity records let retrieval connect memories around real objects.
+              A service name, repo path, API identifier, or alias can seed graph retrieval even when the exact
+              words in the old episode differ from the current task descriptor.
+            </p>
+          </div>
+          <div class="card">
+            <h3><code>semantic</code></h3>
+            <p>
+              Durable but revisable facts and preferences, usually subject-predicate-object style:
+              "auth-service uses Postgres" or "user prefers Go for backend services."
+            </p>
+            <p>
+              Technical talking point: semantic memory is not a blob summary. The structure makes contradiction
+              handling possible: a new observation can supersede, contest, or fork an older fact instead of
+              creating another untyped paragraph in the vector store.
+            </p>
+          </div>
+          <div class="card">
+            <h3><code>competence</code></h3>
+            <p>
+              Procedural knowledge: triggers, recipes, required tools, failure modes, fallbacks, and
+              performance stats. It answers "how do I do this effectively?"
+            </p>
+            <p>
+              Technical talking point: competence records are the system's hook for procedural learning.
+              They can be scored by applicability, observed success rate, and recency, which gives you a way
+              to ask whether repeated experience actually improves agent behavior.
+            </p>
+          </div>
+          <div class="card">
+            <h3><code>plan_graph</code></h3>
+            <p>
+              Reusable action structures: nodes are operations, edges are dependencies. It answers
+              "what sequence or graph of actions solved this class of task?"
+            </p>
+            <p>
+              Technical talking point: a plan graph preserves topology, not just prose. That matters when a
+              solution has ordering constraints, data dependencies, or checks that should run only after
+              earlier steps succeed.
+            </p>
+          </div>
+        </div>
+
+        <h3>The record envelope is the real systems move</h3>
+        <p>
+          Every memory type shares a common envelope, and the payload changes by type. This gives you a
+          uniform substrate for retrieval and policy while preserving type-specific semantics.
+        </p>
+        <div class="record">
+          <div class="field">ID <small>stable record identity</small><p>Lets records participate in lineage, graph edges, audit entries, and direct lookup. Without stable IDs, revision becomes "replace text" instead of "preserve a history of state transitions."</p></div>
+          <div class="field">Type <small>episodic, working, entity, semantic, competence, plan_graph</small><p>Controls the payload schema and lifecycle expectations. This is the main difference from treating all memory as one embedding-ready paragraph.</p></div>
+          <div class="field">Sensitivity <small>public, low, medium, high, hyper</small><p>Used by retrieval to decide whether the caller receives the full record, only redacted metadata, or nothing. This makes access control part of memory itself.</p></div>
+          <div class="field">Confidence <small>how strongly the system believes or trusts the record</small><p>Useful for facts, extracted procedures, and selector decisions. You can explain it as epistemic strength separate from current usefulness.</p></div>
+          <div class="field">Salience <small>how useful the record is right now</small><p>Retrieval can rank by salience when embeddings are absent, and decay/reinforcement update it over time. Confidence says "is this believable"; salience says "should I surface it now."</p></div>
+          <div class="field">Scope <small>project, workspace, team, actor, or domain boundary</small><p>Prevents a memory from one project from leaking into another. Scoped records are only returned when the caller's trust context includes the scope.</p></div>
+          <div class="field">Provenance <small>the evidence chain behind the record</small><p>Stores where a fact or procedure came from: source actor, event, tool output, timestamp, or derived episode. This gives you auditability and lets revisions cite evidence.</p></div>
+          <div class="field">Relations <small>graph links between records</small><p>Edges such as <code>mentions_entity</code>, <code>derived_from</code>, <code>supersedes</code>, <code>supports</code>, or <code>contradicts</code> make retrieval graph-aware instead of only similarity-aware.</p></div>
+          <div class="field">Lifecycle <small>decay profile, pinned state, deletion policy</small><p>Defines how memory ages. Episodic records can decay quickly, while semantic, competence, entity, and plan graph records have longer lives unless penalized or superseded.</p></div>
+          <div class="field">Payload <small>the type-specific structured content</small><p>This is where the actual schema lives: episodic timelines, working-state summaries, semantic triples, competence recipes, entity aliases, or plan graph nodes and edges.</p></div>
+          <div class="field">Audit Log <small>append-only state transitions</small><p>Records creation, reinforcement, supersession, retraction, merge, contestation, and other operations. This matters for explaining why a memory changed.</p></div>
+          <div class="field">Interpretation <small>extracted entities, references, or relation candidates</small><p>Captures how the system understood the input before or during storage. This is where mention resolution and graph construction become visible rather than hidden in a prompt.</p></div>
+        </div>
+
+        <div class="bridge">
+          <strong>Bridge:</strong> "Once you have typed records, you can make ingestion and retrieval much
+          more precise than 'embed this note and hope similarity does the right thing.'"
+        </div>
+      </section>
+
+      <section id="architecture">
+        <span class="time">10:00-14:00</span>
+        <h2>4. Walk Through The Architecture</h2>
+        <p>
+          Use the architecture section to show that this is a concrete implementation, not only an idea.
+          Membrane can run as a long-lived daemon, <code>membraned</code>, over gRPC, or be embedded as a Go
+          library. The same core subsystems are wired under a unified API.
+        </p>
+
+        <div class="flow">
+          <div class="flow-step">
+            <strong>Ingestion Plane</strong>
+            <span>Receives <code>CaptureMemory</code> candidates: events, observations, tool outputs, working state, and agent turns.</span>
+            <em>Technical detail: it normalizes the request into one primary <code>MemoryRecord</code> and may create entity or semantic records plus edges.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Policy Plane</strong>
+            <span>Classifies memory type and assigns sensitivity, confidence, initial salience, scope behavior, and decay profile.</span>
+            <em>Technical detail: policy separates "what this memory is" from "how long it should live" and "who can retrieve it."</em>
+          </div>
+          <div class="flow-step">
+            <strong>Store</strong>
+            <span>Postgres + pgvector stores typed records, JSON payloads, graph edges, audit entries, salience updates, and embeddings.</span>
+            <em>Technical detail: the relational store is authoritative; pgvector is a ranking accelerator, not the source of truth.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Retrieval Plane</strong>
+            <span>Runs layered ranking, entity root seeding, trust filtering, and bounded graph expansion for the current task.</span>
+            <em>Technical detail: callers control <code>root_limit</code>, <code>node_limit</code>, <code>edge_limit</code>, and <code>max_hops</code>.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Background Jobs</strong>
+            <span>Decay reduces stale salience. Consolidation promotes useful episodes into semantic facts, competence, and plan graphs.</span>
+            <em>Technical detail: learning is asynchronous so raw capture stays cheap and durable promotion can be policy-driven.</em>
+          </div>
+        </div>
+
+        <div class="technical">
+          <p>
+            Important technical distinction: pgvector is retrieval infrastructure, not the memory model.
+            The authoritative state lives in Postgres tables: record metadata, lifecycle state, graph edges,
+            audit entries, revision history, salience, and confidence. Vector similarity is one ranking
+            signal layered on top of that structured state.
+          </p>
+          <p>
+            Embedding and LLM services improve ranking and extraction quality on top of the required
+            Postgres + pgvector runtime store. The base tier still supports typed records, graph edges,
+            trust gating, revision history, and decay using that same database substrate.
+          </p>
+        </div>
+
+        <div class="slide-cue">
+          Slide cue: show one horizontal diagram with CaptureMemory on the left, RetrieveGraph on the right,
+          and Postgres + pgvector as the shared substrate in the middle.
+        </div>
+      </section>
+
+      <section id="capture">
+        <span class="time">14:00-17:00</span>
+        <h2>5. Explain <code>CaptureMemory</code></h2>
+        <div class="talk">
+          <p>
+            Say that <code>CaptureMemory</code> is the main write API. It accepts arbitrary JSON-compatible
+            content plus metadata describing the source, source kind, scope, sensitivity, tags, summary,
+            context, and reason to remember. The system then stores a typed primary memory record and may
+            create linked entity or semantic records and graph edges.
+          </p>
+          <p>
+            The key phrasing: <strong>CaptureMemory is not just "save this text."</strong> It is "submit this
+            experience or observation as a candidate memory into a typed lifecycle system."
+          </p>
+        </div>
+
+        <div class="technical">
+          <p>
+            The request has a <code>source_kind</code> field. Use that to explain how one API covers several
+            shapes: <code>event</code>, <code>tool_output</code>, <code>observation</code>,
+            <code>working_state</code>, and <code>agent_turn</code>. A tool output usually becomes episodic
+            evidence. An observation with subject, predicate, and object often becomes semantic memory.
+            Working state captures the current thread state.
+          </p>
+          <p>
+            When interpretation is enabled, capture can resolve entities, create canonical entity records,
+            and materialize graph edges such as <code>mentions_entity</code>, <code>referenced_by</code>,
+            or <code>derived_from</code>. That means the graph is built at write time, not reconstructed
+            only from prompt text at read time.
+          </p>
+        </div>
+
+        <div class="bridge">
+          <strong>Bridge:</strong> "Once memory is captured this way, retrieval can return context structured
+          around entities, provenance, and graph neighborhoods instead of a bag of similar text."
+        </div>
+      </section>
+
+      <section id="retrieve">
+        <span class="time">17:00-21:00</span>
+        <h2>6. Explain <code>RetrieveGraph</code></h2>
+        <p>
+          This is the second headline API and probably the best place to sound technical. The point is that
+          retrieval returns ranked root memories plus a bounded graph neighborhood. So the output is not just
+          "top-k chunks"; it is task-relevant roots, connected records, edges, and selection diagnostics.
+        </p>
+
+        <div class="flow">
+          <div class="flow-step">
+            <strong>Task Descriptor</strong>
+            <span>The caller provides a natural-language task such as "debug auth-service latency after the canary."</span>
+            <em>Technical detail: this descriptor drives embedding search and entity-term lookup; explicit identifiers like repo paths can seed canonical entities.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Trust Context</strong>
+            <span>The request includes max sensitivity, authenticated flag, actor ID, and allowed scopes.</span>
+            <em>Technical detail: retrieval fails without trust context, so access control is not an optional wrapper around the API.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Root Ranking</strong>
+            <span>The system selects high-signal root records before expanding the graph.</span>
+            <em>Technical detail: ranking can combine salience, pgvector similarity, exact entity matches, relation boosts, and selector scores for competence or plans.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Graph Expansion</strong>
+            <span>Membrane walks bounded relation hops from roots to return nearby evidence, entities, facts, procedures, and plans.</span>
+            <em>Technical detail: relation weights and deterministic tie-breaks decide which edges survive when node or edge budgets are tight.</em>
+          </div>
+          <div class="flow-step">
+            <strong>Prompt Context</strong>
+            <span>The response contains nodes, edges, root IDs, selector metadata, and non-fatal diagnostics.</span>
+            <em>Technical detail: sensitive records may appear as redacted metadata or be omitted entirely, so the prompt projection is policy-filtered.</em>
+          </div>
+        </div>
+
+        <div class="technical">
+          <p>
+            Retrieval can use hybrid ranking when embeddings are configured: vector similarity plus salience.
+            Without embeddings, it falls back to salience and deterministic ordering. For competence and plan
+            graph candidates, a selector can score records using applicability, success rate, and recency.
+          </p>
+          <p>
+            Entity lookup is especially important. A task descriptor can seed retrieval through canonical
+            entity names, aliases, identifiers, and relation evidence. So "debug Project Orchid rollout" can
+            promote a project entity root, then expand to incidents, services, semantic facts, and procedures
+            connected to that entity.
+          </p>
+          <p>
+            The API also has budget controls: <code>root_limit</code>, <code>node_limit</code>,
+            <code>edge_limit</code>, and <code>max_hops</code>. That matters because agent context windows
+            are limited. Membrane can return a bounded graph neighborhood rather than dumping all memory.
+          </p>
+        </div>
+
+        <div class="slide-cue">
+          Slide cue: contrast a vertical list of chunks with a small graph: root incident -> auth-service
+          entity -> semantic database fact -> competence procedure -> prior successful plan.
+        </div>
+      </section>
+
+      <section id="revision">
+        <span class="time">21:00-23:30</span>
+        <h2>7. Revision, Decay, And Forgetting</h2>
+        <div class="talk">
+          <p>
+            This is where you distinguish Membrane from normal memory stores. In a long-lived agent, stale
+            memory is not a corner case; it is inevitable. User preferences change, services migrate,
+            procedures stop working, and facts become conditional.
+          </p>
+          <p>
+            Membrane gives the system explicit revision operations instead of relying on the model to reason
+            over contradictory text snippets. Records can be superseded, forked, retracted, merged, contested,
+            reinforced, or penalized.
+          </p>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3>Supersede</h3>
+            <p>
+              Use this when newer evidence should replace an older active record. The old record is not erased;
+              the new record links back with lineage so the system can explain what changed and why.
+            </p>
+            <p>
+              Example to say: "service A uses MySQL" can be superseded by "service A uses Postgres" after a migration, while the audit trail still shows the older belief.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Fork</h3>
+            <p>
+              Use this when the old and new records are both valid under different conditions. Forking prevents
+              the system from flattening contextual exceptions into contradiction.
+            </p>
+            <p>
+              Example to say: a user may prefer Go for backend services but Python for research notebooks. Both are true with different applicability conditions.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Contest</h3>
+            <p>
+              Use this when evidence conflicts but the system should not decide yet. Contestation makes uncertainty explicit instead of letting two incompatible snippets silently coexist.
+            </p>
+            <p>
+              Example to say: two incidents disagree about the root cause; the agent can mark the fact contested until a stronger source resolves it.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Retract</h3>
+            <p>
+              Use this when a memory should no longer influence retrieval or behavior, but the system still needs an audit trail that it once existed.
+            </p>
+            <p>
+              Example to say: a mistakenly captured credential-adjacent note should be removed from active retrieval without destroying the evidence of the retraction operation.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Merge</h3>
+            <p>
+              Use this when multiple records describe the same durable concept and should become one stronger, cleaner record with combined provenance.
+            </p>
+            <p>
+              Example to say: three repeated observations about an API dependency can merge into one semantic fact supported by multiple episodes.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Reinforce / Penalize</h3>
+            <p>
+              Use these after outcomes. If a retrieved memory helped, reinforcement raises its salience. If it led the agent down the wrong path, penalization lowers future retrieval likelihood.
+            </p>
+            <p>
+              Example to say: this is how the system gets feedback beyond similarity score. Usefulness becomes state, not just a transient model judgment.
+            </p>
+          </div>
+        </div>
+
+        <div class="technical">
+          <p>
+            Decay is driven through salience. Records with high salience are more likely to be retrieved.
+            Salience decays over time according to type-specific profiles, and useful records can be
+            reinforced. In the default model, episodic memory decays much faster than semantic, entity,
+            competence, or plan graph memory.
+          </p>
+        </div>
+      </section>
+
+      <section id="competence">
+        <span class="time">23:30-25:30</span>
+        <h2>8. Competence Learning: The Best Research Hook</h2>
+        <p>
+          Spend real time here. Competence memory is where the project starts to look like learning rather
+          than recall. A competence record stores a procedure: when it applies, what steps to take, what tools
+          it needs, known failure modes, fallback strategies, and performance statistics.
+        </p>
+
+        <div class="technical">
+          <p>
+            During consolidation, repeated successful episodes with tool graphs can be grouped by tool
+            signature. When a pattern appears enough times, the system can create or reinforce a competence
+            record. That record can later be retrieved for a new task and scored by applicability, observed
+            success rate, and recency.
+          </p>
+          <p>
+            A good example: if an agent repeatedly fixes a Go test failure by inspecting a package, running a
+            focused test, adjusting a mock, and then running the full suite, that tool pattern can become a
+            competence record. The next time a similar failure appears, the agent can retrieve the procedure
+            instead of rediscovering it from scratch.
+          </p>
+        </div>
+
+        <div class="research">
+          <p>
+            Research question to state out loud: "Can we measure whether procedural memory improves agent
+            performance over repeated tasks?" Possible metrics include fewer tool calls, lower latency, fewer
+            repeated failed steps, higher task success rate, and better calibration about when more context is
+            needed.
+          </p>
+        </div>
+      </section>
+
+      <section id="plans">
+        <span class="time">25:30-27:00</span>
+        <h2>9. Plan Graphs: Memory Meets Orchestration</h2>
+        <p>
+          Plan graphs are related to competence memory but more structural. A competence record can summarize
+          a procedure; a plan graph preserves the action topology. Nodes represent actions or tool invocations.
+          Edges represent data or control dependencies.
+        </p>
+
+        <div class="flow">
+          <div class="flow-step">
+            <strong>n1: inspect logs</strong>
+            <span>Identify the failure signature, affected service, request path, or error class.</span>
+            <em>Graph detail: this node produces diagnostic evidence used by later nodes.</em>
+          </div>
+          <div class="flow-step">
+            <strong>n2: run focused test</strong>
+            <span>Choose a narrow package, component, or scenario based on the suspected source from n1.</span>
+            <em>Graph detail: this has a control dependency on n1 and a data dependency on the suspected target.</em>
+          </div>
+          <div class="flow-step">
+            <strong>n3: patch mock/config</strong>
+            <span>Apply the smallest change suggested by the focused failure: mock expectation, migration, config, or edge-case handling.</span>
+            <em>Graph detail: this node consumes the test output and creates a candidate fix artifact.</em>
+          </div>
+          <div class="flow-step">
+            <strong>n4: run full suite</strong>
+            <span>Verify the candidate fix across the broader surface before reinforcing the plan.</span>
+            <em>Graph detail: success increments plan metrics; failure can penalize or fork the plan for a different condition.</em>
+          </div>
+        </div>
+
+        <div class="technical">
+          <p>
+            Plan graph payloads include a plan ID, version, intent, constraints, input and output schemas,
+            nodes, edges, and metrics such as execution count, failure rate, average latency, and last
+            execution time. Retrieval can select plans based on applicability and past performance.
+          </p>
+        </div>
+      </section>
+
+      <section id="trust">
+        <span class="time">27:00-28:30</span>
+        <h2>10. Trust-Aware Retrieval</h2>
+        <div class="talk">
+          <p>
+            Make the point that useful long-term memory is naturally sensitive. It may contain customer
+            context, credentials-adjacent operational details, private preferences, incident information, or
+            proprietary code facts. If memory is useful enough to guide an agent, it is also worth protecting.
+          </p>
+        </div>
+
+        <div class="technical">
+          <p>
+            Every record has a sensitivity level: <code>public</code>, <code>low</code>, <code>medium</code>,
+            <code>high</code>, or <code>hyper</code>. Every retrieval request must include a trust context:
+            max sensitivity, authentication state, actor ID, and scopes. Records at or below max sensitivity
+            return fully. Records exactly one level higher may return redacted metadata. Records further above
+            are withheld.
+          </p>
+          <p>
+            Scopes provide project or actor boundaries. A record scoped to <code>project-auth</code> should
+            only appear when the caller is allowed to see that scope. Unscoped records can remain globally
+            visible subject to sensitivity.
+          </p>
+        </div>
+      </section>
+
+      <section id="eval">
+        <span class="time">28:30-30:00</span>
+        <h2>11. Evaluation And Honest Maturity Framing</h2>
+        <p>
+          Be careful here. Do not claim the project has solved long-horizon agent evaluation. Say that the
+          repo has capability-oriented evals and regression checks, and that the next scientific step is a
+          longitudinal workload benchmark.
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3>Current eval surfaces</h3>
+            <p>
+              The repo has targeted tests for typed memory behavior, revision invariants, decay and reinforcement,
+              trust-gated retrieval, gRPC request validation, metrics snapshots, vector recall, competence selection,
+              and plan graph selection.
+            </p>
+            <p>
+              How to frame it: these are capability and regression evals. They prove specific invariants, not a universal claim that long-term agent learning is solved.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Operational checks</h3>
+            <p>
+              The project is broader than a Go package. The verification surface includes Go tests, TypeScript SDK
+              build and tests, Python package checks, OpenClaw bridge tests, docs build, protobuf sync checks, and
+              Postgres-only storage checks.
+            </p>
+            <p>
+              How to frame it: this is a reference implementation with real client surfaces, not only an RFC.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Next research eval</h3>
+            <p>
+              The stronger study would run repeated agent workloads against several baselines: flat transcript RAG,
+              vector-only memory, semantic-only memory, and the full Membrane stack.
+            </p>
+            <p>
+              How to frame it: measure whether typed memory reduces repeated mistakes, lowers tool calls, improves
+              task success, and handles drift better over long horizons.
+            </p>
+          </div>
+        </div>
+
+        <div class="research">
+          <p>
+            Suggested research metrics: task success rate over repeated tasks, number of tool calls, time to
+            resolution, repeated-error rate, procedure reuse frequency, contradiction rate, memory growth rate,
+            retrieval usefulness, and sensitive-memory leakage rate under different trust contexts.
+          </p>
+        </div>
+
+        <div class="warning">
+          <p>
+            If asked whether it is production-ready, say: "I would frame it as a serious reference
+            implementation under active hardening, not as a finished managed service. The interesting part for
+            this conversation is the architecture and the testable hypotheses: typed memory, revisability,
+            competence learning, plan reuse, and trust-aware retrieval."
+          </p>
+        </div>
+      </section>
+
+      <section id="close">
+        <span class="time">Close / Q&A</span>
+        <h2>12. Closing Claim And Likely Questions</h2>
+        <div class="talk">
+          <p>
+            Close with a simple claim: Membrane is interesting because it treats memory as structured agent
+            state with lifecycle semantics, not as more text to stuff into the prompt. Its contribution is not
+            "better embeddings"; it is the integration of storage, retrieval, learning, revision, decay, graph
+            structure, and trust policy into one substrate.
+          </p>
+        </div>
+
+        <div class="qa">
+          <div class="card">
+            <h3>Q: How is this different from RAG?</h3>
+            <p>
+              A: RAG retrieves similar text. Membrane manages typed memory records. It can still use vector
+              similarity, but vectors are only one ranking signal. The core model includes schemas,
+              provenance, revision operations, graph edges, trust gates, salience, and decay.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Q: Where does learning happen?</h3>
+            <p>
+              A: Learning happens through consolidation, reinforcement, and revision. Episodes are captured
+              as evidence; repeated or meaningful patterns can become semantic facts, competence records, or
+              plan graphs. Outcomes can reinforce or penalize those records over time.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Q: How do you avoid memory bloat?</h3>
+            <p>
+              A: Records have salience and decay profiles. Episodic and working memories decay faster.
+              Reinforcement keeps useful records alive; unused or penalized records become less likely to
+              retrieve and can be pruned depending on lifecycle policy.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Q: What would you evaluate next?</h3>
+            <p>
+              A: Longitudinal task performance. Run repeated agent workloads against flat RAG, vector-only
+              memory, semantic-only memory, and Membrane. Measure task success, latency, tool calls, repeated
+              mistakes, memory growth, and leakage under trust constraints.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Q: What is the hardest unsolved problem?</h3>
+            <p>
+              A: Promotion and contradiction policy. Deciding when raw evidence should become durable memory,
+              when a conflict is a true contradiction versus a contextual exception, and when old procedures
+              should be retired are the deep research problems.
+            </p>
+          </div>
+        </div>
+
+        <div class="slide-cue">
+          Final slide: "From recall to learning: typed memory, graph retrieval, revision, decay, competence,
+          and trust." Keep it simple and leave time for questions.
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
