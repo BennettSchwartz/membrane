@@ -8,9 +8,10 @@ levels, trust contexts, and related structures.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +111,7 @@ class ProvenanceKind(str, Enum):
 
 
 class EdgeKind(str, Enum):
-    """Type of edge in a plan graph (RFC 15A.10)."""
+    """Type of edge in a plan graph (RFC 15A.11)."""
 
     DATA = "data"
     CONTROL = "control"
@@ -215,6 +216,68 @@ class GraphPredicate:
     DERIVED_SEMANTIC = "derived_semantic"
     REFERENCES_RECORD = "references_record"
     REFERENCED_BY = "referenced_by"
+    DEPENDS_ON = "depends_on"
+    DEPENDENCY_OF = "dependency_of"
+    USES = "uses"
+    USED_BY = "used_by"
+    CAUSED_BY = "caused_by"
+    CAUSES = "causes"
+    SUPPORTS = "supports"
+    SUPPORTED_BY = "supported_by"
+    CONTRADICTS = "contradicts"
+    CONTRADICTED_BY = "contradicted_by"
+    SUPERSEDES = "supersedes"
+    SUPERSEDED_BY = "superseded_by"
+    CONTESTED_BY = "contested_by"
+    CONTESTS = "contests"
+
+
+_INVERSE_GRAPH_PREDICATES = {
+    GraphPredicate.MENTIONS_ENTITY: GraphPredicate.MENTIONED_IN,
+    GraphPredicate.MENTIONED_IN: GraphPredicate.MENTIONS_ENTITY,
+    GraphPredicate.SUBJECT_ENTITY: GraphPredicate.FACT_SUBJECT_OF,
+    GraphPredicate.FACT_SUBJECT_OF: GraphPredicate.SUBJECT_ENTITY,
+    GraphPredicate.OBJECT_ENTITY: GraphPredicate.FACT_OBJECT_OF,
+    GraphPredicate.FACT_OBJECT_OF: GraphPredicate.OBJECT_ENTITY,
+    GraphPredicate.DERIVED_FROM: GraphPredicate.DERIVED_SEMANTIC,
+    GraphPredicate.DERIVED_SEMANTIC: GraphPredicate.DERIVED_FROM,
+    GraphPredicate.REFERENCES_RECORD: GraphPredicate.REFERENCED_BY,
+    GraphPredicate.REFERENCED_BY: GraphPredicate.REFERENCES_RECORD,
+    GraphPredicate.DEPENDS_ON: GraphPredicate.DEPENDENCY_OF,
+    GraphPredicate.DEPENDENCY_OF: GraphPredicate.DEPENDS_ON,
+    GraphPredicate.USES: GraphPredicate.USED_BY,
+    GraphPredicate.USED_BY: GraphPredicate.USES,
+    GraphPredicate.CAUSED_BY: GraphPredicate.CAUSES,
+    GraphPredicate.CAUSES: GraphPredicate.CAUSED_BY,
+    GraphPredicate.SUPPORTS: GraphPredicate.SUPPORTED_BY,
+    GraphPredicate.SUPPORTED_BY: GraphPredicate.SUPPORTS,
+    GraphPredicate.CONTRADICTS: GraphPredicate.CONTRADICTED_BY,
+    GraphPredicate.CONTRADICTED_BY: GraphPredicate.CONTRADICTS,
+    GraphPredicate.SUPERSEDES: GraphPredicate.SUPERSEDED_BY,
+    GraphPredicate.SUPERSEDED_BY: GraphPredicate.SUPERSEDES,
+    GraphPredicate.CONTESTED_BY: GraphPredicate.CONTESTS,
+    GraphPredicate.CONTESTS: GraphPredicate.CONTESTED_BY,
+}
+
+
+def normalize_graph_predicate(predicate: str) -> str:
+    """Return the canonical storage spelling for graph predicates."""
+    value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", str(predicate).strip())
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    return "_".join(
+        part for part in re.split(r"[\W_]+", value.lower()) if part
+    )
+
+
+def normalize_semantic_predicate(predicate: str) -> str:
+    """Return the canonical storage spelling for semantic fact predicates."""
+    return normalize_graph_predicate(predicate)
+
+
+def inverse_graph_predicate(predicate: str) -> str:
+    """Return the reverse-edge predicate for a graph predicate."""
+    normalized = normalize_graph_predicate(predicate)
+    return _INVERSE_GRAPH_PREDICATES.get(normalized, f"inverse_of_{normalized}")
 
 
 class InterpretationStatus(str, Enum):
@@ -241,6 +304,21 @@ _PAYLOAD_ONEOF_KEYS = {
     "competence",
     "plan_graph",
     "entity",
+}
+
+_PROTO_VALUE_KINDS = {
+    "nullValue",
+    "numberValue",
+    "stringValue",
+    "boolValue",
+    "structValue",
+    "listValue",
+    "null_value",
+    "number_value",
+    "string_value",
+    "bool_value",
+    "struct_value",
+    "list_value",
 }
 
 _LEGACY_ENTITY_TYPE_MAP = {
@@ -275,11 +353,195 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _get_field(data: dict[str, Any], *names: str, default: Any = None) -> Any:
+    for name in names:
+        if name in data:
+            return data[name]
+    return default
+
+
+def _proto_value_kind(value: dict[str, Any]) -> str | None:
+    kind = value.get("kind")
+    if isinstance(kind, str) and kind in _PROTO_VALUE_KINDS:
+        return kind
+    for candidate in (
+        "stringValue",
+        "numberValue",
+        "boolValue",
+        "structValue",
+        "listValue",
+        "nullValue",
+        "string_value",
+        "number_value",
+        "bool_value",
+        "struct_value",
+        "list_value",
+        "null_value",
+    ):
+        if candidate in value:
+            return candidate
+    return None
+
+
+def _from_proto_value(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    kind = _proto_value_kind(value)
+    if kind in ("nullValue", "null_value"):
+        return None
+    if kind in ("numberValue", "number_value"):
+        return _get_field(value, "numberValue", "number_value", default=0)
+    if kind in ("stringValue", "string_value"):
+        return str(_get_field(value, "stringValue", "string_value", default=""))
+    if kind in ("boolValue", "bool_value"):
+        return bool(_get_field(value, "boolValue", "bool_value", default=False))
+    if kind in ("structValue", "struct_value"):
+        struct_value = _get_field(value, "structValue", "struct_value", default={})
+        fields = struct_value.get("fields", {}) if isinstance(struct_value, dict) else {}
+        return _from_proto_value_map(fields) or {}
+    if kind in ("listValue", "list_value"):
+        list_value = _get_field(value, "listValue", "list_value", default={})
+        values = list_value.get("values", []) if isinstance(list_value, dict) else []
+        return [_from_proto_value(item) for item in values]
+    return value
+
+
+def _from_proto_value_map(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {str(key): _from_proto_value(item) for key, item in value.items()}
+
+
+def _normalize_plan_node_payload(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    params = _from_proto_value_map(_get_field(data, "params", "Params"))
+    guards = _from_proto_value_map(_get_field(data, "guards", "Guards"))
+    if params is not None:
+        out["params"] = params
+    if guards is not None:
+        out["guards"] = guards
+    return out
+
+
+def _normalize_plan_metrics_payload(data: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for target, names in {
+        "avg_latency_ms": ("avg_latency_ms", "AvgLatencyMs", "avgLatencyMs"),
+        "failure_rate": ("failure_rate", "FailureRate", "failureRate"),
+        "execution_count": ("execution_count", "ExecutionCount", "executionCount"),
+        "last_executed_at": ("last_executed_at", "LastExecutedAt", "lastExecutedAt"),
+    }.items():
+        value = _get_field(data, *names)
+        if value is not None:
+            out[target] = value
+    return out
+
+
+def _normalize_plan_graph_payload(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    for target, names in {
+        "plan_id": ("plan_id", "PlanID", "planId"),
+        "version": ("version", "Version"),
+        "intent": ("intent", "Intent"),
+    }.items():
+        value = _get_field(data, *names)
+        if value is not None:
+            out[target] = value
+    for target, names in {
+        "constraints": ("constraints", "Constraints"),
+        "inputs_schema": ("inputs_schema", "InputsSchema", "inputsSchema"),
+        "outputs_schema": ("outputs_schema", "OutputsSchema", "outputsSchema"),
+    }.items():
+        value = _from_proto_value_map(_get_field(data, *names))
+        if value is not None:
+            out[target] = value
+    nodes = _get_field(data, "nodes", "Nodes")
+    if isinstance(nodes, list):
+        out["nodes"] = [
+            _normalize_plan_node_payload(item) if isinstance(item, dict) else item
+            for item in nodes
+        ]
+    edges = _get_field(data, "edges", "Edges")
+    if isinstance(edges, list):
+        out["edges"] = edges
+    metrics = _get_field(data, "metrics", "Metrics")
+    if isinstance(metrics, dict):
+        out["metrics"] = _normalize_plan_metrics_payload(metrics)
+    return out
+
+
+def _normalize_entity_payload(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    for target, names in {
+        "kind": ("kind", "Kind"),
+        "canonical_name": ("canonical_name", "CanonicalName", "canonicalName"),
+        "primary_type": ("primary_type", "PrimaryType", "primaryType"),
+        "summary": ("summary", "Summary"),
+    }.items():
+        value = _get_field(data, *names)
+        if value is not None:
+            out[target] = value
+
+    types = _get_field(data, "types", "Types")
+    if isinstance(types, list):
+        out["types"] = [str(item) for item in types]
+
+    aliases = _get_field(data, "aliases", "Aliases")
+    if isinstance(aliases, list):
+        normalized_aliases: list[Any] = []
+        for alias in aliases:
+            if isinstance(alias, str):
+                normalized_aliases.append(alias)
+            elif isinstance(alias, dict):
+                normalized_aliases.append(
+                    {
+                        "value": _get_field(alias, "value", "Value", default=""),
+                        "kind": _get_field(alias, "kind", "Kind", default=""),
+                        "locale": _get_field(alias, "locale", "Locale", default=""),
+                    }
+                )
+            else:
+                normalized_aliases.append(alias)
+        out["aliases"] = normalized_aliases
+
+    identifiers = _get_field(data, "identifiers", "Identifiers")
+    if isinstance(identifiers, list):
+        normalized_identifiers: list[Any] = []
+        for identifier in identifiers:
+            if isinstance(identifier, dict):
+                normalized_identifiers.append(
+                    {
+                        "namespace": _get_field(
+                            identifier, "namespace", "Namespace", default=""
+                        ),
+                        "value": _get_field(identifier, "value", "Value", default=""),
+                    }
+                )
+            else:
+                normalized_identifiers.append(identifier)
+        out["identifiers"] = normalized_identifiers
+
+    return out
+
+
 def _unwrap_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
         for key in _PAYLOAD_ONEOF_KEYS:
             if key in payload:
-                return payload[key]
+                value = payload[key]
+                if key == "plan_graph" and isinstance(value, dict):
+                    return _normalize_plan_graph_payload(value)
+                if key == "entity" and isinstance(value, dict):
+                    return _normalize_entity_payload(value)
+                return value
+        if "planGraph" in payload:
+            value = payload["planGraph"]
+            if isinstance(value, dict):
+                return _normalize_plan_graph_payload(value)
+            return value
+        kind = _get_field(payload, "kind", "Kind")
+        if kind == "entity":
+            return _normalize_entity_payload(payload)
     return payload
 
 
@@ -407,11 +669,11 @@ class Relation:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Relation:
         return cls(
-            target_id=data.get("target_id", ""),
+            target_id=_get_field(data, "target_id", "TargetID", "targetId", default=""),
             # "predicate" is the canonical field; fall back to legacy "kind"
-            predicate=data.get("predicate", data.get("kind", "")),
-            weight=data.get("weight", 1.0),
-            created_at=data.get("created_at", ""),
+            predicate=_get_field(data, "predicate", "Predicate", "kind", "Kind", default=""),
+            weight=_get_field(data, "weight", "Weight", default=1.0),
+            created_at=_get_field(data, "created_at", "CreatedAt", "createdAt", default=""),
         )
 
 
@@ -428,11 +690,11 @@ class GraphEdge:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GraphEdge:
         return cls(
-            source_id=data.get("source_id", ""),
-            predicate=data.get("predicate", ""),
-            target_id=data.get("target_id", ""),
-            weight=data.get("weight", 1.0),
-            created_at=data.get("created_at", ""),
+            source_id=_get_field(data, "source_id", "SourceID", "sourceId", default=""),
+            predicate=_get_field(data, "predicate", "Predicate", default=""),
+            target_id=_get_field(data, "target_id", "TargetID", "targetId", default=""),
+            weight=_get_field(data, "weight", "Weight", default=1.0),
+            created_at=_get_field(data, "created_at", "CreatedAt", "createdAt", default=""),
         )
 
 
@@ -448,10 +710,10 @@ class AuditEntry:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AuditEntry:
         return cls(
-            action=data.get("action", ""),
-            actor=data.get("actor", ""),
-            timestamp=data.get("timestamp", ""),
-            rationale=data.get("rationale", ""),
+            action=_get_field(data, "action", "Action", default=""),
+            actor=_get_field(data, "actor", "Actor", default=""),
+            timestamp=_get_field(data, "timestamp", "Timestamp", default=""),
+            rationale=_get_field(data, "rationale", "Rationale", default=""),
         )
 
 
@@ -467,7 +729,7 @@ class Mention:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Mention:
-        raw_kind = data.get("entity_kind")
+        raw_kind = _get_field(data, "entity_kind", "EntityKind", "entityKind")
         entity_kind: EntityKind | str | None = None
         if raw_kind:
             try:
@@ -475,11 +737,17 @@ class Mention:
             except ValueError:
                 entity_kind = str(raw_kind)
         return cls(
-            surface=data.get("surface", ""),
+            surface=_get_field(data, "surface", "Surface", default=""),
             entity_kind=entity_kind,
-            canonical_entity_id=data.get("canonical_entity_id", ""),
-            confidence=float(data.get("confidence", 0.0)),
-            aliases=data.get("aliases", []) or [],
+            canonical_entity_id=_get_field(
+                data,
+                "canonical_entity_id",
+                "CanonicalEntityID",
+                "canonicalEntityId",
+                default="",
+            ),
+            confidence=float(_get_field(data, "confidence", "Confidence", default=0.0)),
+            aliases=_get_field(data, "aliases", "Aliases", default=[]) or [],
         )
 
 
@@ -496,11 +764,23 @@ class RelationCandidate:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RelationCandidate:
         return cls(
-            predicate=data.get("predicate", ""),
-            target_record_id=data.get("target_record_id", ""),
-            target_entity_id=data.get("target_entity_id", ""),
-            confidence=float(data.get("confidence", 0.0)),
-            resolved=bool(data.get("resolved", False)),
+            predicate=_get_field(data, "predicate", "Predicate", default=""),
+            target_record_id=_get_field(
+                data,
+                "target_record_id",
+                "TargetRecordID",
+                "targetRecordId",
+                default="",
+            ),
+            target_entity_id=_get_field(
+                data,
+                "target_entity_id",
+                "TargetEntityID",
+                "targetEntityId",
+                default="",
+            ),
+            confidence=float(_get_field(data, "confidence", "Confidence", default=0.0)),
+            resolved=bool(_get_field(data, "resolved", "Resolved", default=False)),
         )
 
 
@@ -517,11 +797,23 @@ class ReferenceCandidate:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReferenceCandidate:
         return cls(
-            ref=data.get("ref", ""),
-            target_record_id=data.get("target_record_id", ""),
-            target_entity_id=data.get("target_entity_id", ""),
-            confidence=float(data.get("confidence", 0.0)),
-            resolved=bool(data.get("resolved", False)),
+            ref=_get_field(data, "ref", "Ref", default=""),
+            target_record_id=_get_field(
+                data,
+                "target_record_id",
+                "TargetRecordID",
+                "targetRecordId",
+                default="",
+            ),
+            target_entity_id=_get_field(
+                data,
+                "target_entity_id",
+                "TargetEntityID",
+                "targetEntityId",
+                default="",
+            ),
+            confidence=float(_get_field(data, "confidence", "Confidence", default=0.0)),
+            resolved=bool(_get_field(data, "resolved", "Resolved", default=False)),
         )
 
 
@@ -540,23 +832,51 @@ class Interpretation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Interpretation:
-        raw_status = data.get("status", InterpretationStatus.TENTATIVE.value)
-        raw_type = data.get("proposed_type")
+        raw_status = _get_field(
+            data, "status", "Status", default=InterpretationStatus.TENTATIVE.value
+        )
+        raw_type = _get_field(data, "proposed_type", "ProposedType", "proposedType")
         return cls(
             status=InterpretationStatus(raw_status) if raw_status else InterpretationStatus.TENTATIVE,
-            summary=data.get("summary", ""),
+            summary=_get_field(data, "summary", "Summary", default=""),
             proposed_type=MemoryType(raw_type) if raw_type else None,
-            topical_labels=data.get("topical_labels", []) or [],
-            mentions=[Mention.from_dict(item) for item in data.get("mentions", [])],
+            topical_labels=_get_field(
+                data, "topical_labels", "TopicalLabels", "topicalLabels", default=[]
+            )
+            or [],
+            mentions=[
+                Mention.from_dict(item)
+                for item in _get_field(data, "mentions", "Mentions", default=[])
+            ],
             relation_candidates=[
                 RelationCandidate.from_dict(item)
-                for item in data.get("relation_candidates", [])
+                for item in _get_field(
+                    data,
+                    "relation_candidates",
+                    "RelationCandidates",
+                    "relationCandidates",
+                    default=[],
+                )
             ],
             reference_candidates=[
                 ReferenceCandidate.from_dict(item)
-                for item in data.get("reference_candidates", [])
+                for item in _get_field(
+                    data,
+                    "reference_candidates",
+                    "ReferenceCandidates",
+                    "referenceCandidates",
+                    default=[],
+                )
             ],
-            extraction_confidence=float(data.get("extraction_confidence", 0.0)),
+            extraction_confidence=float(
+                _get_field(
+                    data,
+                    "extraction_confidence",
+                    "ExtractionConfidence",
+                    "extractionConfidence",
+                    default=0.0,
+                )
+            ),
         )
 
 
@@ -588,43 +908,48 @@ class MemoryRecord:
     def from_dict(cls, data: dict[str, Any]) -> MemoryRecord:
         """Construct a MemoryRecord from a JSON-decoded dictionary."""
         lifecycle = None
-        if "lifecycle" in data:
-            lifecycle = Lifecycle.from_dict(data["lifecycle"])
+        lifecycle_data = _get_field(data, "lifecycle", "Lifecycle")
+        if lifecycle_data is not None:
+            lifecycle = Lifecycle.from_dict(lifecycle_data)
 
         provenance = None
-        if "provenance" in data:
-            provenance = Provenance.from_dict(data["provenance"])
+        provenance_data = _get_field(data, "provenance", "Provenance")
+        if provenance_data is not None:
+            provenance = Provenance.from_dict(provenance_data)
 
         relations = [
-            Relation.from_dict(r) for r in data.get("relations", [])
+            Relation.from_dict(r)
+            for r in _get_field(data, "relations", "Relations", default=[]) or []
         ]
         interpretation = None
-        if "interpretation" in data and data["interpretation"] is not None:
-            interpretation = Interpretation.from_dict(data["interpretation"])
+        interpretation_data = _get_field(data, "interpretation", "Interpretation")
+        if interpretation_data is not None:
+            interpretation = Interpretation.from_dict(interpretation_data)
         audit_log = [
-            AuditEntry.from_dict(a) for a in data.get("audit_log", [])
+            AuditEntry.from_dict(a)
+            for a in _get_field(data, "audit_log", "AuditLog", "auditLog", default=[]) or []
         ]
 
-        mem_type = data.get("type", "episodic")
-        sensitivity = data.get("sensitivity", "low")
+        mem_type = _get_field(data, "type", "Type", default="episodic")
+        sensitivity = _get_field(data, "sensitivity", "Sensitivity", default="low")
 
         return cls(
-            id=data.get("id", ""),
+            id=_get_field(data, "id", "ID", default=""),
             type=MemoryType(mem_type) if mem_type else MemoryType.EPISODIC,
             sensitivity=(
                 Sensitivity(sensitivity) if sensitivity else Sensitivity.LOW
             ),
-            confidence=data.get("confidence", 1.0),
-            salience=data.get("salience", 1.0),
-            scope=data.get("scope", ""),
-            tags=data.get("tags", []) or [],
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
+            confidence=_get_field(data, "confidence", "Confidence", default=1.0),
+            salience=_get_field(data, "salience", "Salience", default=1.0),
+            scope=_get_field(data, "scope", "Scope", default=""),
+            tags=_get_field(data, "tags", "Tags", default=[]) or [],
+            created_at=_get_field(data, "created_at", "CreatedAt", "createdAt", default=""),
+            updated_at=_get_field(data, "updated_at", "UpdatedAt", "updatedAt", default=""),
             lifecycle=lifecycle,
             provenance=provenance,
             relations=relations,
             interpretation=interpretation,
-            payload=_unwrap_payload(data.get("payload", {})),
+            payload=_unwrap_payload(_get_field(data, "payload", "Payload", default={})),
             audit_log=audit_log,
         )
 
@@ -673,7 +998,9 @@ class SelectionResult:
     def from_dict(cls, data: dict[str, Any]) -> SelectionResult:
         selected = data.get("selected", data.get("Selected", []))
         confidence = data.get("confidence", data.get("Confidence", 0.0))
-        needs_more = data.get("needs_more", data.get("NeedsMore", False))
+        needs_more = data.get(
+            "needs_more", data.get("NeedsMore", data.get("needsMore", False))
+        )
         scores = data.get("scores", data.get("Scores", {})) or {}
         return cls(
             selected=[MemoryRecord.from_dict(item) for item in selected or []],
@@ -702,9 +1029,53 @@ class GraphNode:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GraphNode:
         return cls(
-            record=MemoryRecord.from_dict(data.get("record", {})),
-            root=bool(data.get("root", False)),
-            hop=int(data.get("hop", 0)),
+            record=MemoryRecord.from_dict(
+                _get_field(data, "record", "Record", default={})
+            ),
+            root=bool(_get_field(data, "root", "Root", default=False)),
+            hop=int(_get_field(data, "hop", "Hop", default=0)),
+        )
+
+
+@dataclass
+class RecordProjection:
+    """Fields or records omitted from a bounded retrieval response."""
+
+    relations_omitted: bool = False
+    relations_truncated: bool = False
+    history_omitted: bool = False
+    records_truncated: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecordProjection:
+        return cls(
+            relations_omitted=bool(
+                _get_field(data, "relations_omitted", "RelationsOmitted", "relationsOmitted", default=False)
+            ),
+            relations_truncated=bool(
+                _get_field(data, "relations_truncated", "RelationsTruncated", "relationsTruncated", default=False)
+            ),
+            history_omitted=bool(
+                _get_field(data, "history_omitted", "HistoryOmitted", "historyOmitted", default=False)
+            ),
+            records_truncated=bool(
+                _get_field(data, "records_truncated", "RecordsTruncated", "recordsTruncated", default=False)
+            ),
+        )
+
+
+@dataclass
+class RetrievalDiagnostic:
+    """Non-fatal retrieval fallback diagnostic."""
+
+    code: str = ""
+    message: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RetrievalDiagnostic:
+        return cls(
+            code=str(_get_field(data, "code", "Code", default="")),
+            message=str(_get_field(data, "message", "Message", default="")),
         )
 
 
@@ -716,6 +1087,70 @@ class RetrieveGraphResult:
     edges: list[GraphEdge] = field(default_factory=list)
     root_ids: list[str] = field(default_factory=list)
     selection: Optional[SelectionResult] = None
+    diagnostics: list[RetrievalDiagnostic] = field(default_factory=list)
+    projection: Optional[RecordProjection] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RetrieveGraphResult:
+        selection = _get_field(data, "selection", "Selection")
+        projection = _get_field(data, "projection", "Projection")
+        return cls(
+            nodes=[
+                GraphNode.from_dict(item)
+                for item in _get_field(data, "nodes", "Nodes", default=[]) or []
+            ],
+            edges=[
+                GraphEdge.from_dict(item)
+                for item in _get_field(data, "edges", "Edges", default=[]) or []
+            ],
+            root_ids=[
+                str(item)
+                for item in _get_field(
+                    data, "root_ids", "RootIDs", "rootIds", default=[]
+                )
+                or []
+            ],
+            selection=(
+                SelectionResult.from_dict(selection)
+                if isinstance(selection, dict)
+                else None
+            ),
+            diagnostics=[
+                RetrievalDiagnostic.from_dict(item)
+                for item in _get_field(
+                    data, "diagnostics", "Diagnostics", default=[]
+                )
+                or []
+            ],
+            projection=(
+                RecordProjection.from_dict(projection)
+                if isinstance(projection, dict)
+                else None
+            ),
+        )
+
+
+class MetricsSnapshot(TypedDict, total=False):
+    """Point-in-time metrics snapshot returned by get_metrics."""
+
+    collected_at: str
+    total_records: int
+    records_by_type: dict[str, int]
+    avg_salience: float
+    avg_confidence: float
+    salience_distribution: dict[str, int]
+    active_records: int
+    pinned_records: int
+    total_audit_entries: int
+    embedding_model: str
+    embedded_records: int
+    missing_embeddings: int
+    embedding_coverage: float
+    memory_growth_rate: float
+    retrieval_usefulness: float
+    competence_success_rate: float
+    plan_reuse_frequency: float
+    revision_rate: float
 
 
 @dataclass
@@ -725,6 +1160,31 @@ class CaptureMemoryResult:
     primary_record: MemoryRecord = field(default_factory=MemoryRecord)
     created_records: list[MemoryRecord] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaptureMemoryResult:
+        return cls(
+            primary_record=MemoryRecord.from_dict(
+                _get_field(
+                    data, "primary_record", "PrimaryRecord", "primaryRecord", default={}
+                )
+            ),
+            created_records=[
+                MemoryRecord.from_dict(item)
+                for item in _get_field(
+                    data,
+                    "created_records",
+                    "CreatedRecords",
+                    "createdRecords",
+                    default=[],
+                )
+                or []
+            ],
+            edges=[
+                GraphEdge.from_dict(item)
+                for item in _get_field(data, "edges", "Edges", default=[]) or []
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -788,10 +1248,12 @@ class RevisionState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RevisionState:
-        raw_status = data.get("status")
+        raw_status = _get_field(data, "status", "Status")
         return cls(
-            supersedes=data.get("supersedes", ""),
-            superseded_by=data.get("superseded_by", ""),
+            supersedes=_get_field(data, "supersedes", "Supersedes", default=""),
+            superseded_by=_get_field(
+                data, "superseded_by", "SupersededBy", "supersededBy", default=""
+            ),
             status=RevisionStatus(raw_status) if raw_status else None,
         )
 
@@ -813,10 +1275,13 @@ class Validity:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Validity:
         return cls(
-            mode=ValidityMode(data.get("mode", "global")),
-            conditions=data.get("conditions", {}),
-            start=data.get("start"),
-            end=data.get("end"),
+            mode=ValidityMode(_get_field(data, "mode", "Mode", default="global")),
+            conditions=_from_proto_value_map(
+                _get_field(data, "conditions", "Conditions", default={})
+            )
+            or {},
+            start=_get_field(data, "start", "Start"),
+            end=_get_field(data, "end", "End"),
         )
 
 
@@ -889,7 +1354,7 @@ class EnvironmentSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Payload types (RFC 15A.2, 15A.6 – 15A.10)
+# Payload types (RFC 15A.2, 15A.6 – 15A.11)
 # ---------------------------------------------------------------------------
 
 
@@ -962,16 +1427,21 @@ class SemanticPayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SemanticPayload:
-        validity_data = data.get("validity")
-        revision_data = data.get("revision")
+        validity_data = _get_field(data, "validity", "Validity")
+        revision_data = _get_field(data, "revision", "Revision")
         return cls(
-            kind=data.get("kind", "semantic"),
-            subject=data.get("subject", ""),
-            predicate=data.get("predicate", ""),
-            object=data.get("object"),
+            kind=_get_field(data, "kind", "Kind", default="semantic"),
+            subject=_get_field(data, "subject", "Subject", default=""),
+            predicate=_get_field(data, "predicate", "Predicate", default=""),
+            object=_from_proto_value(_get_field(data, "object", "Object")),
             validity=Validity.from_dict(validity_data) if validity_data else None,
-            evidence=[ProvenanceRef.from_dict(e) for e in data.get("evidence", [])],
-            revision_policy=data.get("revision_policy", ""),
+            evidence=[
+                ProvenanceRef.from_dict(e)
+                for e in _get_field(data, "evidence", "Evidence", default=[])
+            ],
+            revision_policy=_get_field(
+                data, "revision_policy", "RevisionPolicy", "revisionPolicy", default=""
+            ),
             revision=RevisionState.from_dict(revision_data) if revision_data else None,
         )
 
@@ -1033,7 +1503,7 @@ class PerformanceStats:
 
 @dataclass
 class CompetencePayload:
-    """Typed payload for competence memory records (RFC 15A.9)."""
+    """Typed payload for competence memory records (RFC 15A.10)."""
 
     kind: str = "competence"
     skill_name: str = ""
@@ -1063,7 +1533,7 @@ class CompetencePayload:
 
 @dataclass
 class PlanNode:
-    """An action node in a plan graph (RFC 15A.10)."""
+    """An action node in a plan graph (RFC 15A.11)."""
 
     id: str = ""
     op: str = ""
@@ -1073,16 +1543,16 @@ class PlanNode:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlanNode:
         return cls(
-            id=data.get("id", ""),
-            op=data.get("op", ""),
-            params=data.get("params", {}),
-            guards=data.get("guards", {}),
+            id=_get_field(data, "id", "ID", default=""),
+            op=_get_field(data, "op", "Op", default=""),
+            params=_from_proto_value_map(_get_field(data, "params", "Params")) or {},
+            guards=_from_proto_value_map(_get_field(data, "guards", "Guards")) or {},
         )
 
 
 @dataclass
 class PlanEdge:
-    """A dependency edge in a plan graph (RFC 15A.10).
+    """A dependency edge in a plan graph (RFC 15A.11).
 
     Note: the JSON field name is ``"from"``; the Python attribute is
     ``from_`` to avoid shadowing the built-in keyword.
@@ -1103,7 +1573,7 @@ class PlanEdge:
 
 @dataclass
 class PlanMetrics:
-    """Execution metrics for a plan graph (RFC 15A.10)."""
+    """Execution metrics for a plan graph (RFC 15A.11)."""
 
     avg_latency_ms: float = 0.0
     failure_rate: float = 0.0
@@ -1113,16 +1583,24 @@ class PlanMetrics:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlanMetrics:
         return cls(
-            avg_latency_ms=data.get("avg_latency_ms", 0.0),
-            failure_rate=data.get("failure_rate", 0.0),
-            execution_count=data.get("execution_count", 0),
-            last_executed_at=data.get("last_executed_at"),
+            avg_latency_ms=_get_field(
+                data, "avg_latency_ms", "AvgLatencyMs", "avgLatencyMs", default=0.0
+            ),
+            failure_rate=_get_field(
+                data, "failure_rate", "FailureRate", "failureRate", default=0.0
+            ),
+            execution_count=_get_field(
+                data, "execution_count", "ExecutionCount", "executionCount", default=0
+            ),
+            last_executed_at=_get_field(
+                data, "last_executed_at", "LastExecutedAt", "lastExecutedAt"
+            ),
         )
 
 
 @dataclass
 class PlanGraphPayload:
-    """Typed payload for plan-graph memory records (RFC 15A.10)."""
+    """Typed payload for plan-graph memory records (RFC 15A.11)."""
 
     kind: str = "plan_graph"
     plan_id: str = ""
@@ -1137,9 +1615,10 @@ class PlanGraphPayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlanGraphPayload:
+        data = _normalize_plan_graph_payload(data)
         metrics_data = data.get("metrics")
         return cls(
-            kind=data.get("kind", "plan_graph"),
+            kind=_get_field(data, "kind", "Kind", default="plan_graph"),
             plan_id=data.get("plan_id", ""),
             version=data.get("version", ""),
             intent=data.get("intent", ""),
@@ -1165,9 +1644,9 @@ class EntityAlias:
         if isinstance(data, str):
             return cls(value=data)
         return cls(
-            value=data.get("value", ""),
-            kind=data.get("kind", ""),
-            locale=data.get("locale", ""),
+            value=_get_field(data, "value", "Value", default=""),
+            kind=_get_field(data, "kind", "Kind", default=""),
+            locale=_get_field(data, "locale", "Locale", default=""),
         )
 
 
@@ -1181,14 +1660,14 @@ class EntityIdentifier:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntityIdentifier:
         return cls(
-            namespace=data.get("namespace", ""),
-            value=data.get("value", ""),
+            namespace=_get_field(data, "namespace", "Namespace", default=""),
+            value=_get_field(data, "value", "Value", default=""),
         )
 
 
 @dataclass
 class EntityPayload:
-    """Typed payload for canonical entity records."""
+    """Typed payload for canonical entity records (RFC 15A.9)."""
 
     kind: str = "entity"
     canonical_name: str = ""
@@ -1200,26 +1679,27 @@ class EntityPayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntityPayload:
-        primary_type = data.get("primary_type", "")
-        if not primary_type and "entity_kind" in data:
-            primary_type = _legacy_entity_type(data.get("entity_kind"))
+        primary_type = _get_field(data, "primary_type", "PrimaryType", "primaryType", default="")
+        raw_entity_kind = _get_field(data, "entity_kind", "EntityKind", "entityKind")
+        if not primary_type and raw_entity_kind is not None:
+            primary_type = _legacy_entity_type(raw_entity_kind)
 
-        types = [str(item) for item in data.get("types", []) or []]
+        types = [str(item) for item in _get_field(data, "types", "Types", default=[]) or []]
         if primary_type and primary_type not in types:
             types.insert(0, primary_type)
 
         return cls(
-            kind=data.get("kind", "entity"),
-            canonical_name=data.get("canonical_name", ""),
+            kind=_get_field(data, "kind", "Kind", default="entity"),
+            canonical_name=_get_field(data, "canonical_name", "CanonicalName", "canonicalName", default=""),
             primary_type=primary_type,
             types=types,
             aliases=[
                 EntityAlias.from_dict(item)
-                for item in data.get("aliases", []) or []
+                for item in _get_field(data, "aliases", "Aliases", default=[]) or []
             ],
             identifiers=[
                 EntityIdentifier.from_dict(item)
-                for item in data.get("identifiers", []) or []
+                for item in _get_field(data, "identifiers", "Identifiers", default=[]) or []
             ],
-            summary=data.get("summary", ""),
+            summary=_get_field(data, "summary", "Summary", default=""),
         )

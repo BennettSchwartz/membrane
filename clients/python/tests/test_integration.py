@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
-import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import grpc
@@ -76,35 +77,44 @@ def daemon_binary(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture
-def daemon_env(daemon_binary: str):
+def daemon_env(daemon_binary: str, tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[3]
     api_key = "python-integration-secret"
     addr = f"127.0.0.1:{_free_port()}"
+    postgres_dsn = os.environ.get("MEMBRANE_TEST_POSTGRES_DSN")
+    if not postgres_dsn:
+        pytest.skip("MEMBRANE_TEST_POSTGRES_DSN is required for Python client integration tests")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "membrane.db")
-        env = os.environ.copy()
-        env["MEMBRANE_API_KEY"] = api_key
+    scope = f"python-integration:{uuid.uuid4().hex}"
+    config_path = tmp_path / "membrane.json"
+    config_path.write_text(
+        json.dumps({"read_scopes": [scope], "write_scopes": [scope]}),
+        encoding="utf-8",
+    )
 
-        proc = subprocess.Popen(
-            [daemon_binary, "-addr", addr, "-db", db_path],
-            cwd=repo_root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+    env = os.environ.copy()
+    env["MEMBRANE_API_KEY"] = api_key
 
-        try:
-            _wait_for_ready(proc, addr, api_key)
-            yield {"addr": addr, "api_key": api_key}
-        finally:
-            _stop_process(proc)
+    proc = subprocess.Popen(
+        [daemon_binary, "-config", str(config_path), "-addr", addr, "-postgres-dsn", postgres_dsn],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    try:
+        _wait_for_ready(proc, addr, api_key)
+        yield {"addr": addr, "api_key": api_key, "scope": scope}
+    finally:
+        _stop_process(proc)
 
 
 def test_auth_and_happy_path(daemon_env) -> None:
     addr = daemon_env["addr"]
     api_key = daemon_env["api_key"]
+    scope = daemon_env["scope"]
 
     with pytest.raises(grpc.RpcError) as excinfo:
         with MembraneClient(addr, timeout=1.0) as client:
@@ -115,7 +125,7 @@ def test_auth_and_happy_path(daemon_env) -> None:
         max_sensitivity=Sensitivity.MEDIUM,
         authenticated=True,
         actor_id="py-test",
-        scopes=["project:alpha"],
+        scopes=[scope],
     )
 
     with MembraneClient(addr, api_key=api_key, timeout=2.0) as client:
@@ -125,7 +135,7 @@ def test_auth_and_happy_path(daemon_env) -> None:
                 "project": "Orchid",
             },
             reason_to_remember="Niche deploy vocabulary should be recoverable",
-            scope="project:alpha",
+            scope=scope,
             tags=["integration", "python"],
             sensitivity=Sensitivity.LOW,
         )
@@ -142,7 +152,7 @@ def test_auth_and_happy_path(daemon_env) -> None:
                 "project": "Orchid",
             },
             reason_to_remember="Repeated mention should link to same entity",
-            scope="project:alpha",
+            scope=scope,
             tags=["integration", "python", "orchid"],
             sensitivity=Sensitivity.LOW,
         )
@@ -173,6 +183,19 @@ def test_auth_and_happy_path(daemon_env) -> None:
         metrics = client.get_metrics()
         assert metrics["total_records"] >= 1
 
+        for denied_scope, denied_sensitivity in [
+            ("outside-policy", Sensitivity.LOW),
+            ("", Sensitivity.LOW),
+            (scope, Sensitivity.HIGH),
+        ]:
+            with pytest.raises(grpc.RpcError) as excinfo:
+                client.capture_memory(
+                    {"text": "This write must be rejected"},
+                    scope=denied_scope,
+                    sensitivity=denied_sensitivity,
+                )
+            assert excinfo.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
 
 def test_retract_episodic_failure(daemon_env) -> None:
     addr = daemon_env["addr"]
@@ -183,6 +206,7 @@ def test_retract_episodic_failure(daemon_env) -> None:
             {"ref": "evt-1", "text": "Created for immutable retraction check"},
             source_kind=SourceKind.EVENT,
             summary="Created for immutable retraction check",
+            scope=daemon_env["scope"],
         )
         record = capture.primary_record
 

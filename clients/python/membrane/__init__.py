@@ -30,6 +30,7 @@ from membrane.types import (
     InterpretationStatus,
     Lifecycle,
     MemoryRecord,
+    MetricsSnapshot,
     MemoryType,
     Mention,
     OutcomeStatus,
@@ -46,6 +47,8 @@ from membrane.types import (
     ReferenceCandidate,
     Relation,
     RelationCandidate,
+    RecordProjection,
+    RetrievalDiagnostic,
     RetrieveGraphResult,
     RevisionState,
     RevisionStatus,
@@ -61,6 +64,9 @@ from membrane.types import (
     ValidityMode,
     Validity,
     WorkingPayload,
+    inverse_graph_predicate,
+    normalize_graph_predicate,
+    normalize_semantic_predicate,
 )
 
 __all__ = [
@@ -89,6 +95,7 @@ __all__ = [
     "Lifecycle",
     "MembraneClient",
     "MemoryRecord",
+    "MetricsSnapshot",
     "MemoryType",
     "Mention",
     "OutcomeStatus",
@@ -105,6 +112,8 @@ __all__ = [
     "ReferenceCandidate",
     "Relation",
     "RelationCandidate",
+    "RecordProjection",
+    "RetrievalDiagnostic",
     "RetrieveGraphResult",
     "RevisionState",
     "RevisionStatus",
@@ -120,4 +129,7 @@ __all__ = [
     "ValidityMode",
     "Validity",
     "WorkingPayload",
+    "inverse_graph_predicate",
+    "normalize_graph_predicate",
+    "normalize_semantic_predicate",
 ]

@@ -6,12 +6,17 @@ build-backend = "setuptools.build_meta"
 name = "membrane-client"
 version = "0.2.0"
 description = "Python client for the Membrane memory substrate"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = ["grpcio>=1.80.0", "protobuf>=6.31.1"]
 
 [project.optional-dependencies]
-dev = ["pytest", "grpcio-tools>=1.80.0"]
+# Proto sync compares generated files exactly; update the generator with the stubs.
+dev = ["pytest", "grpcio-tools==1.80.0"]
 
 [tool.setuptools.packages.find]
 include = ["membrane*"]
+
+[tool.setuptools.package-data]
+membrane = ["py.typed"]
