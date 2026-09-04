@@ -1,8 +1,8 @@
 # Membrane Agent Harness
 
-This example wires Membrane into an LLM-style agent loop. It seeds a local SQLite
-database with all five memory types, links them through entity records, exposes
-Membrane as model tools, and verifies graph retrieval.
+This example wires Membrane into an LLM-style agent loop. It seeds a Postgres +
+pgvector-backed Membrane daemon with all six memory types, links them through
+entity records, exposes Membrane as model tools, and verifies graph retrieval.
 
 ## Run
 
@@ -26,15 +26,28 @@ Run the deterministic graph check:
 npm run test:deterministic
 ```
 
+Run the fast harness unit checks:
+
+```bash
+npm test
+```
+
 Run a live LLM tool-loop check:
 
 ```bash
 npm run test:llm
 ```
 
-The harness starts `membraned` automatically when `MEMBRANE_ADDR` is unset. To
-connect to an existing daemon instead, set `MEMBRANE_ADDR` and optionally
-`MEMBRANE_API_KEY`.
+The harness starts `membraned` automatically when `MEMBRANE_ADDR` is unset. Set
+`MEMBRANE_POSTGRES_DSN` for that auto-start path. To connect to an existing
+daemon instead, set `MEMBRANE_ADDR` and optionally `MEMBRANE_API_KEY`.
+The temporary daemon permits only the harness scope at LOW sensitivity. The
+deterministic check explicitly adds its second scope and MEDIUM sensitivity to
+exercise access filtering; writes outside that policy must still fail. An
+external daemon needs the corresponding policy configured by its owner.
+Set `AGENT_HARNESS_SCOPE` to isolate repeated runs in a shared test database;
+the default is `project:agent-harness-orion`, and the deterministic check uses
+`<scope>:other` as its second scope.
 
 LLM configuration is OpenAI-compatible:
 
@@ -52,4 +65,6 @@ agent loop can be checked for both accuracy and performance regressions. It also
 uses ordinary user-language requests with optional model tools
 (`tool_choice: "auto"`). The live test asserts that the model chooses graph
 retrieval, fact capture, working-state capture, episode capture, and exact
-record retrieval when the prompt naturally asks for those behaviors.
+record retrieval when the prompt naturally asks for those behaviors. Graph
+retrieval tool output includes non-fatal retrieval diagnostics, so degraded
+embedding or vector ranking remains visible in traces.

@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MembraneClient } from "@bennettschwartz/membrane";
+import { MembraneClient, Sensitivity } from "@bennettschwartz/membrane";
+
+import { HARNESS_SCOPE } from "./scenario.js";
 
 const READY_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 180_000;
@@ -16,7 +18,7 @@ export const repoRoot = path.resolve(thisDir, "../../..");
 export interface MembraneRuntime {
   addr: string;
   apiKey?: string;
-  dbPath?: string;
+  postgresDSN?: string;
   close(): Promise<void>;
 }
 
@@ -105,7 +107,10 @@ async function waitForReady(addr: string, apiKey: string | undefined, daemon: Ch
   throw new Error(`membraned did not become ready at ${addr}: ${String(lastError)}\nLogs:\n${getLogs()}`);
 }
 
-export async function startOrConnectMembrane(): Promise<MembraneRuntime> {
+export async function startOrConnectMembrane(options: {
+  scopes?: string[];
+  maxSensitivity?: Sensitivity;
+} = {}): Promise<MembraneRuntime> {
   const externalAddr = process.env.MEMBRANE_ADDR;
   const apiKey = process.env.MEMBRANE_API_KEY || "agent-harness-secret";
 
@@ -123,8 +128,21 @@ export async function startOrConnectMembrane(): Promise<MembraneRuntime> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "membrane-agent-harness-"));
   const port = await getFreePort();
   const addr = `127.0.0.1:${port}`;
-  const dbPath = path.join(tempDir, "agent-harness.db");
+  const postgresDSN = process.env.MEMBRANE_TEST_POSTGRES_DSN || process.env.MEMBRANE_POSTGRES_DSN;
+  if (!postgresDSN) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    throw new Error("MEMBRANE_POSTGRES_DSN is required to auto-start membraned; set MEMBRANE_ADDR to use an existing daemon");
+  }
   const daemonBinary = path.join(tempDir, process.platform === "win32" ? "membraned.exe" : "membraned");
+  const configPath = path.join(tempDir, "membrane.json");
+  const scopes = options.scopes ?? [HARNESS_SCOPE];
+  const maxSensitivity = options.maxSensitivity ?? Sensitivity.LOW;
+  fs.writeFileSync(configPath, JSON.stringify({
+    read_scopes: scopes,
+    write_scopes: scopes,
+    read_max_sensitivity: maxSensitivity,
+    write_max_sensitivity: maxSensitivity
+  }));
 
   await runCommand("go", ["build", "-o", daemonBinary, "./cmd/membraned"], {
     cwd: repoRoot,
@@ -133,10 +151,11 @@ export async function startOrConnectMembrane(): Promise<MembraneRuntime> {
   });
 
   let daemonLogs = "";
-  const daemon = spawn(daemonBinary, ["-addr", addr, "-db", dbPath], {
+  const daemon = spawn(daemonBinary, ["-config", configPath, "-addr", addr], {
     cwd: repoRoot,
     env: {
       ...process.env,
+      MEMBRANE_POSTGRES_DSN: postgresDSN,
       MEMBRANE_API_KEY: apiKey
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -157,7 +176,7 @@ export async function startOrConnectMembrane(): Promise<MembraneRuntime> {
   return {
     addr,
     apiKey,
-    dbPath,
+    postgresDSN,
     async close() {
       if (daemon.exitCode === null) {
         daemon.kill("SIGTERM");
@@ -170,4 +189,3 @@ export async function startOrConnectMembrane(): Promise<MembraneRuntime> {
     }
   };
 }
-

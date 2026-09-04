@@ -32,6 +32,8 @@ import {
   uniqueStrings
 } from "./scenario.js";
 
+const OTHER_SCOPE = `${HARNESS_SCOPE}:other`;
+
 function countByType(records: MemoryRecord[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const record of records) {
@@ -278,7 +280,7 @@ async function assertCaptureInputOutputFeatures(client: MembraneClient): Promise
     "MEDIUM trust should retrieve unredacted MEDIUM semantic payload"
   );
 
-  const otherScope = "project:agent-harness-other";
+  const otherScope = OTHER_SCOPE;
   const other = await captureObservation(client, {
     subject: "other-scope-service",
     predicate: "scope_marker",
@@ -335,7 +337,18 @@ async function assertRevisionAndDecayFeatures(client: MembraneClient): Promise<R
   await client.contest(forked.id, forkBase.semantic.id, HARNESS_ACTOR, "deterministic harness contest coverage");
   const contested = await client.retrieveById(forked.id, { trust: trustContext("agent-harness-revision") });
   assert.equal((semanticPayload(contested).revision as Record<string, unknown> | undefined)?.status, RevisionStatus.CONTESTED);
-  assert.ok(contested.relations?.some((relation) => relation.predicate === "contested_by" && relation.target_id === forkBase.semantic.id));
+  assert.equal((contested.relations ?? []).length, 0, "direct-ID projection should omit relations");
+  const contestedGraph = await client.retrieveGraph(`${SERVICE_NAME} approval owner Riley Dana`, {
+    trust: trustContext("agent-harness-revision"),
+    memoryTypes: [MemoryType.SEMANTIC],
+    rootLimit: 20,
+    nodeLimit: 40,
+    edgeLimit: 80,
+    maxHops: 1
+  });
+  assert.ok(contestedGraph.edges.some((edge) =>
+    edge.source_id === forked.id && edge.predicate === "contested_by" && edge.target_id === forkBase.semantic.id
+  ), "bounded graph retrieval should expose the contest relation");
 
   await client.penalize(forked.id, 0.2, HARNESS_ACTOR, "deterministic harness penalize coverage");
   const penalized = await client.retrieveById(forked.id, { trust: trustContext("agent-harness-revision") });
@@ -344,7 +357,7 @@ async function assertRevisionAndDecayFeatures(client: MembraneClient): Promise<R
   await client.reinforce(forked.id, HARNESS_ACTOR, "deterministic harness reinforce coverage");
   const reinforced = await client.retrieveById(forked.id, { trust: trustContext("agent-harness-revision") });
   assert.ok(reinforced.salience >= penalized.salience, "reinforce should increase or preserve salience");
-  assert.ok(reinforced.audit_log?.some((entry) => entry.action === "reinforce"), "reinforce should add audit log entry");
+  assert.equal((reinforced.audit_log ?? []).length, 0, "direct-ID projection should omit audit history");
 
   const mergeA = await captureObservation(client, {
     subject: SERVICE_NAME,
@@ -390,10 +403,23 @@ async function assertRevisionAndDecayFeatures(client: MembraneClient): Promise<R
 }
 
 async function main(): Promise<void> {
-  const runtime = await startOrConnectMembrane();
+  const runtime = await startOrConnectMembrane({
+    scopes: [HARNESS_SCOPE, OTHER_SCOPE],
+    maxSensitivity: Sensitivity.MEDIUM
+  });
   const client = new MembraneClient(runtime.addr, { apiKey: runtime.apiKey, timeoutMs: 8_000 });
 
   try {
+    for (const options of [
+      { scope: "outside-policy", sensitivity: Sensitivity.LOW },
+      { scope: "", sensitivity: Sensitivity.LOW },
+      { scope: HARNESS_SCOPE, sensitivity: Sensitivity.HIGH }
+    ]) {
+      await assert.rejects(
+        client.captureMemory({ text: "This write must be rejected" }, options),
+        { codeName: "PERMISSION_DENIED" }
+      );
+    }
     const seeded = await seedScenario(client);
     assertSeedPayloads(seeded);
 
@@ -493,7 +519,7 @@ async function main(): Promise<void> {
     const finalMetrics = await client.getMetrics();
 
     const summary = {
-      db_path: runtime.dbPath ?? "(external daemon)",
+      postgres_dsn: runtime.postgresDSN ? "(configured)" : "(external daemon)",
       seeded: {
         episodic: seeded.episodic.id,
         working: seeded.working.id,

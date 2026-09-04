@@ -17,7 +17,7 @@ import {
 } from "@bennettschwartz/membrane";
 import { MembraneClient } from "@bennettschwartz/membrane";
 
-export const HARNESS_SCOPE = "project:agent-harness-orion";
+export const HARNESS_SCOPE = process.env.AGENT_HARNESS_SCOPE || "project:agent-harness-orion";
 export const HARNESS_ACTOR = "agent-harness";
 export const PROJECT_NAME = "Project Orion";
 export const SERVICE_NAME = "auth-service";

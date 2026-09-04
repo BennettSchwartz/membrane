@@ -5,6 +5,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/*.test.ts",
     "test:deterministic": "tsx src/deterministic.ts",
     "test:llm": "tsx src/llm-test.ts"
   },

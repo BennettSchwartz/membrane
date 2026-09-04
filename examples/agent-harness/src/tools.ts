@@ -68,6 +68,16 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
 }
 
+function asIntegerInRange(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+function asMemoryTypes(value: unknown): MemoryType[] {
+  const valid = new Set<string>(GRAPH_MEMORY_TYPES);
+  return asStringArray(value).filter((item): item is MemoryType => valid.has(item));
+}
+
 function parseArgs(raw: string | undefined): Record<string, unknown> {
   if (!raw) {
     return {};
@@ -90,7 +100,8 @@ function summarizeGraph(graph: RetrieveGraphResult): Record<string, unknown> {
     root_ids: graph.root_ids,
     nodes,
     edges: graph.edges,
-    selection: graph.selection
+    selection: graph.selection,
+    ...(graph.diagnostics && graph.diagnostics.length > 0 ? { diagnostics: graph.diagnostics } : {})
   };
 }
 
@@ -263,16 +274,20 @@ export class MembraneToolRuntime {
   }
 
   private async retrieveGraph(args: Record<string, unknown>): Promise<ToolExecution> {
-    const requestedTypes = asStringArray(args.memory_types);
+    const requestedTypes = asMemoryTypes(args.memory_types);
     const memoryTypes = requestedTypes.length > 0 ? requestedTypes : [...GRAPH_MEMORY_TYPES];
+    const rootLimit = asIntegerInRange(args.root_limit, 16, 0, 10000);
+    const nodeLimit = asIntegerInRange(args.node_limit, 64, 0, 10000);
+    const edgeLimit = asIntegerInRange(args.edge_limit, 160, 0, 10000);
+    const maxHops = asIntegerInRange(args.max_hops, 2, -1, 10000);
 
     const graph = await this.client.retrieveGraph(asString(args.task_descriptor, "Project Orion auth-service incident"), {
       trust: trustContext("agent-harness-tool"),
       memoryTypes,
-      rootLimit: Number(args.root_limit ?? 16),
-      nodeLimit: Number(args.node_limit ?? 64),
-      edgeLimit: Number(args.edge_limit ?? 160),
-      maxHops: Number(args.max_hops ?? 2)
+      rootLimit,
+      nodeLimit,
+      edgeLimit,
+      maxHops
     });
 
     const value = summarizeGraph(graph);
