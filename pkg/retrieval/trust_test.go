@@ -70,6 +70,14 @@ func TestTrustAllowsScopeAndSensitivityBranches(t *testing.T) {
 	}
 }
 
+func TestTrustContextWildcardScopeAllowsEveryScope(t *testing.T) {
+	trust := NewTrustContext(schema.SensitivityLow, true, "tester", []string{"*"})
+	record := &schema.MemoryRecord{Scope: "project:any", Sensitivity: schema.SensitivityLow}
+	if !trust.Allows(record) {
+		t.Fatal("wildcard trust scope denied a scoped record")
+	}
+}
+
 func TestFilterBySensitivitySkipsInvalidValues(t *testing.T) {
 	records := []*schema.MemoryRecord{
 		{ID: "ok-low", Sensitivity: schema.SensitivityLow},

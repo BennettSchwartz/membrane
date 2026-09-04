@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
@@ -14,7 +13,7 @@ func TestEvalTrustGating(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	lowAlpha, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	lowAlpha, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:      "eval",
 		Subject:     "project alpha",
 		Predicate:   "uses",
@@ -27,7 +26,7 @@ func TestEvalTrustGating(t *testing.T) {
 		t.Fatalf("IngestObservation low: %v", err)
 	}
 
-	highAlpha, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	highAlpha, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:      "eval",
 		Subject:     "project alpha",
 		Predicate:   "secret",
@@ -40,7 +39,7 @@ func TestEvalTrustGating(t *testing.T) {
 		t.Fatalf("IngestObservation high: %v", err)
 	}
 
-	lowBeta, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	lowBeta, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:      "eval",
 		Subject:     "project beta",
 		Predicate:   "uses",

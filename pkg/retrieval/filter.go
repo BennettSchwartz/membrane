@@ -105,9 +105,20 @@ func FilterByTrust(records []*schema.MemoryRecord, trust *TrustContext) []*schem
 	return result
 }
 
-// SortBySalience sorts records by salience in descending order (highest first).
+// SortBySalience sorts records by salience in descending order (highest first),
+// then by update recency and record ID so equal-salience results are stable.
 func SortBySalience(records []*schema.MemoryRecord) {
 	sort.Slice(records, func(i, j int) bool {
-		return records[i].Salience > records[j].Salience
+		if records[i].Salience != records[j].Salience {
+			return records[i].Salience > records[j].Salience
+		}
+		return recordTieLess(records[i], records[j])
 	})
+}
+
+func recordTieLess(a, b *schema.MemoryRecord) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.ID < b.ID
 }

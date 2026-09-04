@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stringerValue string
@@ -89,13 +89,10 @@ func (f *fakeVectorStore) GetTriggerEmbedding(_ context.Context, recordID string
 func newTestStore(t *testing.T) storage.Store {
 	t.Helper()
 
-	store, err := sqlite.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
+			t.Fatalf("close memory store: %v", err)
 		}
 	})
 
@@ -255,7 +252,7 @@ func TestServiceEmbedRecordUsesSemanticObjectText(t *testing.T) {
 func TestServiceEmbedRecordGuardsAndErrors(t *testing.T) {
 	ctx := context.Background()
 	rec := semanticRecord("semantic-blank", nil)
-	rec.Payload = &schema.EntityPayload{Kind: "entity", CanonicalName: "not embedded"}
+	rec.Payload = &schema.EntityPayload{Kind: "entity"}
 	client := &fakeEmbeddingClient{}
 	vectors := newFakeVectorStore()
 
@@ -366,11 +363,23 @@ func TestTriggerTextByPayloadType(t *testing.T) {
 			want:    "test deploy",
 		},
 		{
-			name: "unknown entity payload",
+			name: "entity payload",
 			payload: &schema.EntityPayload{
 				CanonicalName: "Membrane",
+				PrimaryType:   schema.EntityTypeRepository,
+				Aliases:       []schema.EntityAlias{{Value: "memory substrate"}},
+				Identifiers: []schema.EntityIdentifier{{
+					Namespace: "GitHub",
+					Value:     "BennettSchwartz/membrane",
+				}},
+				Summary: "Postgres backed memory service",
 			},
-			want: "",
+			want: "Membrane Repository memory substrate github:BennettSchwartz/membrane Postgres backed memory service",
+		},
+		{
+			name:    "empty entity payload",
+			payload: &schema.EntityPayload{},
+			want:    "",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -431,6 +440,8 @@ func TestSimilarity(t *testing.T) {
 	vectors.embeddings["opposite"] = []float32{-1, 0}
 	vectors.embeddings["zero"] = []float32{0, 0}
 	vectors.embeddings["mismatch"] = []float32{1}
+	vectors.embeddings["nan"] = []float32{float32(math.NaN()), 0}
+	vectors.embeddings["inf"] = []float32{float32(math.Inf(1)), 0}
 	vectors.getErrs["error"] = errors.New("lookup failed")
 	svc := NewService(nil, nil, vectors, "model")
 	query := []float32{1, 0}
@@ -443,8 +454,10 @@ func TestSimilarity(t *testing.T) {
 	}{
 		{id: "same", want: 1, wantOK: true},
 		{id: "opposite", want: 0, wantOK: true},
-		{id: "zero", want: 0.5, wantOK: true},
+		{id: "zero", want: 0.5, wantOK: false},
 		{id: "mismatch", want: 0.5, wantOK: false},
+		{id: "nan", want: 0.5, wantOK: false},
+		{id: "inf", want: 0.5, wantOK: false},
 		{id: "missing", want: 0.5, wantOK: false},
 		{id: "error", want: 0.5, wantOK: false},
 	} {
@@ -468,6 +481,32 @@ func TestSimilarity(t *testing.T) {
 	if got, ok := svc.Similarity(context.Background(), "same", nil); ok || got != 0.5 {
 		t.Fatalf("empty query similarity = %.4f, %v; want 0.5, false", got, ok)
 	}
+	if got, ok := svc.Similarity(context.Background(), "same", []float32{0, 0}); ok || got != 0.5 {
+		t.Fatalf("zero query similarity = %.4f, %v; want 0.5, false", got, ok)
+	}
+	if got, ok := svc.Similarity(context.Background(), "same", []float32{float32(math.Inf(-1)), 0}); ok || got != 0.5 {
+		t.Fatalf("non-finite query similarity = %.4f, %v; want 0.5, false", got, ok)
+	}
+}
+
+func TestCosineSimilarityRejectsUnusableVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a    []float32
+		b    []float32
+	}{
+		{name: "empty", a: nil, b: nil},
+		{name: "mismatch", a: []float32{1, 0}, b: []float32{1}},
+		{name: "zero", a: []float32{0, 0}, b: []float32{1, 0}},
+		{name: "nan", a: []float32{float32(math.NaN()), 0}, b: []float32{1, 0}},
+		{name: "inf", a: []float32{float32(math.Inf(1)), 0}, b: []float32{1, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cosineSimilarity(tc.a, tc.b); got != 0.5 {
+				t.Fatalf("cosineSimilarity(%v, %v) = %v, want neutral fallback", tc.a, tc.b, got)
+			}
+		})
+	}
 }
 
 func TestClamp01(t *testing.T) {
@@ -477,6 +516,8 @@ func TestClamp01(t *testing.T) {
 		want  float64
 	}{
 		{name: "nan", value: math.NaN(), want: 0.5},
+		{name: "positive infinity", value: math.Inf(1), want: 0.5},
+		{name: "negative infinity", value: math.Inf(-1), want: 0.5},
 		{name: "below zero", value: -0.01, want: 0},
 		{name: "above one", value: 1.01, want: 1},
 		{name: "in range", value: 0.42, want: 0.42},
@@ -489,11 +530,22 @@ func TestClamp01(t *testing.T) {
 	}
 }
 
-func TestBackfillMissingSkipsExistingUnembeddableAndFailedRecords(t *testing.T) {
+func TestBackfillMissingSkipsExistingUnembeddableAndReportsFailedRecords(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 
 	toEmbed := semanticRecord("needs-embedding", "structured memory")
+	entity := schema.NewMemoryRecord("entity-needs-embedding", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Project Orchid",
+		PrimaryType:   schema.EntityTypeRepository,
+		Aliases:       []schema.EntityAlias{{Value: "orchid rollout"}},
+		Identifiers: []schema.EntityIdentifier{{
+			Namespace: "github",
+			Value:     "BennettSchwartz/orchid",
+		}},
+		Summary: "Repository for rollout automation",
+	})
 	existing := schema.NewMemoryRecord("existing", schema.MemoryTypeCompetence, schema.SensitivityLow, &schema.CompetencePayload{
 		Kind:      "competence",
 		SkillName: "debug-builds",
@@ -511,27 +563,33 @@ func TestBackfillMissingSkipsExistingUnembeddableAndFailedRecords(t *testing.T) 
 		Nodes:  []schema.PlanNode{{ID: "n1", Op: "build"}},
 	})
 
-	for _, rec := range []*schema.MemoryRecord{toEmbed, existing, empty, failing} {
+	for _, rec := range []*schema.MemoryRecord{toEmbed, entity, existing, empty, failing} {
 		mustCreate(t, ctx, store, rec)
 	}
 
 	client := &fakeEmbeddingClient{
-		vectors: map[string][]float32{"Membrane supports structured memory": {0.9, 0.1}},
-		errors:  map[string]error{"fail embedding": errors.New("temporary embedding outage")},
+		vectors: map[string][]float32{
+			"Membrane supports structured memory": {0.9, 0.1},
+			"Project Orchid Repository orchid rollout github:BennettSchwartz/orchid Repository for rollout automation": {0.4, 0.6},
+		},
+		errors: map[string]error{"fail embedding": errors.New("temporary embedding outage")},
 	}
 	vectors := newFakeVectorStore()
 	vectors.embeddings[existing.ID] = []float32{0.2, 0.8}
 	svc := NewService(client, store, vectors, "model-b")
 
 	count, err := svc.BackfillMissing(ctx)
-	if err != nil {
-		t.Fatalf("BackfillMissing: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "embedding backfill failed for 1 record") || !strings.Contains(err.Error(), failing.ID) {
+		t.Fatalf("BackfillMissing error = %v, want aggregate failure for %s", err, failing.ID)
 	}
-	if count != 1 {
-		t.Fatalf("BackfillMissing count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("BackfillMissing count = %d, want semantic and entity embeddings", count)
 	}
 	if got := vectors.embeddings[toEmbed.ID]; len(got) != 2 || got[0] != 0.9 || got[1] != 0.1 {
 		t.Fatalf("new embedding = %#v, want stored vector", got)
+	}
+	if got := vectors.embeddings[entity.ID]; len(got) != 2 || got[0] != 0.4 || got[1] != 0.6 {
+		t.Fatalf("entity embedding = %#v, want stored vector", got)
 	}
 	if _, ok := vectors.embeddings[empty.ID]; ok {
 		t.Fatalf("empty episodic record should not be counted or stored")
@@ -539,8 +597,8 @@ func TestBackfillMissingSkipsExistingUnembeddableAndFailedRecords(t *testing.T) 
 	if _, ok := vectors.embeddings[failing.ID]; ok {
 		t.Fatalf("failing record should not be stored")
 	}
-	if len(client.texts) != 2 {
-		t.Fatalf("embedded texts = %#v, want only missing embeddable and failing records", client.texts)
+	if len(client.texts) != 3 {
+		t.Fatalf("embedded texts = %#v, want missing semantic, entity, and failing records", client.texts)
 	}
 }
 
@@ -560,6 +618,26 @@ func TestBackfillMissingReturnsLookupErrors(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("BackfillMissing count = %d, want 0", count)
+	}
+}
+
+func TestBackfillMissingReturnsContextCancellationBeforeScanning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	store := newTestStore(t)
+	rec := semanticRecord("canceled-before-scan", "value")
+	mustCreate(t, context.Background(), store, rec)
+
+	client := &fakeEmbeddingClient{}
+	count, err := NewService(client, store, newFakeVectorStore(), "model").BackfillMissing(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BackfillMissing error = %v, want context.Canceled", err)
+	}
+	if count != 0 {
+		t.Fatalf("BackfillMissing count = %d, want 0", count)
+	}
+	if len(client.texts) != 0 {
+		t.Fatalf("embedded texts = %#v, want no work after cancellation", client.texts)
 	}
 }
 

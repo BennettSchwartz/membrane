@@ -6,17 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
+	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
 
-func newConsolidationTestStore(t *testing.T) *sqlite.SQLiteStore {
+func newConsolidationTestStore(t *testing.T) *teststore.MemoryStore {
 	t.Helper()
 
-	store, err := sqlite.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 
 	return store
@@ -102,7 +100,7 @@ func TestConsolidationRunAllIncludesEpisodicCompression(t *testing.T) {
 	assertSalience(t, ctx, store, old.ID, 0.3)
 }
 
-func assertSalience(t *testing.T, ctx context.Context, store *sqlite.SQLiteStore, id string, want float64) {
+func assertSalience(t *testing.T, ctx context.Context, store storage.Store, id string, want float64) {
 	t.Helper()
 
 	got, err := store.Get(ctx, id)

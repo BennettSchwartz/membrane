@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
@@ -26,6 +27,10 @@ type Snapshot struct {
 	ActiveRecords        int            `json:"active_records"`
 	PinnedRecords        int            `json:"pinned_records"`
 	TotalAuditEntries    int            `json:"total_audit_entries"`
+	EmbeddingModel       string         `json:"embedding_model,omitempty"`
+	EmbeddedRecords      int            `json:"embedded_records"`
+	MissingEmbeddings    int            `json:"missing_embeddings"`
+	EmbeddingCoverage    float64        `json:"embedding_coverage"`
 
 	// RFC 15.10 metrics
 	MemoryGrowthRate      float64 `json:"memory_growth_rate"`
@@ -42,14 +47,61 @@ func NewCollector(store storage.Store) *Collector {
 
 // Collect queries the store and returns a metrics Snapshot.
 func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
-	records, err := c.store.List(ctx, storage.ListOptions{})
+	return c.collect(ctx, nil)
+}
+
+// CollectForTrust returns a snapshot derived only from records directly
+// visible to the supplied server-derived trust context.
+func (c *Collector) CollectForTrust(ctx context.Context, trust *retrieval.TrustContext) (*Snapshot, error) {
+	if trust == nil {
+		return nil, retrieval.ErrNilTrust
+	}
+	return c.collect(ctx, trust)
+}
+
+const metricsFallbackRecordLimit = 10_000
+
+func (c *Collector) collect(ctx context.Context, trust *retrieval.TrustContext) (*Snapshot, error) {
+	filter := storage.MetricsFilter{}
+	if trust != nil {
+		filter.MaxSensitivity = trust.MaxSensitivity
+		filter.Scopes = append([]string(nil), trust.Scopes...)
+		filter.IncludeUnscoped = len(trust.Scopes) > 0
+	}
+	if provider, ok := c.store.(storage.MetricsAggregateProvider); ok {
+		aggregate, err := provider.AggregateMetrics(ctx, filter)
+		if err != nil {
+			return nil, fmt.Errorf("metrics: aggregate records: %w", err)
+		}
+		return snapshotFromAggregate(aggregate), nil
+	}
+
+	listOptions := storage.ListOptions{Limit: metricsFallbackRecordLimit + 1}
+	if trust != nil {
+		listOptions.MaxSensitivity = trust.MaxSensitivity
+		listOptions.Scopes = append([]string(nil), trust.Scopes...)
+		listOptions.IncludeUnscoped = len(trust.Scopes) > 0
+	}
+	records, err := c.store.List(ctx, listOptions)
 	if err != nil {
 		return nil, fmt.Errorf("metrics: list records: %w", err)
+	}
+	if len(records) > metricsFallbackRecordLimit {
+		return nil, fmt.Errorf("metrics: store must implement bounded aggregate metrics above %d records", metricsFallbackRecordLimit)
+	}
+	if trust != nil {
+		allowed := records[:0]
+		for _, record := range records {
+			if trust.Allows(record) {
+				allowed = append(allowed, record)
+			}
+		}
+		records = allowed
 	}
 
 	snap := &Snapshot{
 		CollectedAt:   time.Now().UTC(),
-		RecordsByType: make(map[string]int),
+		RecordsByType: emptyRecordsByType(),
 		SalienceDistribution: map[string]int{
 			"0.0-0.2": 0,
 			"0.2-0.4": 0,
@@ -139,6 +191,17 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 		snap.MemoryGrowthRate = float64(recentRecords) / float64(snap.TotalRecords)
 	}
 
+	if trust == nil {
+		if provider, ok := c.store.(storage.EmbeddingStatsProvider); ok {
+			stats, err := provider.EmbeddingStats(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("metrics: embedding stats: %w", err)
+			}
+			snap.EmbeddingModel = stats.Model
+			snap.EmbeddedRecords, snap.MissingEmbeddings, snap.EmbeddingCoverage = normalizeEmbeddingStats(stats)
+		}
+	}
+
 	if totalAuditCount > 0 {
 		snap.RetrievalUsefulness = float64(reinforceCount) / float64(totalAuditCount)
 		snap.RevisionRate = float64(revisionCount) / float64(totalAuditCount)
@@ -153,4 +216,80 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 	}
 
 	return snap, nil
+}
+
+func snapshotFromAggregate(aggregate storage.MetricsAggregate) *Snapshot {
+	recordsByType := emptyRecordsByType()
+	for memoryType, count := range aggregate.RecordsByType {
+		recordsByType[memoryType] = count
+	}
+	distribution := map[string]int{
+		"0.0-0.2": 0,
+		"0.2-0.4": 0,
+		"0.4-0.6": 0,
+		"0.6-0.8": 0,
+		"0.8-1.0": 0,
+	}
+	for bucket, count := range aggregate.SalienceDistribution {
+		distribution[bucket] = count
+	}
+	embedded, missing, coverage := normalizeEmbeddingStats(storage.EmbeddingStats{
+		Model:           aggregate.EmbeddingModel,
+		TotalRecords:    aggregate.TotalRecords,
+		EmbeddedRecords: aggregate.EmbeddedRecords,
+	})
+	return &Snapshot{
+		CollectedAt:           time.Now().UTC(),
+		TotalRecords:          aggregate.TotalRecords,
+		RecordsByType:         recordsByType,
+		AvgSalience:           aggregate.AvgSalience,
+		AvgConfidence:         aggregate.AvgConfidence,
+		SalienceDistribution:  distribution,
+		ActiveRecords:         aggregate.ActiveRecords,
+		PinnedRecords:         aggregate.PinnedRecords,
+		TotalAuditEntries:     aggregate.TotalAuditEntries,
+		EmbeddingModel:        aggregate.EmbeddingModel,
+		EmbeddedRecords:       embedded,
+		MissingEmbeddings:     missing,
+		EmbeddingCoverage:     coverage,
+		MemoryGrowthRate:      aggregate.MemoryGrowthRate,
+		RetrievalUsefulness:   aggregate.RetrievalUsefulness,
+		CompetenceSuccessRate: aggregate.CompetenceSuccessRate,
+		PlanReuseFrequency:    aggregate.PlanReuseFrequency,
+		RevisionRate:          aggregate.RevisionRate,
+	}
+}
+
+func normalizeEmbeddingStats(stats storage.EmbeddingStats) (embedded int, missing int, coverage float64) {
+	total := stats.TotalRecords
+	if total < 0 {
+		total = 0
+	}
+	embedded = stats.EmbeddedRecords
+	if embedded < 0 {
+		embedded = 0
+	}
+	if embedded > total {
+		embedded = total
+	}
+	missing = total - embedded
+	if total > 0 {
+		coverage = float64(embedded) / float64(total)
+	}
+	return embedded, missing, coverage
+}
+
+func emptyRecordsByType() map[string]int {
+	counts := make(map[string]int, 6)
+	for _, memoryType := range []schema.MemoryType{
+		schema.MemoryTypeWorking,
+		schema.MemoryTypeEntity,
+		schema.MemoryTypeSemantic,
+		schema.MemoryTypeCompetence,
+		schema.MemoryTypePlanGraph,
+		schema.MemoryTypeEpisodic,
+	} {
+		counts[string(memoryType)] = 0
+	}
+	return counts
 }

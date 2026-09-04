@@ -36,15 +36,16 @@ func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schem
 		if err := ensureEvidence(forkedRecord); err != nil {
 			return err
 		}
+		normalizeNewRecordMetadata(forkedRecord, actor, now, sourceRec.Lifecycle)
 
 		// 2. Assign a new ID if not already set.
 		if forkedRecord.ID == "" {
 			forkedRecord.ID = uuid.New().String()
 		}
 
-		// 3. Create "derived_from" relation to source.
+		// 3. Create derived_from relation to source.
 		forkedRecord.Relations = append(forkedRecord.Relations, schema.Relation{
-			Predicate: "derived_from",
+			Predicate: schema.GraphPredicateDerivedFrom,
 			TargetID:  sourceID,
 			Weight:    1.0,
 			CreatedAt: now,
@@ -53,6 +54,7 @@ func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schem
 		// 4. Set timestamps on forked record.
 		forkedRecord.CreatedAt = now
 		forkedRecord.UpdatedAt = now
+		markSemanticActive(forkedRecord)
 
 		// 5. Add audit entries to both records.
 		if err := tx.AddAuditEntry(ctx, sourceID, newAuditEntry(
@@ -64,16 +66,24 @@ func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schem
 			return fmt.Errorf("add audit entry to source record %s: %w", sourceID, err)
 		}
 
-		forkedRecord.AuditLog = append(forkedRecord.AuditLog, newAuditEntry(
+		forkedRecord.AuditLog = []schema.AuditEntry{newAuditEntry(
 			schema.AuditActionCreate,
 			actor,
 			fmt.Sprintf("forked from %s: %s", sourceID, rationale),
 			now,
-		))
+		)}
 
 		// 6. Store the forked record.
 		if err := tx.Create(ctx, forkedRecord); err != nil {
 			return fmt.Errorf("create forked record %s: %w", forkedRecord.ID, err)
+		}
+		if err := tx.AddRelation(ctx, sourceID, schema.Relation{
+			Predicate: schema.GraphPredicateDerivedSemantic,
+			TargetID:  forkedRecord.ID,
+			Weight:    1.0,
+			CreatedAt: now,
+		}); err != nil {
+			return fmt.Errorf("add derived_semantic relation to source record %s: %w", sourceID, err)
 		}
 
 		return nil

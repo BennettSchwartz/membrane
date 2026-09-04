@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
 	"github.com/BennettSchwartz/membrane/pkg/revision"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
@@ -14,7 +13,7 @@ import (
 // ingestSemanticRecord is a helper that ingests an observation and returns the record.
 func ingestSemanticRecord(t *testing.T, m *membrane.Membrane, subject, predicate string, object any) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := captureObservationRecord(context.Background(), m, ingestion.IngestObservationRequest{
+	rec, err := captureObservationRecord(context.Background(), m, observationCaptureFixture{
 		Source:    "test",
 		Subject:   subject,
 		Predicate: predicate,
@@ -30,7 +29,7 @@ func ingestSemanticRecord(t *testing.T, m *membrane.Membrane, subject, predicate
 // ingestEpisodicRecord is a helper that ingests an event and returns the record.
 func ingestEpisodicRecord(t *testing.T, m *membrane.Membrane) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := captureEventRecord(context.Background(), m, ingestion.IngestEventRequest{
+	rec, err := captureEventRecord(context.Background(), m, eventCaptureFixture{
 		Source:    "test",
 		EventKind: "test_event",
 		Ref:       "test-ref",
@@ -122,7 +121,7 @@ func TestFork(t *testing.T) {
 			Kind:      "semantic",
 			Subject:   "database",
 			Predicate: "type",
-			Object:    "SQLite",
+			Object:    "Redis",
 			Validity: schema.Validity{
 				Mode:       schema.ValidityModeConditional,
 				Conditions: map[string]any{"env": "development"},

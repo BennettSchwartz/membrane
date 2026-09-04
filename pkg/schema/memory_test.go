@@ -36,6 +36,26 @@ func TestMemoryRecordValidateRejectsInvalidTypeAndPayloadMismatch(t *testing.T) 
 	}
 }
 
+func TestMemoryRecordValidateRejectsInvalidRelations(t *testing.T) {
+	rec := NewMemoryRecord("id-1", MemoryTypeSemantic, SensitivityLow, &SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "Orchid",
+		Predicate: "deploys_to",
+		Object:    "staging",
+		Validity:  Validity{Mode: ValidityModeGlobal},
+	})
+	rec.Relations = []Relation{{Predicate: "supports", Weight: 0.5}}
+
+	err := rec.Validate()
+	verr, ok := err.(*ValidationError)
+	if !ok {
+		t.Fatalf("Validate error = %T/%v, want ValidationError", err, err)
+	}
+	if verr.Field != "relations[0].target_id" {
+		t.Fatalf("Validate field = %q, want relations[0].target_id", verr.Field)
+	}
+}
+
 func TestIsValidSensitivity(t *testing.T) {
 	valid := []Sensitivity{
 		SensitivityPublic,
@@ -88,6 +108,22 @@ func TestIsValidTaskState(t *testing.T) {
 	}
 	if IsValidTaskState(TaskState("invalid")) {
 		t.Fatalf("expected invalid task state to be rejected")
+	}
+}
+
+func TestIsValidValidityMode(t *testing.T) {
+	valid := []ValidityMode{
+		ValidityModeGlobal,
+		ValidityModeConditional,
+		ValidityModeTimeboxed,
+	}
+	for _, mode := range valid {
+		if !IsValidValidityMode(mode) {
+			t.Fatalf("expected %q to be valid", mode)
+		}
+	}
+	if IsValidValidityMode(ValidityMode("sometimes")) {
+		t.Fatalf("expected invalid validity mode to be rejected")
 	}
 }
 

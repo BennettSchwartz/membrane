@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BennettSchwartz/membrane/pkg/decay"
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
@@ -19,7 +18,7 @@ func TestEvalDecayAndReinforce(t *testing.T) {
 	m := newTestMembrane(t)
 	trust := fullTrust()
 
-	rec, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	rec, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "tool_call",
 		Ref:       "decay-1",

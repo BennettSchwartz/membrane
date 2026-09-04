@@ -84,6 +84,18 @@ func retractRecord(rec *schema.MemoryRecord) {
 	}
 }
 
+func markSemanticActive(rec *schema.MemoryRecord) {
+	if rec == nil {
+		return
+	}
+	if sp, ok := rec.Payload.(*schema.SemanticPayload); ok {
+		if sp.Revision == nil {
+			sp.Revision = &schema.RevisionState{}
+		}
+		sp.Revision.Status = schema.RevisionStatusActive
+	}
+}
+
 func (s *Service) embedRecord(ctx context.Context, rec *schema.MemoryRecord) {
 	if s.embedder == nil || rec == nil {
 		return

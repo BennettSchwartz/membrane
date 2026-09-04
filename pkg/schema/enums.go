@@ -130,6 +130,16 @@ const (
 	ValidityModeTimeboxed ValidityMode = "timeboxed"
 )
 
+// IsValidValidityMode reports whether mode is one of the allowed validity modes.
+func IsValidValidityMode(mode ValidityMode) bool {
+	switch mode {
+	case ValidityModeGlobal, ValidityModeConditional, ValidityModeTimeboxed:
+		return true
+	default:
+		return false
+	}
+}
+
 // TaskState defines the current state of a working memory task.
 // RFC 15A.7: Working memory tracks task state for resumption.
 type TaskState string
@@ -235,7 +245,7 @@ const (
 )
 
 // EdgeKind defines the type of edge in a plan graph.
-// RFC 15A.10: Plan graph edges represent dependencies.
+// RFC 15A.11: Plan graph edges represent dependencies.
 type EdgeKind string
 
 const (

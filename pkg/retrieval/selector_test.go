@@ -75,6 +75,25 @@ func TestSelectorEmptySingleAndSuccessRateDefaults(t *testing.T) {
 	}
 }
 
+func TestSelectorBreaksScoreTiesByFreshnessThenID(t *testing.T) {
+	selector := NewSelector(0.2)
+	older := competenceCandidate("a-older", 0.5, 1, 1)
+	older.UpdatedAt = time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	older.Lifecycle.LastReinforcedAt = time.Time{}
+	fresherB := competenceCandidate("b-fresher", 0.5, 1, 1)
+	fresherB.UpdatedAt = time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
+	fresherB.Lifecycle.LastReinforcedAt = time.Time{}
+	fresherA := competenceCandidate("a-fresher", 0.5, 1, 1)
+	fresherA.UpdatedAt = fresherB.UpdatedAt
+	fresherA.Lifecycle.LastReinforcedAt = time.Time{}
+
+	result := selector.Select(context.Background(), []*schema.MemoryRecord{older, fresherB, fresherA}, nil)
+
+	if got := idsOf(result.Selected); !reflect.DeepEqual(got, []string{"a-fresher", "b-fresher", "a-older"}) {
+		t.Fatalf("selected IDs = %v, want freshness tie-breaker then ID", got)
+	}
+}
+
 func TestRankRecordsWithSelectionPromotesSelectedThenSalienceSortsRemainder(t *testing.T) {
 	selected := &schema.MemoryRecord{ID: "selected", Salience: 0.1}
 	high := &schema.MemoryRecord{ID: "high", Salience: 0.9}
@@ -94,11 +113,16 @@ func TestRetrieveByIDAndEmbeddingServicePath(t *testing.T) {
 	ctx := context.Background()
 
 	record := newSemanticRetrievalRecord("retrievable", 0.8, schema.SensitivityLow)
+	record.AuditLog = []schema.AuditEntry{{Action: schema.AuditActionReinforce, Actor: "fixture"}}
+	record.Provenance.Sources = []schema.ProvenanceSource{{Kind: schema.ProvenanceKindObservation, Ref: "fixture"}}
 	denied := newSemanticRetrievalRecord("denied", 0.9, schema.SensitivityHyper)
 	for _, rec := range []*schema.MemoryRecord{record, denied} {
 		if err := store.Create(ctx, rec); err != nil {
 			t.Fatalf("Create %s: %v", rec.ID, err)
 		}
+	}
+	if err := store.AddRelation(ctx, record.ID, schema.Relation{Predicate: "related", TargetID: denied.ID}); err != nil {
+		t.Fatalf("AddRelation: %v", err)
 	}
 
 	embedding := &fakeEmbeddingService{vector: []float32{1, 2, 3}}
@@ -125,6 +149,9 @@ func TestRetrieveByIDAndEmbeddingServicePath(t *testing.T) {
 	}
 	if got.ID != record.ID {
 		t.Fatalf("RetrieveByID ID = %q, want %q", got.ID, record.ID)
+	}
+	if len(got.Relations) != 1 || len(got.AuditLog) != 1 || len(got.Provenance.Sources) != 1 {
+		t.Fatalf("RetrieveByID projection = relations:%d audit:%d provenance:%d, want complete record", len(got.Relations), len(got.AuditLog), len(got.Provenance.Sources))
 	}
 	if _, err := svc.RetrieveByID(ctx, record.ID, nil); !errors.Is(err, ErrNilTrust) {
 		t.Fatalf("RetrieveByID nil trust err = %v, want ErrNilTrust", err)

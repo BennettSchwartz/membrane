@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/BennettSchwartz/membrane/pkg/schema"
@@ -113,6 +114,72 @@ func (s *Service) Reinforce(ctx context.Context, id string, actor string, ration
 	})
 }
 
+// ReinforceFromSource boosts a record and records the source evidence when the
+// record is a semantic fact. It is used by consolidation paths that reinforce
+// an existing durable fact from a specific episodic observation.
+func (s *Service) ReinforceFromSource(ctx context.Context, id, sourceType, sourceID, actor, rationale string) error {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return fmt.Errorf("reinforce: source ID is required")
+	}
+	sourceType = strings.TrimSpace(sourceType)
+	if sourceType == "" {
+		sourceType = "observation"
+	}
+
+	return storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+		record, err := storage.GetDerivedDestination(ctx, tx, id)
+		if err != nil {
+			return fmt.Errorf("reinforce: get record %s: %w", id, err)
+		}
+		policy, err := storage.DerivedRecordPolicy(ctx, tx, sourceID)
+		if err != nil {
+			return fmt.Errorf("reinforce: source policy: %w", err)
+		}
+		source := &schema.MemoryRecord{ID: sourceID, Scope: policy.Scope, Sensitivity: policy.Sensitivity}
+		oldSensitivity := record.Sensitivity
+		knownSource := provenanceHasSource(record.Provenance.Sources, sourceID)
+		if payload, ok := record.Payload.(*schema.SemanticPayload); ok && payload != nil {
+			knownSource = knownSource || semanticPayloadHasSource(payload, sourceID)
+		}
+		allowed, err := storage.DerivedSourceMayReinforce(ctx, tx, record, source, knownSource)
+		if err != nil || !allowed {
+			return err
+		}
+		if err := storage.ApplyDerivedSourcePolicy(ctx, tx, record, []*schema.MemoryRecord{source}); err != nil {
+			return err
+		}
+		if knownSource && oldSensitivity == record.Sensitivity {
+			return nil
+		}
+
+		now := time.Now().UTC()
+		if !knownSource {
+			record.Salience += record.Lifecycle.Decay.ReinforcementGain
+			if record.Salience > 1.0 {
+				record.Salience = 1.0
+			}
+			record.Lifecycle.LastReinforcedAt = now
+			appendSemanticEvidenceSource(record, sourceType, sourceID, actor, now)
+		}
+		record.UpdatedAt = now
+		if oldSensitivity != record.Sensitivity {
+			if err := storage.PruneDerivedInverseRelations(ctx, tx, record); err != nil {
+				return err
+			}
+		}
+		if err := tx.Update(ctx, record); err != nil {
+			return fmt.Errorf("reinforce: update record %s: %w", id, err)
+		}
+		if err := tx.AddAuditEntry(ctx, id, schema.AuditEntry{
+			Action: schema.AuditActionReinforce, Actor: actor, Timestamp: now, Rationale: rationale,
+		}); err != nil {
+			return fmt.Errorf("reinforce: add audit entry %s: %w", id, err)
+		}
+		return nil
+	})
+}
+
 // Penalize reduces a record's salience by the given amount, floored at
 // MinSalience, and adds an audit entry.
 func (s *Service) Penalize(ctx context.Context, id string, amount float64, actor string, rationale string) error {
@@ -149,6 +216,64 @@ func (s *Service) Penalize(ctx context.Context, id string, amount float64, actor
 
 		return nil
 	})
+}
+
+func appendSemanticEvidenceSource(record *schema.MemoryRecord, sourceType, sourceID, actor string, ts time.Time) {
+	if record == nil || strings.TrimSpace(sourceID) == "" {
+		return
+	}
+	if payload, ok := record.Payload.(*schema.SemanticPayload); ok && payload != nil && !semanticPayloadHasSource(payload, sourceID) {
+		payload.Evidence = append(payload.Evidence, schema.ProvenanceRef{
+			SourceType: sourceType,
+			SourceID:   sourceID,
+			Timestamp:  ts,
+		})
+		record.Payload = payload
+	}
+	if !provenanceHasSource(record.Provenance.Sources, sourceID) {
+		record.Provenance.Sources = append(record.Provenance.Sources, schema.ProvenanceSource{
+			Kind:      provenanceKindForSourceType(sourceType),
+			Ref:       sourceID,
+			CreatedBy: actor,
+			Timestamp: ts,
+		})
+	}
+	if record.Provenance.CreatedBy == "" {
+		record.Provenance.CreatedBy = actor
+	}
+}
+
+func semanticPayloadHasSource(payload *schema.SemanticPayload, sourceID string) bool {
+	for _, evidence := range payload.Evidence {
+		if evidence.SourceID == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
+func provenanceHasSource(sources []schema.ProvenanceSource, sourceID string) bool {
+	for _, source := range sources {
+		if source.Ref == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
+func provenanceKindForSourceType(sourceType string) schema.ProvenanceKind {
+	switch strings.TrimSpace(sourceType) {
+	case "event":
+		return schema.ProvenanceKindEvent
+	case "artifact":
+		return schema.ProvenanceKindArtifact
+	case "tool", "tool_call":
+		return schema.ProvenanceKindToolCall
+	case "outcome":
+		return schema.ProvenanceKindOutcome
+	default:
+		return schema.ProvenanceKindObservation
+	}
 }
 
 // ApplyDecayAll applies decay to all non-pinned records and returns the

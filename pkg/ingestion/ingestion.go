@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,10 @@ import (
 )
 
 // IngestEventRequest contains the parameters for ingesting an event.
+//
+// Deprecated: use CaptureMemoryRequest with SourceKind "event" for new
+// capture paths so interpretation, entity resolution, and graph edges stay on
+// the primary ingestion path.
 type IngestEventRequest struct {
 	// Source identifies the actor or system that produced the event.
 	Source string
@@ -39,6 +44,10 @@ type IngestEventRequest struct {
 }
 
 // IngestToolOutputRequest contains the parameters for ingesting a tool output.
+//
+// Deprecated: use CaptureMemoryRequest with SourceKind "tool_output" for new
+// capture paths so tool results can participate in capture interpretation and
+// graph linking.
 type IngestToolOutputRequest struct {
 	// Source identifies the actor or system that invoked the tool.
 	Source string
@@ -69,6 +78,10 @@ type IngestToolOutputRequest struct {
 }
 
 // IngestObservationRequest contains the parameters for ingesting an observation.
+//
+// Deprecated: use CaptureMemoryRequest with SourceKind "observation" for new
+// capture paths so observations can create or reuse semantic facts and linked
+// entities through the graph-aware capture flow.
 type IngestObservationRequest struct {
 	// Source identifies the actor or system that made the observation.
 	Source string
@@ -112,6 +125,10 @@ type IngestOutcomeRequest struct {
 }
 
 // IngestWorkingStateRequest contains the parameters for ingesting working memory state.
+//
+// Deprecated: use CaptureMemoryRequest with SourceKind "working_state" for new
+// capture paths so working snapshots keep the same capture metadata and graph
+// behavior as other source shapes.
 type IngestWorkingStateRequest struct {
 	// Source identifies the actor or system that produced the working state.
 	Source string
@@ -150,10 +167,11 @@ type IngestWorkingStateRequest struct {
 // Service orchestrates ingestion of raw data into the memory substrate.
 // It coordinates classification, policy application, and storage.
 type Service struct {
-	store       storage.Store
-	classifier  *Classifier
-	policy      *PolicyEngine
-	interpreter Interpreter
+	store         storage.Store
+	classifier    *Classifier
+	policy        *PolicyEngine
+	interpreter   Interpreter
+	captureAccess CaptureAccess
 }
 
 // NewService creates a new ingestion Service.
@@ -177,6 +195,9 @@ func NewServiceWithInterpreter(store storage.Store, classifier *Classifier, poli
 }
 
 // IngestEvent creates an episodic memory record from an event.
+//
+// Deprecated: call Service.CaptureMemory or membrane.Membrane.CaptureMemory
+// with SourceKind "event" for new capture paths.
 func (s *Service) IngestEvent(ctx context.Context, req IngestEventRequest) (*schema.MemoryRecord, error) {
 	ts := req.Timestamp
 	if ts.IsZero() {
@@ -225,6 +246,9 @@ func (s *Service) IngestEvent(ctx context.Context, req IngestEventRequest) (*sch
 
 // IngestToolOutput creates an episodic memory record with tool graph data from
 // a tool invocation.
+//
+// Deprecated: call Service.CaptureMemory or membrane.Membrane.CaptureMemory
+// with SourceKind "tool_output" for new capture paths.
 func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequest) (*schema.MemoryRecord, error) {
 	ts := req.Timestamp
 	if ts.IsZero() {
@@ -286,7 +310,11 @@ func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequ
 
 // IngestObservation creates a semantic or working memory record from an
 // observation, extracting subject-predicate-object structure.
+//
+// Deprecated: call Service.CaptureMemory or membrane.Membrane.CaptureMemory
+// with SourceKind "observation" for new capture paths.
 func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRequest) (*schema.MemoryRecord, error) {
+	predicate := schema.NormalizeSemanticPredicate(req.Predicate)
 	ts := req.Timestamp
 	if ts.IsZero() {
 		ts = time.Now().UTC()
@@ -299,7 +327,7 @@ func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRe
 		Tags:        req.Tags,
 		Scope:       req.Scope,
 		Subject:     req.Subject,
-		Predicate:   req.Predicate,
+		Predicate:   predicate,
 		Object:      req.Object,
 		Sensitivity: req.Sensitivity,
 	}
@@ -314,7 +342,7 @@ func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRe
 	payload := schema.SemanticPayload{
 		Kind:      "semantic",
 		Subject:   req.Subject,
-		Predicate: req.Predicate,
+		Predicate: predicate,
 		Object:    req.Object,
 		Validity: schema.Validity{
 			Mode: schema.ValidityModeGlobal,
@@ -370,25 +398,25 @@ func (s *Service) canonicalizeSemanticEntities(ctx context.Context, record *sche
 	if entity := s.lookupEntityByTerm(ctx, payload.Subject, record.Scope); entity != nil {
 		payload.Subject = entity.ID
 		record.Relations = append(record.Relations, schema.Relation{
-			Predicate: "subject_entity",
+			Predicate: schema.GraphPredicateSubjectEntity,
 			TargetID:  entity.ID,
 			Weight:    1.0,
 			CreatedAt: now,
 		})
-		edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: "subject_entity", TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
-		edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: "fact_subject_of", TargetID: record.ID, Weight: 1.0, CreatedAt: now})
+		edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: schema.GraphPredicateSubjectEntity, TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
+		edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: schema.GraphPredicateFactSubjectOf, TargetID: record.ID, Weight: 1.0, CreatedAt: now})
 	}
 	if object, ok := payload.Object.(string); ok {
 		if entity := s.lookupEntityByTerm(ctx, object, record.Scope); entity != nil {
 			payload.Object = entity.ID
 			record.Relations = append(record.Relations, schema.Relation{
-				Predicate: "object_entity",
+				Predicate: schema.GraphPredicateObjectEntity,
 				TargetID:  entity.ID,
 				Weight:    1.0,
 				CreatedAt: now,
 			})
-			edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: "object_entity", TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
-			edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: "fact_object_of", TargetID: record.ID, Weight: 1.0, CreatedAt: now})
+			edges = append(edges, schema.GraphEdge{SourceID: record.ID, Predicate: schema.GraphPredicateObjectEntity, TargetID: entity.ID, Weight: 1.0, CreatedAt: now})
+			edges = append(edges, schema.GraphEdge{SourceID: entity.ID, Predicate: schema.GraphPredicateFactObjectOf, TargetID: record.ID, Weight: 1.0, CreatedAt: now})
 		}
 	}
 	record.Payload = payload
@@ -401,6 +429,13 @@ func (s *Service) lookupEntityByTerm(ctx context.Context, term, scope string) *s
 		return nil
 	}
 	matches, err := lookup.FindEntitiesByTerm(ctx, term, scope, 1)
+	if err == nil && len(matches) > 0 && matches[0] != nil && matches[0].Type == schema.MemoryTypeEntity {
+		return matches[0]
+	}
+	if strings.TrimSpace(scope) == "" {
+		return nil
+	}
+	matches, err = lookup.FindEntitiesByTerm(ctx, term, "", 1)
 	if err != nil || len(matches) == 0 || matches[0] == nil || matches[0].Type != schema.MemoryTypeEntity {
 		return nil
 	}
@@ -472,6 +507,9 @@ func (s *Service) IngestOutcome(ctx context.Context, req IngestOutcomeRequest) (
 }
 
 // IngestWorkingState creates a working memory record from a working state snapshot.
+//
+// Deprecated: call Service.CaptureMemory or membrane.Membrane.CaptureMemory
+// with SourceKind "working_state" for new capture paths.
 func (s *Service) IngestWorkingState(ctx context.Context, req IngestWorkingStateRequest) (*schema.MemoryRecord, error) {
 	ts := req.Timestamp
 	if ts.IsZero() {

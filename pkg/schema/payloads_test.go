@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -150,6 +151,12 @@ func TestEntityHelpersAndAliasJSON(t *testing.T) {
 	if got := NormalizeEntityTerm("  Orchid Project  "); got != "orchid project" {
 		t.Fatalf("NormalizeEntityTerm = %q, want orchid project", got)
 	}
+	if got := NormalizeEntityTerm("Project\t \nOrchid"); got != "project orchid" {
+		t.Fatalf("NormalizeEntityTerm whitespace = %q, want project orchid", got)
+	}
+	if got := NormalizeEntityIdentifierNamespace(" GitHub "); got != "github" {
+		t.Fatalf("NormalizeEntityIdentifierNamespace = %q, want github", got)
+	}
 	aliases := []EntityAlias{
 		{Value: " Orchid "},
 		{Value: "   "},
@@ -210,8 +217,20 @@ func TestMemoryRecordValidateRejectsRequiredAndRangeFields(t *testing.T) {
 		{name: "missing sensitivity", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Payload: &SemanticPayload{}}, want: "sensitivity"},
 		{name: "confidence low", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: -0.1, Payload: &SemanticPayload{}}, want: "confidence"},
 		{name: "confidence high", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1.1, Payload: &SemanticPayload{}}, want: "confidence"},
+		{name: "confidence nan", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: math.NaN(), Payload: &SemanticPayload{}}, want: "confidence"},
+		{name: "confidence infinite", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: math.Inf(1), Payload: &SemanticPayload{}}, want: "confidence"},
 		{name: "negative salience", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Salience: -0.1, Payload: &SemanticPayload{}}, want: "salience"},
+		{name: "salience nan", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Salience: math.NaN(), Payload: &SemanticPayload{}}, want: "salience"},
+		{name: "salience infinite", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Salience: math.Inf(1), Payload: &SemanticPayload{}}, want: "salience"},
 		{name: "missing payload", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1}, want: "payload"},
+		{name: "semantic missing subject", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Payload: &SemanticPayload{Kind: "semantic", Predicate: "uses", Object: "Postgres", Validity: Validity{Mode: ValidityModeGlobal}}}, want: "payload.subject"},
+		{name: "semantic missing predicate", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Payload: &SemanticPayload{Kind: "semantic", Subject: "Orchid", Object: "Postgres", Validity: Validity{Mode: ValidityModeGlobal}}}, want: "payload.predicate"},
+		{name: "semantic punctuation-only predicate", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Payload: &SemanticPayload{Kind: "semantic", Subject: "Orchid", Predicate: "!!!", Object: "Postgres", Validity: Validity{Mode: ValidityModeGlobal}}}, want: "payload.predicate"},
+		{name: "semantic missing object", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Payload: &SemanticPayload{Kind: "semantic", Subject: "Orchid", Predicate: "uses", Validity: Validity{Mode: ValidityModeGlobal}}}, want: "payload.object"},
+		{name: "semantic invalid validity", rec: &MemoryRecord{ID: "id", Type: MemoryTypeSemantic, Sensitivity: SensitivityLow, Confidence: 1, Payload: &SemanticPayload{Kind: "semantic", Subject: "Orchid", Predicate: "uses", Object: "Postgres"}}, want: "payload.validity.mode"},
+		{name: "entity missing canonical name", rec: &MemoryRecord{ID: "id", Type: MemoryTypeEntity, Sensitivity: SensitivityLow, Confidence: 1, Payload: &EntityPayload{Kind: "entity"}}, want: "payload.canonical_name"},
+		{name: "entity identifier missing namespace", rec: &MemoryRecord{ID: "id", Type: MemoryTypeEntity, Sensitivity: SensitivityLow, Confidence: 1, Payload: &EntityPayload{Kind: "entity", CanonicalName: "Orchid", Identifiers: []EntityIdentifier{{Value: "orchid"}}}}, want: "payload.identifiers[0].namespace"},
+		{name: "entity identifier missing value", rec: &MemoryRecord{ID: "id", Type: MemoryTypeEntity, Sensitivity: SensitivityLow, Confidence: 1, Payload: &EntityPayload{Kind: "entity", CanonicalName: "Orchid", Identifiers: []EntityIdentifier{{Namespace: "slug", Value: " \t"}}}}, want: "payload.identifiers[0].value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.rec.Validate()

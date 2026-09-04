@@ -101,7 +101,10 @@ func (s *Selector) Select(ctx context.Context, candidates []*schema.MemoryRecord
 
 	// Sort by score descending.
 	sort.Slice(items, func(i, j int) bool {
-		return items[i].score > items[j].score
+		if items[i].score != items[j].score {
+			return items[i].score > items[j].score
+		}
+		return recordTieLess(items[i].record, items[j].record)
 	})
 
 	// Build ranked result.

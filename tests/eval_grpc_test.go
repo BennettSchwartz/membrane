@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 
 	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
@@ -32,14 +34,21 @@ type grpcEnv struct {
 	apiKey       string
 }
 
-func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
+func newGRPCEnv(t *testing.T, apiKey string, rateLimit int, configure ...func(*membrane.Config)) *grpcEnv {
 	t.Helper()
 
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = t.TempDir() + "/membrane.db"
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for gRPC eval tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.APIKey = apiKey
 	cfg.RateLimitPerSecond = rateLimit
+	for _, option := range configure {
+		option(cfg)
+	}
 
 	m, err := membrane.New(cfg)
 	if err != nil {
@@ -99,6 +108,13 @@ func newGRPCEnv(t *testing.T, apiKey string, rateLimit int) *grpcEnv {
 	}
 }
 
+func withGRPCScopes(scopes ...string) func(*membrane.Config) {
+	return func(cfg *membrane.Config) {
+		cfg.ReadScopes = append([]string(nil), scopes...)
+		cfg.WriteScopes = append([]string(nil), scopes...)
+	}
+}
+
 func (e *grpcEnv) ctx() context.Context {
 	if e.apiKey == "" {
 		return context.Background()
@@ -152,7 +168,7 @@ func requireCreatedRecordOfType(t *testing.T, resp *pb.CaptureMemoryResponse, re
 	return nil
 }
 
-func semanticRecordPB(t *testing.T, subject, predicate string, object any, validity *pb.Validity, revisionPolicy string) *pb.MemoryRecord {
+func semanticRecordPB(t *testing.T, scope, subject, predicate string, object any, validity *pb.Validity, revisionPolicy string) *pb.MemoryRecord {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if validity == nil {
@@ -160,6 +176,7 @@ func semanticRecordPB(t *testing.T, subject, predicate string, object any, valid
 	}
 	return &pb.MemoryRecord{
 		Type:        string(schema.MemoryTypeSemantic),
+		Scope:       scope,
 		Sensitivity: string(schema.SensitivityLow),
 		Confidence:  1,
 		Salience:    1,
@@ -237,7 +254,7 @@ func TestEvalGRPCRateLimit(t *testing.T) {
 	}
 }
 
-func TestEvalGRPCRateLimitPerClient(t *testing.T) {
+func TestEvalGRPCRateLimitPersistsAcrossConnectionsFromSameSourceIP(t *testing.T) {
 	env := newGRPCEnv(t, "", 1)
 
 	secondConn, err := grpc.NewClient(env.server.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -245,6 +262,14 @@ func TestEvalGRPCRateLimitPerClient(t *testing.T) {
 		t.Fatalf("grpc.NewClient second client: %v", err)
 	}
 	secondConn.Connect()
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDial()
+	for state := secondConn.GetState(); state != connectivity.Ready; state = secondConn.GetState() {
+		if !secondConn.WaitForStateChange(dialCtx, state) {
+			_ = secondConn.Close()
+			t.Fatalf("second gRPC connection not ready (state=%v): %v", state, dialCtx.Err())
+		}
+	}
 	t.Cleanup(func() {
 		_ = secondConn.Close()
 	})
@@ -253,14 +278,10 @@ func TestEvalGRPCRateLimitPerClient(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := env.client.GetMetrics(ctx, &pb.GetMetricsRequest{}); err != nil {
-		t.Fatalf("first client initial GetMetrics failed: %v", err)
+		t.Fatalf("first connection initial GetMetrics failed: %v", err)
 	}
-	if _, err := env.client.GetMetrics(ctx, &pb.GetMetricsRequest{}); status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("expected first client to hit rate limit, got %v", err)
-	}
-
-	if _, err := secondClient.GetMetrics(ctx, &pb.GetMetricsRequest{}); err != nil {
-		t.Fatalf("second client should have independent quota, got %v", err)
+	if _, err := secondClient.GetMetrics(ctx, &pb.GetMetricsRequest{}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("second connection from the same source IP code = %v, want ResourceExhausted", status.Code(err))
 	}
 }
 
@@ -324,7 +345,7 @@ func TestEvalGRPCHealth(t *testing.T) {
 }
 
 func TestEvalGRPCSurface(t *testing.T) {
-	env := newGRPCEnv(t, "", 0)
+	env := newGRPCEnv(t, "", 0, withGRPCScopes("project:alpha"))
 	ctx := env.ctx()
 
 	eventResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
@@ -423,7 +444,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 
 	supResp, err := env.client.Supersede(ctx, &pb.SupersedeRequest{
 		OldId:     obsRec.ID,
-		NewRecord: semanticRecordPB(t, "user", "prefers", "Rust", nil, ""),
+		NewRecord: semanticRecordPB(t, "project:alpha", "user", "prefers", "Rust", nil, ""),
 		Actor:     "eval",
 		Rationale: "update",
 	})
@@ -447,7 +468,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 
 	forkResp, err := env.client.Fork(ctx, &pb.ForkRequest{
 		SourceId: forkSourceRec.ID,
-		ForkedRecord: semanticRecordPB(t, "service", "uses_cache", "Memcached", &pb.Validity{
+		ForkedRecord: semanticRecordPB(t, "project:alpha", "service", "uses_cache", "Memcached", &pb.Validity{
 			Mode:       string(schema.ValidityModeConditional),
 			Conditions: map[string]*structpb.Value{"env": mustMarshalJSON(t, "dev")},
 		}, "fork"),
@@ -462,7 +483,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 	mergeLeft, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
 		Source:           "eval",
 		SourceKind:       "observation",
-		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "Go"}),
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "Postgres 15"}),
 		ReasonToRemember: "left merge source",
 		Scope:            "project:alpha",
 		Sensitivity:      "low",
@@ -473,7 +494,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 	mergeRight, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
 		Source:           "eval",
 		SourceKind:       "observation",
-		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "Go"}),
+		Content:          mustMarshalJSON(t, map[string]any{"subject": "db", "predicate": "uses", "object": "pgvector"}),
 		ReasonToRemember: "right merge source",
 		Scope:            "project:alpha",
 		Sensitivity:      "low",
@@ -486,7 +507,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 
 	mergeResp, err := env.client.Merge(ctx, &pb.MergeRequest{
 		Ids:          []string{mergeLeftRec.ID, mergeRightRec.ID},
-		MergedRecord: semanticRecordPB(t, "db", "uses", "Postgres", nil, ""),
+		MergedRecord: semanticRecordPB(t, "project:alpha", "db", "uses", "Postgres", nil, ""),
 		Actor:        "eval",
 		Rationale:    "merge",
 	})
@@ -515,7 +536,7 @@ func TestEvalGRPCSurface(t *testing.T) {
 }
 
 func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
-	env := newGRPCEnv(t, "", 0)
+	env := newGRPCEnv(t, "", 0, withGRPCScopes("project:alpha"))
 	ctx := env.ctx()
 
 	content := mustMarshalJSON(t, map[string]any{
@@ -602,7 +623,9 @@ func TestEvalGRPCCaptureMemoryAndRetrieveGraph(t *testing.T) {
 }
 
 func TestEvalGRPCRetrieveGraphReturnsRedactedRecord(t *testing.T) {
-	env := newGRPCEnv(t, "", 0)
+	env := newGRPCEnv(t, "", 0, func(cfg *membrane.Config) {
+		cfg.WriteMaxSensitivity = string(schema.SensitivityMedium)
+	})
 	ctx := env.ctx()
 
 	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
@@ -610,6 +633,7 @@ func TestEvalGRPCRetrieveGraphReturnsRedactedRecord(t *testing.T) {
 		SourceKind:  "event",
 		Content:     mustMarshalJSON(t, map[string]any{"ref": "evt-redacted-1", "text": "Confidential deployment note"}),
 		Summary:     "Confidential deployment note",
+		Scope:       "default",
 		Sensitivity: "medium",
 	})
 	if err != nil {
@@ -649,7 +673,7 @@ func TestEvalGRPCRetrieveGraphReturnsRedactedRecord(t *testing.T) {
 }
 
 func TestEvalGRPCCaptureMemoryLinksDerivedSemanticThroughEntity(t *testing.T) {
-	env := newGRPCEnv(t, "", 0)
+	env := newGRPCEnv(t, "", 0, withGRPCScopes("project:alpha"))
 	ctx := env.ctx()
 
 	captureResp, err := env.client.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
@@ -793,6 +817,7 @@ func TestEvalGRPCValidation(t *testing.T) {
 		Source:      "eval",
 		SourceKind:  "observation",
 		Content:     mustMarshalJSON(t, map[string]any{"subject": "service", "predicate": "mode", "object": "active"}),
+		Scope:       "default",
 		Sensitivity: "low",
 	})
 	if err != nil {
@@ -924,6 +949,7 @@ func TestEvalGRPCNegativeContract(t *testing.T) {
 					Source:     "eval",
 					SourceKind: "event",
 					Content:    mustMarshalJSON(t, map[string]any{"ref": "bad-time"}),
+					Scope:      "default",
 					Timestamp:  "not-a-time",
 				})
 				return err

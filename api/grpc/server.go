@@ -5,6 +5,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"sync"
@@ -39,6 +40,19 @@ const defaultGracefulStopTimeout = 5 * time.Second
 // serve RPCs backed by the given Membrane instance. It configures TLS,
 // authentication, and rate limiting based on the provided config.
 func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
+	if cfg == nil {
+		cfg = membrane.DefaultConfig()
+	}
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		return nil, fmt.Errorf("grpc: tls_cert_file and tls_key_file must be configured together")
+	}
+	if err := rejectUnauthenticatedPublicListen(cfg); err != nil {
+		return nil, err
+	}
+	if err := rejectInsecurePublicCredentials(cfg); err != nil {
+		return nil, err
+	}
+
 	lis, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("grpc: listen %s: %w", cfg.ListenAddr, err)
@@ -59,7 +73,8 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	// Build interceptor chain.
 	apiKey := cfg.APIKey
 	rateLimit := cfg.RateLimitPerSecond
-	interceptor := chainInterceptors(apiKey, rateLimit)
+	access := newAccessPolicy(cfg)
+	interceptor := chainInterceptors(apiKey, rateLimit, access)
 	opts = append(opts, grpc.UnaryInterceptor(interceptor))
 	// Allow requests large enough to reach the application's 10 MiB payload checks.
 	opts = append(opts, grpc.MaxRecvMsgSize(maxPayloadSize+(1<<20)))
@@ -69,7 +84,7 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 	healthServer.SetServingStatus(pb.MembraneService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(gs, healthServer)
 
-	handler := &Handler{membrane: m}
+	handler := &Handler{membrane: m, access: access, boundedRecords: m}
 	pb.RegisterMembraneServiceServer(gs, handler)
 
 	return &Server{
@@ -84,7 +99,7 @@ func NewServer(m *membrane.Membrane, cfg *membrane.Config) (*Server, error) {
 
 // chainInterceptors builds a unary server interceptor that applies
 // authentication and rate limiting.
-func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterceptor {
+func chainInterceptors(apiKey string, ratePerSecond int, access *accessPolicy) grpc.UnaryServerInterceptor {
 	var limiter *clientRateLimiter
 	if ratePerSecond > 0 {
 		limiter = newClientRateLimiter(ratePerSecond)
@@ -92,6 +107,7 @@ func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterce
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		// Authentication.
+		authenticated := apiKey == ""
 		if apiKey != "" {
 			md, ok := metadata.FromIncomingContext(ctx)
 			if !ok {
@@ -101,30 +117,40 @@ func chainInterceptors(apiKey string, ratePerSecond int) grpc.UnaryServerInterce
 			if len(tokens) == 0 || tokens[0] != "Bearer "+apiKey {
 				return nil, status.Error(codes.Unauthenticated, "invalid or missing API key")
 			}
+			authenticated = true
 		}
 
 		// Rate limiting.
 		if limiter != nil {
-			if !limiter.allow(clientIdentity(ctx)) {
+			if !limiter.allow(rateLimitIdentity(ctx, apiKey)) {
 				return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 			}
 		}
 
+		if access != nil {
+			ctx = withAccessPrincipal(ctx, access, authenticated)
+		}
 		return handler(ctx, req)
 	}
 }
 
+func rateLimitIdentity(ctx context.Context, apiKey string) string {
+	if apiKey != "" {
+		// The server currently has one configured API-key principal. Use a stable
+		// fingerprint so reconnects and peer-address changes cannot mint a new
+		// bucket, without retaining the bearer token as a limiter-map key.
+		digest := sha256.Sum256([]byte(apiKey))
+		return fmt.Sprintf("auth:sha256:%x", digest)
+	}
+	return clientIdentity(ctx)
+}
+
 func clientIdentity(ctx context.Context) string {
 	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		if host, _, err := net.SplitHostPort(p.Addr.String()); err == nil {
+			return host
+		}
 		return p.Addr.String()
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return "anonymous"
-	}
-	tokens := md.Get("authorization")
-	if len(tokens) > 0 {
-		return "auth:" + tokens[0]
 	}
 	return "anonymous"
 }

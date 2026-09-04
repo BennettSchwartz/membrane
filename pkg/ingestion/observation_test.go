@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
-	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 func newObservationEntity(id, name, scope string) *schema.MemoryRecord {
@@ -23,6 +23,15 @@ func newObservationEntity(id, name, scope string) *schema.MemoryRecord {
 	return rec
 }
 
+func relationTargets(relations []schema.Relation, predicate, targetID string) bool {
+	for _, rel := range relations {
+		if rel.Predicate == predicate && rel.TargetID == targetID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestIngestObservationCreatesSemanticRecord(t *testing.T) {
 	svc, store := newCaptureTestService(t, nil)
 	ctx := context.Background()
@@ -31,7 +40,7 @@ func TestIngestObservationCreatesSemanticRecord(t *testing.T) {
 	rec, err := svc.IngestObservation(ctx, IngestObservationRequest{
 		Source:      "observer",
 		Subject:     "Orchid",
-		Predicate:   "deploys_to",
+		Predicate:   "Deploys To",
 		Object:      map[string]any{"cluster": "staging", "region": "iad"},
 		Timestamp:   ts,
 		Tags:        []string{"deploy", "fact"},
@@ -134,6 +143,68 @@ func TestIngestObservationCanonicalizesEntitySubjectAndObject(t *testing.T) {
 	}
 }
 
+func TestIngestObservationFallsBackToGlobalEntityForScopedFacts(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+
+	subject := newObservationEntity("entity-global-orchid", "Orchid", "")
+	object := newObservationEntity("entity-global-borealis", "Borealis", "")
+	for _, rec := range []*schema.MemoryRecord{subject, object} {
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("Create %s: %v", rec.ID, err)
+		}
+	}
+
+	rec, err := svc.IngestObservation(ctx, IngestObservationRequest{
+		Source:    "observer",
+		Subject:   "Orchid",
+		Predicate: "depends_on",
+		Object:    "Borealis",
+		Scope:     "project:alpha",
+	})
+	if err != nil {
+		t.Fatalf("IngestObservation: %v", err)
+	}
+
+	payload := rec.Payload.(*schema.SemanticPayload)
+	if payload.Subject != subject.ID || payload.Object != object.ID {
+		t.Fatalf("semantic payload = %+v, want global subject %q and object %q", payload, subject.ID, object.ID)
+	}
+	if !relationTargets(rec.Relations, schema.GraphPredicateSubjectEntity, subject.ID) ||
+		!relationTargets(rec.Relations, schema.GraphPredicateObjectEntity, object.ID) {
+		t.Fatalf("Relations = %+v, want semantic links to global subject and object entities", rec.Relations)
+	}
+}
+
+func TestIngestObservationPrefersScopedEntityOverGlobalFallback(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+
+	global := newObservationEntity("entity-global-orchid", "Orchid", "")
+	scoped := newObservationEntity("entity-scoped-orchid", "Orchid", "project:alpha")
+	for _, rec := range []*schema.MemoryRecord{global, scoped} {
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("Create %s: %v", rec.ID, err)
+		}
+	}
+
+	rec, err := svc.IngestObservation(ctx, IngestObservationRequest{
+		Source:    "observer",
+		Subject:   "Orchid",
+		Predicate: "is",
+		Object:    "ready",
+		Scope:     "project:alpha",
+	})
+	if err != nil {
+		t.Fatalf("IngestObservation: %v", err)
+	}
+
+	payload := rec.Payload.(*schema.SemanticPayload)
+	if payload.Subject != scoped.ID {
+		t.Fatalf("Subject = %q, want scoped entity %q over global %q", payload.Subject, scoped.ID, global.ID)
+	}
+}
+
 func TestIngestObservationValidationErrors(t *testing.T) {
 	svc, _ := newCaptureTestService(t, nil)
 	ctx := context.Background()
@@ -169,10 +240,7 @@ func TestIngestObservationValidationErrors(t *testing.T) {
 }
 
 func TestIngestObservationRollsBackWhenReverseRelationFails(t *testing.T) {
-	base, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite store: %v", err)
-	}
+	base := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = base.Close() })
 
 	ctx := context.Background()
@@ -181,10 +249,10 @@ func TestIngestObservationRollsBackWhenReverseRelationFails(t *testing.T) {
 		t.Fatalf("Create entity: %v", err)
 	}
 
-	store := &failingRelationStore{Store: base}
+	store := &failingRelationStore{boundedCaptureTestStore: base}
 	svc := NewService(store, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 
-	_, err = svc.IngestObservation(ctx, IngestObservationRequest{
+	_, err := svc.IngestObservation(ctx, IngestObservationRequest{
 		Source:    "observer",
 		Subject:   "Orchid",
 		Predicate: "is",

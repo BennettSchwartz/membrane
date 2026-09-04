@@ -9,13 +9,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
-type directFailRelationStore struct {
+type boundedCaptureTestStore interface {
 	storage.Store
+	storage.BoundedListStore
+}
+
+type directFailRelationStore struct {
+	boundedCaptureTestStore
 }
 
 func (s *directFailRelationStore) AddRelation(context.Context, string, schema.Relation) error {
@@ -23,7 +28,7 @@ func (s *directFailRelationStore) AddRelation(context.Context, string, schema.Re
 }
 
 type relationFailAtStore struct {
-	storage.Store
+	boundedCaptureTestStore
 	failAt int
 	calls  int
 }
@@ -33,11 +38,11 @@ func (s *relationFailAtStore) AddRelation(ctx context.Context, sourceID string, 
 	if s.calls == s.failAt {
 		return errors.New("forced relation write failure")
 	}
-	return s.Store.AddRelation(ctx, sourceID, rel)
+	return s.boundedCaptureTestStore.AddRelation(ctx, sourceID, rel)
 }
 
 type createFailStore struct {
-	storage.Store
+	boundedCaptureTestStore
 	err error
 }
 
@@ -46,7 +51,7 @@ func (s *createFailStore) Create(context.Context, *schema.MemoryRecord) error {
 }
 
 type updateFailStore struct {
-	storage.Store
+	boundedCaptureTestStore
 	err error
 }
 
@@ -55,7 +60,7 @@ func (s *updateFailStore) Update(context.Context, *schema.MemoryRecord) error {
 }
 
 type updateFailAtStore struct {
-	storage.Store
+	boundedCaptureTestStore
 	failAt int
 	calls  int
 	err    error
@@ -66,7 +71,7 @@ func (s *updateFailAtStore) Update(ctx context.Context, rec *schema.MemoryRecord
 	if s.calls == s.failAt {
 		return s.err
 	}
-	return s.Store.Update(ctx, rec)
+	return s.boundedCaptureTestStore.Update(ctx, rec)
 }
 
 type listCaptureStore struct {
@@ -89,6 +94,27 @@ func (s *listCaptureStore) List(_ context.Context, opts storage.ListOptions) ([]
 		idx = len(s.sets) - 1
 	}
 	return s.sets[idx], nil
+}
+
+func (s *listCaptureStore) ListBounded(ctx context.Context, opts storage.ListOptions) (storage.BoundedListResult, error) {
+	records, err := s.List(ctx, opts)
+	if err != nil {
+		return storage.BoundedListResult{}, err
+	}
+	result := storage.BoundedListResult{Records: records}
+	remaining := opts.MaxHydratedBytes
+	if remaining <= 0 || remaining > storage.MaxBoundedHydrationBytes {
+		remaining = storage.MaxBoundedHydrationBytes
+	}
+	for _, record := range records {
+		projected := storage.ProjectedRecordBytes(record, remaining-result.ProjectedBytes)
+		if projected > remaining-result.ProjectedBytes {
+			result.HydrationBytesTruncated = true
+			break
+		}
+		result.ProjectedBytes += projected
+	}
+	return result, nil
 }
 
 func TestCaptureHelperValueConversions(t *testing.T) {
@@ -172,6 +198,24 @@ func TestCaptureFallbackHelpers(t *testing.T) {
 	}
 	if got := edgePredicate(edges, "missing"); got != "" {
 		t.Fatalf("edgePredicate miss = %q, want empty", got)
+	}
+
+	oldTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	newTime := oldTime.Add(time.Minute)
+	dedupedEdges := dedupeGraphEdges([]schema.GraphEdge{
+		{SourceID: "a", Predicate: "mentions_entity", TargetID: "b", Weight: 0.4, CreatedAt: oldTime},
+		{SourceID: "a", Predicate: "mentionsEntity", TargetID: "b", Weight: 0.8, CreatedAt: newTime},
+		{SourceID: "b", Predicate: "mentioned_in", TargetID: "a", Weight: 0.8, CreatedAt: newTime},
+	})
+	if len(dedupedEdges) != 2 || dedupedEdges[0].Weight != 0.8 || !dedupedEdges[0].CreatedAt.Equal(newTime) {
+		t.Fatalf("dedupeGraphEdges = %+v, want latest normalized duplicate plus reverse edge", dedupedEdges)
+	}
+	dedupedRelations := dedupeRelations([]schema.Relation{
+		{Predicate: "mentions_entity", TargetID: "b", Weight: 0.4, CreatedAt: oldTime},
+		{Predicate: "mentionsEntity", TargetID: "b", Weight: 0.8, CreatedAt: newTime},
+	})
+	if len(dedupedRelations) != 1 || dedupedRelations[0].Weight != 0.8 || !dedupedRelations[0].CreatedAt.Equal(newTime) {
+		t.Fatalf("dedupeRelations = %+v, want latest normalized duplicate", dedupedRelations)
 	}
 
 	mentions := inferMentionsFromContent(map[string]any{"project": "", "tool_name": "rg"})
@@ -358,7 +402,7 @@ func TestRecordSearchTermsCoversPayloadVariants(t *testing.T) {
 	}
 
 	joined := strings.Join(recordSearchTerms(records[0]), "\n")
-	for _, want := range []string{"entity", "project:alpha", "deploy", "interpreted entity", "infra", "Orchid", "orchid project", "orchid alias", "deployment project"} {
+	for _, want := range []string{"entity", "project:alpha", "deploy", "interpreted entity", "infra", "orchid", "orchid project", "orchid alias", "deployment project"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("entity recordSearchTerms = %q, want term %q", joined, want)
 		}
@@ -501,6 +545,14 @@ func TestFetchCaptureCandidatesDedupesOrdersAndAvoidsDuplicateGlobalList(t *test
 		PrimaryType:   schema.EntityTypeProject,
 	})
 	recent.CreatedAt = now
+	outOfScope := schema.NewMemoryRecord("out-of-scope", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+	})
+	outOfScope.Scope = "project:beta"
+	outOfScope.Tags = []string{"deploy"}
+	outOfScope.CreatedAt = now.Add(time.Hour)
 	oldDuplicate := schema.NewMemoryRecord("duplicate", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
 		Kind:      "semantic",
 		Subject:   "Orchid",
@@ -512,7 +564,7 @@ func TestFetchCaptureCandidatesDedupesOrdersAndAvoidsDuplicateGlobalList(t *test
 
 	store := &listCaptureStore{sets: [][]*schema.MemoryRecord{
 		{nil, oldDuplicate, matching},
-		{recent, oldDuplicate},
+		{recent, outOfScope, oldDuplicate},
 	}}
 	svc := &Service{store: store}
 	got, err := svc.fetchCaptureCandidates(ctx, CaptureMemoryRequest{
@@ -541,8 +593,8 @@ func TestFetchCaptureCandidatesDedupesOrdersAndAvoidsDuplicateGlobalList(t *test
 	if len(store.calls) != 1 || store.calls[0].Scope != "" {
 		t.Fatalf("unscoped List calls = %+v, want one global list", store.calls)
 	}
-	if len(got) != 2 {
-		t.Fatalf("unscoped candidates = %v, want both records", recordIDs(got))
+	if len(got) != 1 || got[0].ID != recent.ID {
+		t.Fatalf("unscoped candidates = %v, want only unscoped records", recordIDs(got))
 	}
 
 	many := make([]*schema.MemoryRecord, 0, captureCandidateLimit+2)
@@ -562,6 +614,26 @@ func TestFetchCaptureCandidatesDedupesOrdersAndAvoidsDuplicateGlobalList(t *test
 	}
 	if got[0].ID != "candidate-21" {
 		t.Fatalf("limited candidates first = %s, want newest tie-break candidate-21", got[0].ID)
+	}
+}
+
+func TestFetchCaptureCandidatesBreaksEqualScoreAndTimeTiesByID(t *testing.T) {
+	ctx := context.Background()
+	createdAt := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	zulu := newHelperSemanticRecord("candidate-zulu", "same")
+	zulu.CreatedAt = createdAt
+	alpha := newHelperSemanticRecord("candidate-alpha", "same")
+	alpha.CreatedAt = createdAt
+
+	store := &listCaptureStore{sets: [][]*schema.MemoryRecord{{zulu, alpha}}}
+	svc := &Service{store: store}
+	got, err := svc.fetchCaptureCandidates(ctx, CaptureMemoryRequest{}, nil)
+	if err != nil {
+		t.Fatalf("fetchCaptureCandidates: %v", err)
+	}
+
+	if ids := recordIDs(got); !reflect.DeepEqual(ids, []string{"candidate-alpha", "candidate-zulu"}) {
+		t.Fatalf("candidates = %v, want deterministic ID tie-break", ids)
 	}
 }
 
@@ -626,6 +698,10 @@ func TestInverseRelationPredicatePairs(t *testing.T) {
 		{predicate: "supported_by", want: "supports"},
 		{predicate: "contradicts", want: "contradicted_by"},
 		{predicate: "contradicted_by", want: "contradicts"},
+		{predicate: "supersedes", want: "superseded_by"},
+		{predicate: "superseded_by", want: "supersedes"},
+		{predicate: "contested_by", want: "contests"},
+		{predicate: "contests", want: "contested_by"},
 		{predicate: "custom", want: "inverse_of_custom"},
 	} {
 		if got := inverseRelationPredicate(tc.predicate); got != tc.want {
@@ -641,6 +717,10 @@ func TestResolveMentionEntityFallbacks(t *testing.T) {
 	if err := store.Create(ctx, stored); err != nil {
 		t.Fatalf("Create stored entity: %v", err)
 	}
+	outOfScope := newObservationEntity("entity-out-of-scope", "Other", "project:beta")
+	if err := store.Create(ctx, outOfScope); err != nil {
+		t.Fatalf("Create out-of-scope entity: %v", err)
+	}
 
 	if rec := svc.resolveMentionEntity(ctx, nil, "project:alpha", nil); rec != nil {
 		t.Fatalf("resolveMentionEntity nil = %+v, want nil", rec)
@@ -649,6 +729,14 @@ func TestResolveMentionEntityFallbacks(t *testing.T) {
 	rec := svc.resolveMentionEntity(ctx, &schema.Mention{CanonicalEntityID: stored.ID}, "project:alpha", nil)
 	if rec == nil || rec.ID != stored.ID {
 		t.Fatalf("resolveMentionEntity canonical store = %+v, want %s", rec, stored.ID)
+	}
+	rec = svc.resolveMentionEntity(ctx, &schema.Mention{CanonicalEntityID: outOfScope.ID}, "project:alpha", nil)
+	if rec != nil {
+		t.Fatalf("resolveMentionEntity out-of-scope canonical store = %+v, want nil", rec)
+	}
+	rec = svc.resolveMentionEntity(ctx, &schema.Mention{CanonicalEntityID: stored.ID}, "", nil)
+	if rec != nil {
+		t.Fatalf("resolveMentionEntity unscoped capture to scoped entity = %+v, want nil", rec)
 	}
 
 	rec = svc.resolveMentionEntity(ctx, &schema.Mention{Surface: "Orchid"}, "project:alpha", nil)
@@ -661,6 +749,12 @@ func TestResolveMentionEntityFallbacks(t *testing.T) {
 	if rec == nil || rec.ID != local.ID {
 		t.Fatalf("resolveMentionEntity local fallback = %+v, want %s", rec, local.ID)
 	}
+
+	outOfScopeCandidate := newObservationEntity("entity-out-of-scope-candidate", "Borealis", "project:beta")
+	rec = svc.resolveMentionEntity(ctx, &schema.Mention{Surface: "borealis"}, "project:alpha", []*schema.MemoryRecord{outOfScopeCandidate})
+	if rec != nil {
+		t.Fatalf("resolveMentionEntity out-of-scope candidate fallback = %+v, want nil", rec)
+	}
 }
 
 func TestResolveMentionErrorsAndEntityDefaults(t *testing.T) {
@@ -670,7 +764,7 @@ func TestResolveMentionErrorsAndEntityDefaults(t *testing.T) {
 	source := newHelperSemanticRecord("mention-source", "source")
 
 	createErr := errors.New("create failed")
-	createFailSvc := NewService(&createFailStore{Store: base, err: createErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	createFailSvc := NewService(&createFailStore{boundedCaptureTestStore: base, err: createErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, _, _, err := createFailSvc.resolveMention(ctx, source, &schema.Mention{Surface: "Orchid"}, "project:alpha", "tester", schema.SensitivityLow, ts, nil); !errors.Is(err, createErr) {
 		t.Fatalf("resolveMention create error = %v, want %v", err, createErr)
 	}
@@ -678,7 +772,7 @@ func TestResolveMentionErrorsAndEntityDefaults(t *testing.T) {
 	if err := base.Create(ctx, source); err != nil {
 		t.Fatalf("Create source: %v", err)
 	}
-	relationFailSvc := NewService(&relationFailAtStore{Store: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	relationFailSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, _, _, err := relationFailSvc.resolveMention(ctx, source, &schema.Mention{Surface: "Borealis"}, "project:alpha", "tester", schema.SensitivityLow, ts, nil); err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
 		t.Fatalf("resolveMention second relation error = %v, want forced relation write failure", err)
 	}
@@ -713,34 +807,79 @@ func TestFindMatchingEntityMatchesAliasesAndSkipsBlankTerms(t *testing.T) {
 	}
 }
 
+func TestFindMatchingEntityMatchesIdentifiers(t *testing.T) {
+	rec := newObservationEntity("entity-orchid-repo", "Project Orchid", "project:alpha")
+	rec.Payload.(*schema.EntityPayload).Identifiers = []schema.EntityIdentifier{{
+		Namespace: "github",
+		Value:     "BennettSchwartz/orchid",
+	}}
+
+	got := findMatchingEntity(&schema.Mention{Surface: "github:BennettSchwartz/orchid"}, []*schema.MemoryRecord{rec})
+	if got == nil || got.ID != rec.ID {
+		t.Fatalf("findMatchingEntity identifier = %+v, want %s", got, rec.ID)
+	}
+}
+
+func TestFindMatchingEntityUsesBoundedDescriptorMatching(t *testing.T) {
+	rec := newObservationEntity("entity-orchid", "Project Orchid", "project:alpha")
+
+	got := findMatchingEntity(&schema.Mention{Surface: "Orchid"}, []*schema.MemoryRecord{rec})
+	if got == nil || got.ID != rec.ID {
+		t.Fatalf("findMatchingEntity descriptor = %+v, want %s", got, rec.ID)
+	}
+
+	if got := findMatchingEntity(&schema.Mention{Surface: "go"}, []*schema.MemoryRecord{
+		newObservationEntity("entity-postgres", "Postgres", "project:alpha"),
+	}); got != nil {
+		t.Fatalf("findMatchingEntity bounded term = %+v, want nil", got)
+	}
+}
+
 func TestResolveRelationCandidateTarget(t *testing.T) {
 	svc, store := newCaptureTestService(t, nil)
 	ctx := context.Background()
 	local := newHelperSemanticRecord("local-target", "Go")
-	stored := newHelperSemanticRecord("stored-target", "SQLite")
-	entity := newObservationEntity("entity-target", "Orchid", "project")
-	for _, rec := range []*schema.MemoryRecord{stored, entity} {
+	stored := newHelperSemanticRecord("stored-target", "Redis")
+	entity := newObservationEntity("entity-target", "Orchid", "")
+	scopedEntity := newObservationEntity("entity-scoped-target", "Scoped Orchid", "project:alpha")
+	outOfScope := newHelperSemanticRecord("stored-out-of-scope-target", "Other")
+	outOfScope.Scope = "project:beta"
+	for _, rec := range []*schema.MemoryRecord{stored, entity, scopedEntity, outOfScope} {
 		if err := store.Create(ctx, rec); err != nil {
 			t.Fatalf("Create %s: %v", rec.ID, err)
 		}
 	}
 
-	if target, ok := svc.resolveRelationCandidateTarget(ctx, nil, nil); ok || target != nil {
+	if target, ok := svc.resolveRelationCandidateTarget(ctx, nil, "", nil); ok || target != nil {
 		t.Fatalf("nil relation target = (%+v, %v), want nil false", target, ok)
 	}
-	target, ok := svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: local.ID}, []*schema.MemoryRecord{local})
+	target, ok := svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: local.ID}, "project:alpha", []*schema.MemoryRecord{local})
 	if !ok || target.ID != local.ID {
 		t.Fatalf("local record target = (%+v, %v), want %s", target, ok, local.ID)
 	}
-	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: stored.ID}, nil)
+	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: stored.ID}, "", nil)
 	if !ok || target.ID != stored.ID {
 		t.Fatalf("stored record target = (%+v, %v), want %s", target, ok, stored.ID)
 	}
-	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetEntityID: entity.ID}, nil)
+	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetEntityID: entity.ID}, "", nil)
 	if !ok || target.ID != entity.ID {
 		t.Fatalf("stored entity target = (%+v, %v), want %s", target, ok, entity.ID)
 	}
-	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: "missing"}, []*schema.MemoryRecord{local})
+	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetEntityID: scopedEntity.ID}, "", nil)
+	if ok || target != nil {
+		t.Fatalf("unscoped capture to scoped entity target = (%+v, %v), want nil false", target, ok)
+	}
+	sourceScoped := newHelperSemanticRecord("source-scoped", "Go")
+	sourceScoped.Scope = "project:alpha"
+	if err := store.Create(ctx, sourceScoped); err != nil {
+		t.Fatalf("Create sourceScoped: %v", err)
+	}
+	unresolved := &schema.RelationCandidate{Predicate: "depends_on", TargetRecordID: outOfScope.ID, Resolved: true}
+	edges, err := svc.materializeRelationCandidate(ctx, sourceScoped, unresolved, time.Now().UTC(), nil)
+	if err != nil || edges != nil || unresolved.Resolved || unresolved.TargetRecordID != "" {
+		t.Fatalf("out-of-scope relation = edges:%+v err:%v candidate:%+v, want cleared unresolved", edges, err, unresolved)
+	}
+	target, ok = svc.resolveRelationCandidateTarget(ctx, &schema.RelationCandidate{TargetRecordID: "missing"}, "project:alpha", []*schema.MemoryRecord{local})
 	if ok || target != nil {
 		t.Fatalf("missing target = (%+v, %v), want nil false", target, ok)
 	}
@@ -752,7 +891,7 @@ func TestMaterializeRelationCandidateEdgeCases(t *testing.T) {
 	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	source := newHelperSemanticRecord("relation-source", "Orchid")
 	target := newHelperSemanticRecord("relation-target", "Borealis")
-	entityTarget := newObservationEntity("entity-relation-target", "Borealis", "project:alpha")
+	entityTarget := newObservationEntity("entity-relation-target", "Borealis", "")
 	for _, rec := range []*schema.MemoryRecord{source, target, entityTarget} {
 		if err := store.Create(ctx, rec); err != nil {
 			t.Fatalf("Create %s: %v", rec.ID, err)
@@ -777,6 +916,17 @@ func TestMaterializeRelationCandidateEdgeCases(t *testing.T) {
 		t.Fatalf("blank predicate = %+v, %v; want nil nil", edges, err)
 	}
 
+	edges, err = svc.materializeRelationCandidate(ctx, source, &schema.RelationCandidate{
+		Predicate:      " Depends On ",
+		TargetRecordID: target.ID,
+	}, ts, []*schema.MemoryRecord{target})
+	if err != nil {
+		t.Fatalf("normalized predicate relation: %v", err)
+	}
+	if len(edges) != 2 || edges[0].Predicate != schema.GraphPredicateDependsOn || edges[1].Predicate != schema.GraphPredicateDependencyOf {
+		t.Fatalf("normalized predicate relation edges = %+v, want depends_on/dependency_of pair", edges)
+	}
+
 	entityRel := &schema.RelationCandidate{
 		Predicate:      "uses",
 		TargetEntityID: entityTarget.ID,
@@ -795,17 +945,14 @@ func TestMaterializeRelationCandidateEdgeCases(t *testing.T) {
 }
 
 func TestMaterializeRelationCandidatePropagatesRelationWriteError(t *testing.T) {
-	base, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite store: %v", err)
-	}
+	base := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = base.Close() })
 
-	svc := NewService(&directFailRelationStore{Store: base}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	svc := NewService(&directFailRelationStore{boundedCaptureTestStore: base}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	source := newHelperSemanticRecord("relation-source", "Orchid")
 	target := newHelperSemanticRecord("relation-target", "Borealis")
 
-	_, err = svc.materializeRelationCandidate(context.Background(), source, &schema.RelationCandidate{
+	_, err := svc.materializeRelationCandidate(context.Background(), source, &schema.RelationCandidate{
 		Predicate:      "depends_on",
 		TargetRecordID: target.ID,
 	}, time.Now().UTC(), []*schema.MemoryRecord{target})
@@ -818,7 +965,7 @@ func TestMaterializeRelationCandidatePropagatesRelationWriteError(t *testing.T) 
 			t.Fatalf("Create %s: %v", rec.ID, err)
 		}
 	}
-	secondFailSvc := NewService(&relationFailAtStore{Store: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	secondFailSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, err = secondFailSvc.materializeRelationCandidate(context.Background(), source, &schema.RelationCandidate{
 		Predicate:      "depends_on",
 		TargetRecordID: target.ID,
@@ -845,7 +992,7 @@ func TestMaybeCreateSemanticRecordGuardsAndRelationErrors(t *testing.T) {
 	}
 
 	createErr := errors.New("create semantic failed")
-	createFailSvc := NewService(&createFailStore{Store: store, err: createErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	createFailSvc := NewService(&createFailStore{boundedCaptureTestStore: store, err: createErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, _, err := createFailSvc.maybeCreateSemanticRecord(ctx, source, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "observation",
@@ -859,7 +1006,7 @@ func TestMaybeCreateSemanticRecordGuardsAndRelationErrors(t *testing.T) {
 	if err := store.Create(ctx, source); err != nil {
 		t.Fatalf("Create source: %v", err)
 	}
-	firstEdgeFailSvc := NewService(&relationFailAtStore{Store: store, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	firstEdgeFailSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: store, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, _, err := firstEdgeFailSvc.maybeCreateSemanticRecord(ctx, source, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "observation",
@@ -870,7 +1017,7 @@ func TestMaybeCreateSemanticRecordGuardsAndRelationErrors(t *testing.T) {
 		t.Fatalf("maybeCreateSemanticRecord first relation error = %v, want forced relation error", err)
 	}
 
-	failSvc := NewService(&relationFailAtStore{Store: store, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	failSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: store, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, _, err = failSvc.maybeCreateSemanticRecord(ctx, source, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "observation",
@@ -886,7 +1033,7 @@ func TestMaybeCreateSemanticRecordGuardsAndRelationErrors(t *testing.T) {
 		t.Fatalf("Create entity: %v", err)
 	}
 	source.Interpretation.Mentions = []schema.Mention{{Surface: "Orchid", CanonicalEntityID: entity.ID}}
-	linkFailSvc := NewService(&relationFailAtStore{Store: store, failAt: 3}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	linkFailSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: store, failAt: 3}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, _, err = linkFailSvc.maybeCreateSemanticRecord(ctx, source, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "observation",
@@ -902,47 +1049,58 @@ func TestResolveReferenceCandidate(t *testing.T) {
 	svc, store := newCaptureTestService(t, nil)
 	ctx := context.Background()
 	local := newHelperSemanticRecord("local-ref", "Go")
-	localEntity := newObservationEntity("entity-local-ref", "Local Entity", "project")
-	stored := newHelperSemanticRecord("stored-ref", "SQLite")
-	entity := newObservationEntity("entity-ref", "Orchid", "project")
+	localEntity := newObservationEntity("entity-local-ref", "Local Entity", "project:alpha")
+	stored := newHelperSemanticRecord("stored-ref", "Redis")
+	entity := newObservationEntity("entity-ref", "Orchid", "")
+	scopedEntity := newObservationEntity("entity-scoped-ref", "Scoped Orchid", "project:alpha")
+	outOfScope := newHelperSemanticRecord("stored-out-of-scope-ref", "Other")
+	outOfScope.Scope = "project:beta"
 	episode := schema.NewMemoryRecord("episode-ref", schema.MemoryTypeEpisodic, schema.SensitivityLow, &schema.EpisodicPayload{
 		Kind:     "episodic",
 		Timeline: []schema.TimelineEvent{{Ref: "evt-42", EventKind: "observation", Summary: "Saw Orchid"}},
 	})
-	for _, rec := range []*schema.MemoryRecord{stored, entity} {
+	for _, rec := range []*schema.MemoryRecord{stored, entity, scopedEntity, outOfScope} {
 		if err := store.Create(ctx, rec); err != nil {
 			t.Fatalf("Create %s: %v", rec.ID, err)
 		}
 	}
 
-	if target, ok := svc.resolveReferenceCandidate(ctx, nil, nil); ok || target != nil {
+	if target, ok := svc.resolveReferenceCandidate(ctx, nil, "", nil); ok || target != nil {
 		t.Fatalf("nil reference target = (%+v, %v), want nil false", target, ok)
 	}
-	target, ok := svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetRecordID: local.ID}, []*schema.MemoryRecord{local})
+	target, ok := svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetRecordID: local.ID}, "project:alpha", []*schema.MemoryRecord{local})
 	if !ok || target.ID != local.ID {
 		t.Fatalf("local record reference = (%+v, %v), want %s", target, ok, local.ID)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetEntityID: localEntity.ID}, []*schema.MemoryRecord{localEntity})
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetEntityID: localEntity.ID}, "project:alpha", []*schema.MemoryRecord{localEntity})
 	if !ok || target.ID != localEntity.ID {
 		t.Fatalf("local entity reference = (%+v, %v), want %s", target, ok, localEntity.ID)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetRecordID: stored.ID}, nil)
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetRecordID: stored.ID}, "", nil)
 	if !ok || target.ID != stored.ID {
 		t.Fatalf("stored record reference = (%+v, %v), want %s", target, ok, stored.ID)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetEntityID: entity.ID}, nil)
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetEntityID: entity.ID}, "", nil)
 	if !ok || target.ID != entity.ID {
 		t.Fatalf("stored entity reference = (%+v, %v), want %s", target, ok, entity.ID)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "evt-42"}, []*schema.MemoryRecord{episode})
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetEntityID: scopedEntity.ID}, "", nil)
+	if ok || target != nil {
+		t.Fatalf("unscoped capture to scoped entity reference = (%+v, %v), want nil false", target, ok)
+	}
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{TargetRecordID: outOfScope.ID}, "project:alpha", nil)
+	if ok || target != nil {
+		t.Fatalf("out-of-scope reference = (%+v, %v), want nil false", target, ok)
+	}
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "evt-42"}, "project:alpha", []*schema.MemoryRecord{episode})
 	if !ok || target.ID != episode.ID {
 		t.Fatalf("event ref reference = (%+v, %v), want %s", target, ok, episode.ID)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "missing"}, []*schema.MemoryRecord{local})
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "missing"}, "project:alpha", []*schema.MemoryRecord{local})
 	if ok || target != nil {
 		t.Fatalf("missing reference = (%+v, %v), want nil false", target, ok)
 	}
-	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "missing"}, []*schema.MemoryRecord{nil})
+	target, ok = svc.resolveReferenceCandidate(ctx, &schema.ReferenceCandidate{Ref: "missing"}, "project:alpha", []*schema.MemoryRecord{nil})
 	if ok || target != nil {
 		t.Fatalf("nil candidate reference = (%+v, %v), want nil false", target, ok)
 	}
@@ -1026,18 +1184,18 @@ func TestLinkRecordToCanonicalEntitiesPropagatesRelationErrors(t *testing.T) {
 		}
 	}
 
-	failFirst := NewService(&relationFailAtStore{Store: base, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	failFirst := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := failFirst.linkRecordToCanonicalEntities(ctx, linked, ts); err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
 		t.Fatalf("first relation error = %v, want forced relation error", err)
 	}
 
-	failSecond := NewService(&relationFailAtStore{Store: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	failSecond := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: 2}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := failSecond.linkRecordToCanonicalEntities(ctx, linked, ts); err == nil || !strings.Contains(err.Error(), "forced relation write failure") {
 		t.Fatalf("second relation error = %v, want forced relation error", err)
 	}
 
 	updateErr := errors.New("update linked semantic failed")
-	updateFailSvc := NewService(&updateFailStore{Store: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	updateFailSvc := NewService(&updateFailStore{boundedCaptureTestStore: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := updateFailSvc.linkRecordToCanonicalEntities(ctx, linked, ts); !errors.Is(err, updateErr) {
 		t.Fatalf("update semantic entity links error = %v, want %v", err, updateErr)
 	}

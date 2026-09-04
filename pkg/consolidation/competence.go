@@ -56,13 +56,13 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		return 0, 0, err
 	}
 
-	existingSkills := make(map[string]*schema.MemoryRecord, len(competences))
+	existingSkills := make(map[competenceSkillKey]*schema.MemoryRecord, len(competences))
 	for _, cr := range competences {
 		cp, ok := cr.Payload.(*schema.CompetencePayload)
 		if !ok {
 			continue
 		}
-		existingSkills[cp.SkillName] = cr
+		existingSkills[competenceScopedSkillKey(cr.Scope, cp.SkillName)] = cr
 	}
 
 	// Group episodes by their tool pattern signature.
@@ -71,7 +71,7 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		tools     []string
 		records   []*schema.MemoryRecord
 	}
-	groups := make(map[string]*patternGroup)
+	groups := make(map[competenceSkillKey]*patternGroup)
 
 	for _, rec := range episodics {
 		ep, ok := rec.Payload.(*schema.EpisodicPayload)
@@ -91,10 +91,11 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		}
 		sig := toolSignature(tools)
 
-		g, found := groups[sig]
+		groupKey := competenceScopedSkillKey(rec.Scope, sig)
+		g, found := groups[groupKey]
 		if !found {
 			g = &patternGroup{signature: sig, tools: tools}
-			groups[sig] = g
+			groups[groupKey] = g
 		}
 		g.records = append(g.records, rec)
 	}
@@ -109,27 +110,76 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 		}
 
 		skillName := "skill:" + g.signature
-		if existingRec, found := existingSkills[skillName]; found {
+		derivedSensitivity := deriveMaxSensitivity(g.records)
+		derivedScope, scopePolicy := deriveConservativeScope(g.records)
+		skillKey := competenceScopedSkillKey(derivedScope, skillName)
+		if existingRec, found := existingSkills[skillKey]; found {
+			didReinforce := false
 			err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
-				newSalience := existingRec.Salience + 0.1
-				if newSalience > 1.0 {
-					newSalience = 1.0
-				}
-				if err := tx.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
+				current, err := storage.GetDerivedDestination(ctx, tx, existingRec.ID)
+				if err != nil {
 					return err
 				}
-				entry := schema.AuditEntry{
-					Action:    schema.AuditActionReinforce,
-					Actor:     "consolidation/competence",
-					Timestamp: now,
-					Rationale: fmt.Sprintf("Reinforced: %d episodes match pattern", len(g.records)),
+				cp, ok := current.Payload.(*schema.CompetencePayload)
+				if !ok || cp == nil || cp.SkillName != skillName {
+					return fmt.Errorf("competence destination changed")
 				}
-				return tx.AddAuditEntry(ctx, existingRec.ID, entry)
+				oldSensitivity := current.Sensitivity
+				var admitted, newSources []*schema.MemoryRecord
+				for _, source := range g.records {
+					known := competenceHasSource(current, source.ID)
+					allowed, err := storage.DerivedSourceMayReinforce(ctx, tx, current, source, known)
+					if err != nil {
+						return err
+					}
+					if !allowed {
+						continue
+					}
+					admitted = append(admitted, source)
+					if !known {
+						newSources = append(newSources, source)
+					}
+				}
+				if len(admitted) == 0 {
+					return nil
+				}
+				if err := storage.ApplyDerivedSourcePolicy(ctx, tx, current, admitted); err != nil {
+					return err
+				}
+				if len(newSources) == 0 && oldSensitivity == current.Sensitivity {
+					return nil
+				}
+				if len(newSources) > 0 {
+					current.Salience += 0.1
+					if current.Salience > 1.0 {
+						current.Salience = 1.0
+					}
+					appendCompetenceSources(current, newSources, now)
+				}
+				if oldSensitivity != current.Sensitivity {
+					if err := storage.PruneDerivedInverseRelations(ctx, tx, current); err != nil {
+						return err
+					}
+				}
+				if err := tx.Update(ctx, current); err != nil {
+					return err
+				}
+				if err := tx.AddAuditEntry(ctx, current.ID, schema.AuditEntry{
+					Action: schema.AuditActionReinforce, Actor: "consolidation/competence", Timestamp: now,
+					Rationale: fmt.Sprintf("Reinforced: %d new episodes match pattern", len(newSources)),
+				}); err != nil {
+					return err
+				}
+				existingSkills[skillKey] = current
+				didReinforce = true
+				return nil
 			})
 			if err != nil {
 				return created, reinforced, err
 			}
-			reinforced++
+			if didReinforce {
+				reinforced++
+			}
 			continue
 		}
 
@@ -155,9 +205,6 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 			},
 			Version: "1",
 		}
-
-		derivedSensitivity := deriveMaxSensitivity(g.records)
-		derivedScope, scopePolicy := deriveConservativeScope(g.records)
 
 		newRec := schema.NewMemoryRecord(
 			uuid.New().String(),
@@ -187,14 +234,18 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 			},
 		}
 
-		entityEdges := linkRecordToEntityTerms(ctx, c.store, newRec, g.tools, "uses", "used_by", now)
+		candidates := snapshotEntityCandidates(ctx, c.store, newRec.Scope, g.tools...)
 		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+			if err := storage.ApplyDerivedSourcePolicy(ctx, tx, newRec, g.records); err != nil {
+				return err
+			}
+			entityEdges := linkRecordToEntityTerms(ctx, entityStoreInTransaction(candidates, tx), newRec, g.tools, schema.GraphPredicateUses, schema.GraphPredicateUsedBy, now)
 			if err := tx.Create(ctx, newRec); err != nil {
 				return err
 			}
 			for _, src := range g.records {
 				rel := schema.Relation{
-					Predicate: "derived_from",
+					Predicate: schema.GraphPredicateDerivedFrom,
 					TargetID:  src.ID,
 					Weight:    1.0,
 					CreatedAt: now,
@@ -225,11 +276,75 @@ func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, err
 			_ = c.embedder.EmbedRecord(ctx, newRec)
 		}
 
-		existingSkills[skillName] = newRec
+		existingSkills[skillKey] = newRec
 		created++
 	}
 
 	return created, reinforced, nil
+}
+
+func competenceHasSource(rec *schema.MemoryRecord, sourceID string) bool {
+	if rec == nil || strings.TrimSpace(sourceID) == "" {
+		return false
+	}
+	for _, source := range rec.Provenance.Sources {
+		if source.Ref == sourceID {
+			return true
+		}
+	}
+	for _, rel := range rec.Relations {
+		if schema.NormalizeGraphPredicate(rel.Predicate) == schema.GraphPredicateDerivedFrom && rel.TargetID == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
+func appendCompetenceSources(rec *schema.MemoryRecord, sources []*schema.MemoryRecord, now time.Time) {
+	if rec == nil {
+		return
+	}
+	if rec.Provenance.CreatedBy == "" {
+		rec.Provenance.CreatedBy = "consolidation/competence"
+	}
+	payload, _ := rec.Payload.(*schema.CompetencePayload)
+	for _, source := range sources {
+		if source == nil || competenceHasSource(rec, source.ID) {
+			continue
+		}
+		rec.Provenance.Sources = append(rec.Provenance.Sources, schema.ProvenanceSource{
+			Kind:      schema.ProvenanceKindOutcome,
+			Ref:       source.ID,
+			CreatedBy: "consolidation/competence",
+			Timestamp: now,
+		})
+		rec.Relations = append(rec.Relations, schema.Relation{
+			Predicate: schema.GraphPredicateDerivedFrom,
+			TargetID:  source.ID,
+			Weight:    1.0,
+			CreatedAt: now,
+		})
+		if payload != nil {
+			if payload.Performance == nil {
+				payload.Performance = &schema.PerformanceStats{SuccessRate: 1.0}
+			}
+			payload.Performance.SuccessCount++
+			payload.Performance.SuccessRate = 1.0
+			payload.Performance.LastUsedAt = &now
+		}
+	}
+	if payload != nil {
+		rec.Payload = payload
+	}
+}
+
+type competenceSkillKey struct {
+	scope string
+	name  string
+}
+
+func competenceScopedSkillKey(scope, name string) competenceSkillKey {
+	return competenceSkillKey{scope: scope, name: name}
 }
 
 // extractToolNames returns the ordered list of tool names from a tool graph.

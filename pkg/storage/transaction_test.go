@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/BennettSchwartz/membrane/pkg/schema"
@@ -41,6 +42,17 @@ func (s *txTestStore) Begin(context.Context) (Transaction, error) {
 		s.tx = &txTestTransaction{}
 	}
 	return s.tx, nil
+}
+
+func TestValidateSalienceRejectsInvalidValues(t *testing.T) {
+	for _, value := range []float64{-0.1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := ValidateSalience(value); err == nil {
+			t.Fatalf("ValidateSalience(%v) error = nil, want validation error", value)
+		}
+	}
+	if err := ValidateSalience(0.42); err != nil {
+		t.Fatalf("ValidateSalience(0.42): %v", err)
+	}
 }
 func (s *txTestStore) Close() error { return nil }
 

@@ -8,22 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/decay"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
-func newTestStore(t *testing.T) *sqlite.SQLiteStore {
+func newTestStore(t *testing.T) *teststore.MemoryStore {
 	t.Helper()
 
-	store, err := sqlite.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
+			t.Fatalf("close memory store: %v", err)
 		}
 	})
 
@@ -196,6 +193,50 @@ func TestDecayFutureTimestampReinforceCapAndPenaltyAboveFloor(t *testing.T) {
 	}
 	if got := mustGet(t, ctx, store, penalty.ID); math.Abs(got.Salience-0.55) > 0.0001 {
 		t.Fatalf("penalized salience = %.4f, want 0.55", got.Salience)
+	}
+}
+
+func TestReinforceFromSourceAddsSemanticEvidence(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	svc := decay.NewService(store)
+	now := time.Now().UTC()
+
+	rec := newRecord("source-aware-reinforce", now)
+	rec.Salience = 0.4
+	rec.Lifecycle.Decay.ReinforcementGain = 0.2
+	mustCreate(t, ctx, store, rec)
+
+	source := schema.NewMemoryRecord("episode-1", schema.MemoryTypeEpisodic, schema.SensitivityLow, &schema.EpisodicPayload{Kind: "episodic", Outcome: schema.OutcomeStatusSuccess})
+	if err := store.Create(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.ReinforceFromSource(ctx, rec.ID, "episodic", "episode-1", "consolidation/semantic_extractor", "duplicate semantic fact"); err != nil {
+		t.Fatalf("ReinforceFromSource: %v", err)
+	}
+	got := mustGet(t, ctx, store, rec.ID)
+	if math.Abs(got.Salience-0.6) > 0.0001 {
+		t.Fatalf("salience = %.4f, want 0.6000", got.Salience)
+	}
+	payload := got.Payload.(*schema.SemanticPayload)
+	if len(payload.Evidence) != 1 || payload.Evidence[0].SourceType != "episodic" || payload.Evidence[0].SourceID != "episode-1" {
+		t.Fatalf("evidence = %+v, want episodic source", payload.Evidence)
+	}
+	if len(got.Provenance.Sources) != 1 || got.Provenance.Sources[0].Kind != schema.ProvenanceKindObservation || got.Provenance.Sources[0].Ref != "episode-1" {
+		t.Fatalf("provenance = %+v, want observation source", got.Provenance.Sources)
+	}
+	if !hasAuditAction(got.AuditLog, schema.AuditActionReinforce) {
+		t.Fatalf("audit log = %+v, want reinforce action", got.AuditLog)
+	}
+
+	if err := svc.ReinforceFromSource(ctx, rec.ID, "episodic", "episode-1", "consolidation/semantic_extractor", "same source retry"); err != nil {
+		t.Fatalf("second ReinforceFromSource: %v", err)
+	}
+	got = mustGet(t, ctx, store, rec.ID)
+	payload = got.Payload.(*schema.SemanticPayload)
+	if len(payload.Evidence) != 1 || len(got.Provenance.Sources) != 1 {
+		t.Fatalf("duplicate source evidence/provenance = %+v/%+v, want one of each", payload.Evidence, got.Provenance.Sources)
 	}
 }
 

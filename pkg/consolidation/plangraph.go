@@ -17,7 +17,7 @@ import (
 const minToolGraphNodes = 3
 
 // PlanGraphConsolidator extracts reusable plan graphs from episodic
-// tool graphs. Only tool graphs with more than minToolGraphNodes nodes
+// tool graphs. Only tool graphs with at least minToolGraphNodes nodes
 // are promoted, ensuring that trivial single-tool invocations are not
 // turned into plans.
 type PlanGraphConsolidator struct {
@@ -35,8 +35,8 @@ func NewPlanGraphConsolidatorWithEmbedder(store storage.Store, embedder Embedder
 	return &PlanGraphConsolidator{store: store, embedder: embedder}
 }
 
-// Consolidate finds episodic records with complex tool graphs (more
-// than minToolGraphNodes nodes) and extracts them as plan graph
+// Consolidate finds episodic records with complex tool graphs (at
+// least minToolGraphNodes nodes) and extracts them as plan graph
 // records. It returns the number of new plan graphs created.
 func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 	episodics, err := c.store.ListByType(ctx, schema.MemoryTypeEpisodic)
@@ -53,15 +53,15 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 
 	// Build a set of episodic record IDs that already have a plan
 	// graph derived from them.
-	derivedFrom := make(map[string]bool)
+	derivedFrom := make(map[string][]*schema.MemoryRecord)
 	for _, pg := range planGraphs {
 		rels, err := c.store.GetRelations(ctx, pg.ID)
 		if err != nil {
-			continue
+			return 0, fmt.Errorf("load plan graph relations %s: %w", pg.ID, err)
 		}
 		for _, rel := range rels {
-			if rel.Predicate == "derived_from" {
-				derivedFrom[rel.TargetID] = true
+			if schema.NormalizeGraphPredicate(rel.Predicate) == schema.GraphPredicateDerivedFrom {
+				derivedFrom[rel.TargetID] = append(derivedFrom[rel.TargetID], pg)
 			}
 		}
 	}
@@ -81,7 +81,34 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 		}
 
 		// Skip if we already extracted a plan graph from this episode.
-		if derivedFrom[rec.ID] {
+		if priorPlans := derivedFrom[rec.ID]; len(priorPlans) > 0 {
+			for _, prior := range priorPlans {
+				if err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+					current, err := storage.GetDerivedDestination(ctx, tx, prior.ID)
+					if err != nil {
+						return err
+					}
+					if current.Type != schema.MemoryTypePlanGraph {
+						return fmt.Errorf("plan destination changed")
+					}
+					oldSensitivity := current.Sensitivity
+					if err := storage.ApplyDerivedSourcePolicy(ctx, tx, current, []*schema.MemoryRecord{rec}); err != nil {
+						return err
+					}
+					if current.Sensitivity == oldSensitivity {
+						return nil
+					}
+					if err := storage.PruneDerivedInverseRelations(ctx, tx, current); err != nil {
+						return err
+					}
+					if err := tx.Update(ctx, current); err != nil {
+						return err
+					}
+					return tx.AddAuditEntry(ctx, current.ID, schema.AuditEntry{Action: schema.AuditActionReinforce, Actor: "consolidation/plangraph", Timestamp: now, Rationale: "Raised classification to cover source evidence"})
+				}); err != nil {
+					return created, err
+				}
+			}
 			continue
 		}
 
@@ -131,13 +158,17 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 			},
 		}
 
-		entityEdges := linkRecordToEntityTerms(ctx, c.store, newRec, planEntityTerms(nodes), "uses", "used_by", now)
+		candidates := snapshotEntityCandidates(ctx, c.store, newRec.Scope, planEntityTerms(nodes)...)
 		err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+			if err := storage.ApplyDerivedSourcePolicy(ctx, tx, newRec, []*schema.MemoryRecord{rec}); err != nil {
+				return err
+			}
+			entityEdges := linkRecordToEntityTerms(ctx, entityStoreInTransaction(candidates, tx), newRec, planEntityTerms(nodes), schema.GraphPredicateUses, schema.GraphPredicateUsedBy, now)
 			if err := tx.Create(ctx, newRec); err != nil {
 				return err
 			}
 			rel := schema.Relation{
-				Predicate: "derived_from",
+				Predicate: schema.GraphPredicateDerivedFrom,
 				TargetID:  rec.ID,
 				Weight:    1.0,
 				CreatedAt: now,
@@ -167,7 +198,7 @@ func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
 			_ = c.embedder.EmbedRecord(ctx, newRec)
 		}
 
-		derivedFrom[rec.ID] = true
+		derivedFrom[rec.ID] = []*schema.MemoryRecord{newRec}
 		created++
 	}
 

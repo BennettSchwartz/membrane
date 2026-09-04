@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stubInterpreter struct {
@@ -26,11 +26,11 @@ func (s *stubInterpreter) Resolve(_ context.Context, _ ResolveRequest) (*schema.
 }
 
 type failingRelationStore struct {
-	storage.Store
+	boundedCaptureTestStore
 }
 
 func (s *failingRelationStore) Begin(ctx context.Context) (storage.Transaction, error) {
-	tx, err := s.Store.Begin(ctx)
+	tx, err := s.boundedCaptureTestStore.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -38,14 +38,14 @@ func (s *failingRelationStore) Begin(ctx context.Context) (storage.Transaction, 
 }
 
 func (s *failingRelationStore) FindEntitiesByTerm(ctx context.Context, term, scope string, limit int) ([]*schema.MemoryRecord, error) {
-	if lookup, ok := s.Store.(storage.EntityLookup); ok {
+	if lookup, ok := s.boundedCaptureTestStore.(storage.EntityLookup); ok {
 		return lookup.FindEntitiesByTerm(ctx, term, scope, limit)
 	}
 	return nil, nil
 }
 
 func (s *failingRelationStore) FindEntityByIdentifier(ctx context.Context, namespace, value, scope string) (*schema.MemoryRecord, error) {
-	if lookup, ok := s.Store.(storage.EntityLookup); ok {
+	if lookup, ok := s.boundedCaptureTestStore.(storage.EntityLookup); ok {
 		return lookup.FindEntityByIdentifier(ctx, namespace, value, scope)
 	}
 	return nil, storage.ErrNotFound
@@ -59,13 +59,10 @@ func (tx *failingRelationTx) AddRelation(context.Context, string, schema.Relatio
 	return errors.New("forced relation write failure")
 }
 
-func newCaptureTestService(t *testing.T, interpreter Interpreter) (*Service, *sqlitestore.SQLiteStore) {
+func newCaptureTestService(t *testing.T, interpreter Interpreter) (*Service, *teststore.MemoryStore) {
 	t.Helper()
 
-	store, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite store: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 
 	classifier := NewClassifier()
@@ -87,6 +84,60 @@ func TestCaptureMemoryDefaultsSensitivityAndPropagatesPrepareErrors(t *testing.T
 	})
 	if err == nil || !strings.Contains(err.Error(), "ingestion: fetch candidates") {
 		t.Fatalf("CaptureMemory prepare error = %v, want fetch candidates error", err)
+	}
+}
+
+func TestCaptureMemoryRejectsInvalidSourceKind(t *testing.T) {
+	svc, _ := newCaptureTestService(t, nil)
+
+	_, err := svc.CaptureMemory(context.Background(), CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "transcript",
+		Content:     map[string]any{"text": "remember this"},
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid source_kind") {
+		t.Fatalf("CaptureMemory invalid source_kind error = %v, want invalid source_kind", err)
+	}
+}
+
+func TestCaptureMemoryRejectsInvalidProposedType(t *testing.T) {
+	svc, _ := newCaptureTestService(t, nil)
+
+	_, err := svc.CaptureMemory(context.Background(), CaptureMemoryRequest{
+		Source:       "tester",
+		SourceKind:   "event",
+		ProposedType: schema.MemoryType("transcript"),
+		Content:      map[string]any{"text": "remember this"},
+		Sensitivity:  schema.SensitivityLow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid proposed_type") {
+		t.Fatalf("CaptureMemory invalid proposed_type error = %v, want invalid proposed_type", err)
+	}
+}
+
+func TestCaptureMemoryIgnoresInvalidInterpreterProposedType(t *testing.T) {
+	svc, _ := newCaptureTestService(t, &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			ProposedType: schema.MemoryType("transcript"),
+			Summary:      "interpreter summary",
+		},
+	})
+
+	resp, err := svc.CaptureMemory(context.Background(), CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-invalid-llm-type", "text": "remember this"},
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory invalid interpreter proposed_type: %v", err)
+	}
+	if got := resp.PrimaryRecord.Interpretation.ProposedType; got != schema.MemoryTypeEpisodic {
+		t.Fatalf("interpreter proposed_type = %q, want inferred %q", got, schema.MemoryTypeEpisodic)
+	}
+	if got := resp.PrimaryRecord.Interpretation.Summary; got != "interpreter summary" {
+		t.Fatalf("interpreter summary = %q, want preserved valid summary", got)
 	}
 }
 
@@ -114,7 +165,7 @@ func TestCaptureMemoryDirectNilInterpretationAndErrorBranches(t *testing.T) {
 
 	_, base := newCaptureTestService(t, nil)
 	updateErr := errors.New("update failed")
-	updateSvc := NewService(&updateFailStore{Store: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	updateSvc := NewService(&updateFailStore{boundedCaptureTestStore: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := updateSvc.captureMemory(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "working_state",
@@ -173,7 +224,7 @@ func TestCaptureMemoryDirectReferenceBranchesAndFinalizeError(t *testing.T) {
 
 	_, base := newCaptureTestService(t, nil)
 	finalErr := errors.New("final update failed")
-	finalSvc := NewService(&updateFailAtStore{Store: base, failAt: 3, err: finalErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	finalSvc := NewService(&updateFailAtStore{boundedCaptureTestStore: base, failAt: 3, err: finalErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, err = finalSvc.captureMemory(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "event",
@@ -202,7 +253,7 @@ func TestCaptureMemoryReferenceAndSemanticErrorBranches(t *testing.T) {
 			if err := base.Create(ctx, target); err != nil {
 				t.Fatalf("Create target: %v", err)
 			}
-			svc := NewService(&relationFailAtStore{Store: base, failAt: tc.failAt}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+			svc := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: tc.failAt}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 			_, err := svc.captureMemory(ctx, CaptureMemoryRequest{
 				Source:      "tester",
 				SourceKind:  "event",
@@ -222,7 +273,7 @@ func TestCaptureMemoryReferenceAndSemanticErrorBranches(t *testing.T) {
 	if err := relationBase.Create(ctx, relationTarget); err != nil {
 		t.Fatalf("Create relation target: %v", err)
 	}
-	relationSvc := NewService(&relationFailAtStore{Store: relationBase, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	relationSvc := NewService(&relationFailAtStore{boundedCaptureTestStore: relationBase, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, err := relationSvc.captureMemory(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "event",
@@ -236,7 +287,7 @@ func TestCaptureMemoryReferenceAndSemanticErrorBranches(t *testing.T) {
 	}
 
 	_, base := newCaptureTestService(t, nil)
-	svc := NewService(&relationFailAtStore{Store: base, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	svc := NewService(&relationFailAtStore{boundedCaptureTestStore: base, failAt: 1}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	_, err = svc.captureMemory(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "event",
@@ -270,7 +321,7 @@ func TestCreatePrimaryRecordPropagatesBranchErrors(t *testing.T) {
 
 	_, base := newCaptureTestService(t, nil)
 	updateErr := errors.New("update failed")
-	failSvc := NewService(&updateFailStore{Store: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
+	failSvc := NewService(&updateFailStore{boundedCaptureTestStore: base, err: updateErr}, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := failSvc.createPrimaryRecord(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "tool_output",
@@ -454,17 +505,14 @@ func TestCreatePrimaryRecordCapturesToolOutputContext(t *testing.T) {
 }
 
 func TestCaptureMemoryRollsBackWhenRelationWriteFails(t *testing.T) {
-	base, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite store: %v", err)
-	}
+	base := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = base.Close() })
 
-	store := &failingRelationStore{Store: base}
+	store := &failingRelationStore{boundedCaptureTestStore: base}
 	svc := NewService(store, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	ctx := context.Background()
 
-	_, err = svc.CaptureMemory(ctx, CaptureMemoryRequest{
+	_, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
 		Source:      "tester",
 		SourceKind:  "event",
 		Content:     map[string]any{"ref": "evt-rollback", "text": "Remember Orchid", "project": "Orchid"},
@@ -575,6 +623,123 @@ func TestCaptureMemoryInterpreterResolvesExistingEntity(t *testing.T) {
 	}
 }
 
+func TestCaptureMemoryInterpreterResolvesExistingEntityByIdentifier(t *testing.T) {
+	interpreter := &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			Status:       schema.InterpretationStatusTentative,
+			Summary:      "Resolved repository identifier mention",
+			ProposedType: schema.MemoryTypeSemantic,
+			Mentions: []schema.Mention{{
+				Surface:    "GitHub:BennettSchwartz/orchid",
+				EntityKind: schema.EntityKindProject,
+				Confidence: 0.9,
+			}},
+			ExtractionConfidence: 0.9,
+		},
+	}
+	svc, store := newCaptureTestService(t, interpreter)
+	ctx := context.Background()
+	existing := schema.NewMemoryRecord("entity-orchid-repo", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Project Orchid",
+		PrimaryType:   schema.EntityTypeRepository,
+		Types:         []string{schema.EntityTypeRepository},
+		Identifiers: []schema.EntityIdentifier{{
+			Namespace: "github",
+			Value:     "BennettSchwartz/orchid",
+		}},
+		Summary: "Existing repository entity",
+	})
+	existing.Scope = "project:alpha"
+	if err := store.Create(ctx, existing); err != nil {
+		t.Fatalf("Create existing entity: %v", err)
+	}
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-repo", "text": "Use github:BennettSchwartz/orchid for rollout verification"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	if len(resp.CreatedRecords) != 0 {
+		t.Fatalf("CreatedRecords len = %d, want 0 when identifier resolves existing entity", len(resp.CreatedRecords))
+	}
+	if !graphEdgesContain(resp.Edges, resp.PrimaryRecord.ID, schema.GraphPredicateMentionsEntity, existing.ID) {
+		t.Fatalf("Edges = %+v, want mentions_entity edge to %s", resp.Edges, existing.ID)
+	}
+	got, err := store.Get(ctx, resp.PrimaryRecord.ID)
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	if got.Interpretation == nil || got.Interpretation.Mentions[0].CanonicalEntityID != existing.ID {
+		t.Fatalf("Interpretation = %+v, want canonical_entity_id %s", got.Interpretation, existing.ID)
+	}
+}
+
+func TestCaptureMemoryCoalescesDescriptorMentionsWithinSameCapture(t *testing.T) {
+	interpreter := &stubInterpreter{
+		interpretation: &schema.Interpretation{
+			Status:       schema.InterpretationStatusTentative,
+			Summary:      "Project Orchid and Orchid refer to the same project",
+			ProposedType: schema.MemoryTypeSemantic,
+			Mentions: []schema.Mention{
+				{
+					Surface:    "Project Orchid",
+					EntityKind: schema.EntityKindProject,
+					Confidence: 0.9,
+				},
+				{
+					Surface:    "Orchid",
+					EntityKind: schema.EntityKindProject,
+					Confidence: 0.9,
+				},
+			},
+			ExtractionConfidence: 0.9,
+		},
+	}
+	svc, store := newCaptureTestService(t, interpreter)
+	ctx := context.Background()
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "event",
+		Content:     map[string]any{"ref": "evt-descriptor-mentions", "text": "Project Orchid is also called Orchid"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+	if len(resp.CreatedRecords) != 1 {
+		t.Fatalf("CreatedRecords len = %d, want one coalesced entity", len(resp.CreatedRecords))
+	}
+	if len(resp.Edges) != 2 {
+		t.Fatalf("Edges len = %d, want one bidirectional entity edge pair", len(resp.Edges))
+	}
+
+	got, err := store.Get(ctx, resp.PrimaryRecord.ID)
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	if got.Interpretation == nil || len(got.Interpretation.Mentions) != 2 {
+		t.Fatalf("Interpretation = %+v, want two resolved mentions", got.Interpretation)
+	}
+	entityID := resp.CreatedRecords[0].ID
+	for _, mention := range got.Interpretation.Mentions {
+		if mention.CanonicalEntityID != entityID {
+			t.Fatalf("Mention = %+v, want canonical entity %q", mention, entityID)
+		}
+	}
+	if len(got.Relations) != 1 || got.Relations[0].TargetID != entityID {
+		t.Fatalf("Relations = %+v, want one relation to coalesced entity", got.Relations)
+	}
+}
+
 func TestCaptureMemoryCreatesSecondarySemanticRecordForExplicitFact(t *testing.T) {
 	svc, _ := newCaptureTestService(t, nil)
 	ctx := context.Background()
@@ -608,6 +773,9 @@ func TestCaptureMemoryCreatesSecondarySemanticRecordForExplicitFact(t *testing.T
 		}
 		if payload.Predicate != "deploy_target_for" || payload.Object != "staging" {
 			t.Fatalf("Semantic payload = %+v, want explicit fact predicate/object", payload)
+		}
+		if !provenanceSourcesContain(rec.Provenance.Sources, schema.ProvenanceKindObservation, resp.PrimaryRecord.ID) {
+			t.Fatalf("Semantic provenance sources = %+v, want observation source %s", rec.Provenance.Sources, resp.PrimaryRecord.ID)
 		}
 	}
 	for _, edge := range resp.Edges {
@@ -644,6 +812,223 @@ func TestCaptureMemoryCreatesSecondarySemanticRecordForExplicitFact(t *testing.T
 	if !hasSemanticEntityLink {
 		t.Fatalf("Edges = %+v, want semantic record linked to canonical entity", resp.Edges)
 	}
+}
+
+func TestCaptureMemoryCanonicalizesExplicitFactObjectThroughGlobalEntity(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+
+	subject := newObservationEntity("entity-global-orchid", "Orchid", "")
+	object := newObservationEntity("entity-global-borealis", "Borealis", "")
+	for _, rec := range []*schema.MemoryRecord{subject, object} {
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("Create %s: %v", rec.ID, err)
+		}
+	}
+
+	resp, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "observation",
+		Content:     map[string]any{"subject": "Orchid", "predicate": "depends_on", "object": "Borealis"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory: %v", err)
+	}
+
+	var semantic *schema.MemoryRecord
+	for _, rec := range resp.CreatedRecords {
+		if rec.Type == schema.MemoryTypeSemantic {
+			semantic = rec
+			break
+		}
+	}
+	if semantic == nil {
+		t.Fatalf("CreatedRecords = %+v, want semantic record", resp.CreatedRecords)
+	}
+	payload := semantic.Payload.(*schema.SemanticPayload)
+	if payload.Subject != subject.ID || payload.Object != object.ID {
+		t.Fatalf("semantic payload = %+v, want global subject %q and object %q", payload, subject.ID, object.ID)
+	}
+	if !graphEdgesContain(resp.Edges, semantic.ID, schema.GraphPredicateSubjectEntity, subject.ID) ||
+		!graphEdgesContain(resp.Edges, semantic.ID, schema.GraphPredicateObjectEntity, object.ID) ||
+		!graphEdgesContain(resp.Edges, object.ID, schema.GraphPredicateFactObjectOf, semantic.ID) {
+		t.Fatalf("Edges = %+v, want semantic subject/object links to global entities", resp.Edges)
+	}
+}
+
+func TestCaptureMemoryReusesExistingSemanticFactForRepeatedObservation(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+	content := map[string]any{"subject": "Orchid", "predicate": "deploy_target_for", "object": "staging"}
+
+	first, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "observation",
+		Content:     content,
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("first CaptureMemory: %v", err)
+	}
+	var semanticID string
+	for _, rec := range first.CreatedRecords {
+		if rec.Type == schema.MemoryTypeSemantic {
+			semanticID = rec.ID
+			break
+		}
+	}
+	if semanticID == "" {
+		t.Fatalf("first CreatedRecords = %+v, want semantic record", first.CreatedRecords)
+	}
+
+	second, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "observation",
+		Content:     map[string]any{"subject": "Orchid", "predicate": "deployTargetFor", "object": "staging"},
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("second CaptureMemory: %v", err)
+	}
+	for _, rec := range second.CreatedRecords {
+		if rec.Type == schema.MemoryTypeSemantic {
+			t.Fatalf("second CreatedRecords = %+v, want no duplicate semantic record", second.CreatedRecords)
+		}
+	}
+	if !graphEdgesContain(second.Edges, second.PrimaryRecord.ID, "derived_semantic", semanticID) ||
+		!graphEdgesContain(second.Edges, semanticID, "derived_from", second.PrimaryRecord.ID) {
+		t.Fatalf("second Edges = %+v, want provenance links to existing semantic %s", second.Edges, semanticID)
+	}
+
+	semantics, err := store.ListByType(ctx, schema.MemoryTypeSemantic)
+	if err != nil {
+		t.Fatalf("ListByType semantic: %v", err)
+	}
+	if len(semantics) != 1 {
+		t.Fatalf("semantic count = %d, want one reused semantic fact", len(semantics))
+	}
+	got, err := store.Get(ctx, semanticID)
+	if err != nil {
+		t.Fatalf("Get semantic: %v", err)
+	}
+	payload := got.Payload.(*schema.SemanticPayload)
+	if len(payload.Evidence) != 2 ||
+		payload.Evidence[0].SourceID != first.PrimaryRecord.ID ||
+		payload.Evidence[1].SourceID != second.PrimaryRecord.ID {
+		t.Fatalf("semantic evidence = %+v, want first and second capture sources", payload.Evidence)
+	}
+	if !provenanceSourcesContain(got.Provenance.Sources, schema.ProvenanceKindObservation, first.PrimaryRecord.ID) ||
+		!provenanceSourcesContain(got.Provenance.Sources, schema.ProvenanceKindObservation, second.PrimaryRecord.ID) {
+		t.Fatalf("semantic provenance sources = %+v, want first and second capture sources", got.Provenance.Sources)
+	}
+	foundReinforce := false
+	for _, entry := range got.AuditLog {
+		if entry.Action == schema.AuditActionReinforce && entry.Actor == "ingestion/capture" {
+			foundReinforce = true
+			break
+		}
+	}
+	if !foundReinforce {
+		t.Fatalf("semantic audit log = %+v, want capture reinforcement", got.AuditLog)
+	}
+}
+
+func TestCaptureMemoryKeepsSemanticFactReuseScoped(t *testing.T) {
+	svc, store := newCaptureTestService(t, nil)
+	ctx := context.Background()
+	globalEntity := schema.NewMemoryRecord("entity-orchid-global", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Orchid",
+		PrimaryType:   schema.EntityTypeProject,
+		Types:         []string{schema.EntityTypeProject},
+		Aliases:       []schema.EntityAlias{{Value: "Orchid"}},
+	})
+	if err := store.Create(ctx, globalEntity); err != nil {
+		t.Fatalf("Create global entity: %v", err)
+	}
+	content := map[string]any{"subject": "Orchid", "predicate": "deploy_target_for", "object": "staging"}
+
+	first, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "observation",
+		Content:     content,
+		Scope:       "project:alpha",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("first CaptureMemory: %v", err)
+	}
+	alphaSemantic := createdSemanticID(first.CreatedRecords)
+	if alphaSemantic == "" {
+		t.Fatalf("first CreatedRecords = %+v, want semantic record", first.CreatedRecords)
+	}
+
+	second, err := svc.CaptureMemory(ctx, CaptureMemoryRequest{
+		Source:      "tester",
+		SourceKind:  "observation",
+		Content:     content,
+		Scope:       "project:beta",
+		Sensitivity: schema.SensitivityLow,
+	})
+	if err != nil {
+		t.Fatalf("second CaptureMemory: %v", err)
+	}
+	betaSemantic := createdSemanticID(second.CreatedRecords)
+	if betaSemantic == "" {
+		t.Fatalf("second CreatedRecords = %+v, want separate scoped semantic record", second.CreatedRecords)
+	}
+	if betaSemantic == alphaSemantic {
+		t.Fatalf("beta semantic ID = alpha semantic ID %s, want separate scoped facts", alphaSemantic)
+	}
+	if graphEdgesContain(second.Edges, second.PrimaryRecord.ID, "derived_semantic", alphaSemantic) {
+		t.Fatalf("second Edges = %+v, leaked link to alpha semantic %s", second.Edges, alphaSemantic)
+	}
+
+	semantics, err := store.ListByType(ctx, schema.MemoryTypeSemantic)
+	if err != nil {
+		t.Fatalf("ListByType semantic: %v", err)
+	}
+	if len(semantics) != 2 {
+		t.Fatalf("semantic count = %d, want separate semantic facts per scope", len(semantics))
+	}
+	beta, err := store.Get(ctx, betaSemantic)
+	if err != nil {
+		t.Fatalf("Get beta semantic: %v", err)
+	}
+	if beta.Scope != "project:beta" {
+		t.Fatalf("beta semantic scope = %q, want project:beta", beta.Scope)
+	}
+}
+
+func createdSemanticID(records []*schema.MemoryRecord) string {
+	for _, rec := range records {
+		if rec != nil && rec.Type == schema.MemoryTypeSemantic {
+			return rec.ID
+		}
+	}
+	return ""
+}
+
+func graphEdgesContain(edges []schema.GraphEdge, sourceID, predicate, targetID string) bool {
+	for _, edge := range edges {
+		if edge.SourceID == sourceID && edge.Predicate == predicate && edge.TargetID == targetID {
+			return true
+		}
+	}
+	return false
+}
+
+func provenanceSourcesContain(sources []schema.ProvenanceSource, kind schema.ProvenanceKind, ref string) bool {
+	for _, source := range sources {
+		if source.Kind == kind && source.Ref == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCaptureMemoryInterpreterMaterializesResolvedRelationCandidates(t *testing.T) {

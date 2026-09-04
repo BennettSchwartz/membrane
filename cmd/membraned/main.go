@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	grpcapi "github.com/BennettSchwartz/membrane/api/grpc"
@@ -20,7 +21,6 @@ var daemonFatalf = log.Fatalf
 
 type serverOptions struct {
 	configPath  string
-	dbPath      string
 	postgresDSN string
 	addr        string
 }
@@ -82,19 +82,22 @@ func configFromOptions(opts serverOptions, lookupEnv func(string) string) (*memb
 		cfg = membrane.DefaultConfig()
 	}
 
-	if opts.dbPath != "" {
-		cfg.DBPath = opts.dbPath
-	}
 	if opts.postgresDSN != "" {
-		cfg.Backend = "postgres"
 		cfg.PostgresDSN = opts.postgresDSN
 	}
 	if opts.addr != "" {
 		cfg.ListenAddr = opts.addr
 	}
 
+	cfg.PostgresDSN = strings.TrimSpace(cfg.PostgresDSN)
+	if cfg.PostgresDSN == "" {
+		cfg.PostgresDSN = strings.TrimSpace(lookupEnv("MEMBRANE_POSTGRES_DSN"))
+	}
 	if cfg.APIKey == "" {
 		cfg.APIKey = lookupEnv("MEMBRANE_API_KEY")
+	}
+	if cfg.PostgresDSN == "" {
+		return nil, fmt.Errorf("postgres_dsn is required; set --postgres-dsn, postgres_dsn, or MEMBRANE_POSTGRES_DSN")
 	}
 	return cfg, nil
 }
@@ -116,8 +119,7 @@ func runMembranedCLI(ctx context.Context, args []string, lookupEnv func(string) 
 
 	fs := flag.NewFlagSet("membraned", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to YAML config file")
-	dbPath := fs.String("db", "", "SQLite database path (overrides config)")
-	postgresDSN := fs.String("postgres-dsn", "", "PostgreSQL DSN (overrides config and selects the postgres backend)")
+	postgresDSN := fs.String("postgres-dsn", "", "PostgreSQL DSN (overrides config)")
 	addr := fs.String("addr", "", "gRPC listen address (overrides config)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -131,7 +133,6 @@ func runMembranedCLI(ctx context.Context, args []string, lookupEnv func(string) 
 
 	cfg, err := configFromOptions(serverOptions{
 		configPath:  *configPath,
-		dbPath:      *dbPath,
 		postgresDSN: *postgresDSN,
 		addr:        *addr,
 	}, lookupEnv)

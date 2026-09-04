@@ -23,6 +23,17 @@ func TestRelationBoostAndLexicalMatch(t *testing.T) {
 		{predicate: "supported_by", fallback: 10, want: 20},
 		{predicate: "depends_on", fallback: 10, want: 20},
 		{predicate: "dependency_of", fallback: 10, want: 20},
+		{predicate: "uses", fallback: 10, want: 20},
+		{predicate: "used_by", fallback: 10, want: 20},
+		{predicate: "caused_by", fallback: 10, want: 20},
+		{predicate: "causes", fallback: 10, want: 20},
+		{predicate: "contradicts", fallback: 10, want: 20},
+		{predicate: "contradicted_by", fallback: 10, want: 20},
+		{predicate: "supersedes", fallback: 10, want: 20},
+		{predicate: "superseded_by", fallback: 10, want: 20},
+		{predicate: "contested_by", fallback: 10, want: 20},
+		{predicate: "contests", fallback: 10, want: 20},
+		{predicate: " Uses ", fallback: 10, want: 20},
 		{predicate: "custom", fallback: 10, want: 10},
 	} {
 		if got := relationBoost(tc.predicate, tc.fallback); got != tc.want {
@@ -42,8 +53,35 @@ func TestRelationBoostAndLexicalMatch(t *testing.T) {
 	if got := normalizeSearchText("  Orchid  "); got != "orchid" {
 		t.Fatalf("normalizeSearchText = %q, want orchid", got)
 	}
-	if !containsToken("orchid deploy", "deploy") {
-		t.Fatalf("containsToken should use substring containment")
+}
+
+func TestPrioritizeRelationsUsesDeterministicTieBreakers(t *testing.T) {
+	now := time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC)
+	rels := []schema.Relation{
+		{Predicate: "uses", TargetID: "target-c", Weight: 0.8, CreatedAt: now},
+		{Predicate: "supports", TargetID: "target-b", Weight: 0.8, CreatedAt: now},
+		{Predicate: "supports", TargetID: "target-a", Weight: 0.8, CreatedAt: now},
+		{Predicate: "related", TargetID: "target-z", Weight: 0.8, CreatedAt: now.Add(time.Second)},
+		{Predicate: "depends_on", TargetID: "target-d", Weight: 0.9, CreatedAt: now},
+	}
+
+	prioritizeRelations(rels)
+
+	got := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		got = append(got, rel.Predicate+"|"+rel.TargetID)
+	}
+	want := []string{
+		"depends_on|target-d",
+		"related|target-z",
+		"supports|target-a",
+		"supports|target-b",
+		"uses|target-c",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("prioritizeRelations order = %v, want %v", got, want)
+		}
 	}
 }
 

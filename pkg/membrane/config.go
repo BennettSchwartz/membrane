@@ -4,6 +4,7 @@
 package membrane
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -13,16 +14,10 @@ import (
 
 // Config holds all configurable parameters for a Membrane instance.
 type Config struct {
-	// Backend selects the storage backend: "sqlite" (default) or "postgres".
-	Backend string `yaml:"backend"`
-
-	// DBPath is the SQLite database path.
-	DBPath string `yaml:"db_path"`
-
-	// PostgresDSN is the PostgreSQL connection string used when Backend == "postgres".
+	// PostgresDSN is the PostgreSQL connection string.
 	PostgresDSN string `yaml:"postgres_dsn"`
 
-	// ListenAddr is the gRPC listen address (default: ":9090").
+	// ListenAddr is the gRPC listen address (default: "127.0.0.1:9090").
 	ListenAddr string `yaml:"listen_addr"`
 
 	// DecayInterval is how often the decay scheduler runs (default: 1h).
@@ -34,14 +29,21 @@ type Config struct {
 	// DefaultSensitivity is the ingestion default sensitivity level (default: "low").
 	DefaultSensitivity string `yaml:"default_sensitivity"`
 
+	// ReadMaxSensitivity is the highest sensitivity retrievable over gRPC.
+	ReadMaxSensitivity string `yaml:"read_max_sensitivity"`
+
+	// ReadScopes are the scopes retrievable over gRPC.
+	ReadScopes []string `yaml:"read_scopes"`
+
+	// WriteMaxSensitivity is the highest sensitivity mutable over gRPC.
+	WriteMaxSensitivity string `yaml:"write_max_sensitivity"`
+
+	// WriteScopes are the scopes mutable over gRPC.
+	WriteScopes []string `yaml:"write_scopes"`
+
 	// SelectionConfidenceThreshold is the minimum confidence for the retrieval
 	// selector to consider a competence or plan_graph candidate (default: 0.7).
 	SelectionConfidenceThreshold float64 `yaml:"selection_confidence_threshold"`
-
-	// EncryptionKey is the SQLCipher encryption key for the SQLite database.
-	// If empty, the database is not encrypted. Read from MEMBRANE_ENCRYPTION_KEY
-	// environment variable if not set in config.
-	EncryptionKey string `yaml:"encryption_key"`
 
 	// EmbeddingEndpoint is the HTTP endpoint used to generate embeddings.
 	EmbeddingEndpoint string `yaml:"embedding_endpoint"`
@@ -88,7 +90,12 @@ type Config struct {
 	// environment variable if not set in config.
 	APIKey string `yaml:"api_key"`
 
-	// RateLimitPerSecond is the maximum requests per second per client.
+	// AllowInsecureCredentials permits API-key authentication over plaintext
+	// gRPC on non-loopback listeners. Use only on trusted development networks.
+	AllowInsecureCredentials bool `yaml:"allow_insecure_credentials"`
+
+	// RateLimitPerSecond is the maximum requests per second per authenticated
+	// API-key principal, or per source IP when API-key authentication is disabled.
 	// 0 means no rate limiting. Default: 100.
 	RateLimitPerSecond int `yaml:"rate_limit_per_second"`
 
@@ -105,18 +112,21 @@ type Config struct {
 	GraphDefaultMaxHops int `yaml:"graph_default_max_hops"`
 }
 
+const defaultEmbeddingDimensions = 1536
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		Backend:                      "sqlite",
-		DBPath:                       "membrane.db",
-		ListenAddr:                   ":9090",
+		ListenAddr:                   "127.0.0.1:9090",
 		DecayInterval:                1 * time.Hour,
 		ConsolidationInterval:        6 * time.Hour,
 		DefaultSensitivity:           "low",
+		ReadMaxSensitivity:           "low",
+		ReadScopes:                   []string{"default"},
+		WriteMaxSensitivity:          "low",
+		WriteScopes:                  []string{"default"},
 		SelectionConfidenceThreshold: 0.7,
-		EncryptionKey:                "",
-		EmbeddingDimensions:          1536,
+		EmbeddingDimensions:          defaultEmbeddingDimensions,
 		RateLimitPerSecond:           100,
 		GraphDefaultRootLimit:        10,
 		GraphDefaultNodeLimit:        25,
@@ -135,7 +145,9 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 

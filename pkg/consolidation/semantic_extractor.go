@@ -19,9 +19,14 @@ const (
 	defaultExtractionStaleAge  = time.Hour
 )
 
-// Reinforcer updates salience and audit state for an existing record.
+// Reinforcer is retained for constructor compatibility. Semantic extraction
+// persists reinforcement through its own source-aware transaction boundary.
 type Reinforcer interface {
 	Reinforce(ctx context.Context, id, actor, rationale string) error
+}
+
+type SourceReinforcer interface {
+	ReinforceFromSource(ctx context.Context, id, sourceType, sourceID, actor, rationale string) error
 }
 
 // ExtractionStore provides the Postgres-only extractor queue operations.
@@ -33,27 +38,32 @@ type ExtractionStore interface {
 	FindSemanticExact(ctx context.Context, subject, predicate, object string) (*schema.MemoryRecord, error)
 }
 
+type scopedExtractionStore interface {
+	FindSemanticExactInScope(ctx context.Context, subject, predicate, object, scope string) (*schema.MemoryRecord, error)
+}
+
 // SemanticExtractor pulls structured semantic facts from episodic records via an LLM.
 type SemanticExtractor struct {
 	store           storage.Store
 	extractionStore ExtractionStore
-	reinforcer      Reinforcer
 	llm             LLMClient
 	batchSize       int
 	staleAge        time.Duration
 }
 
 // NewSemanticExtractor creates a semantic extractor with default queue settings.
+// The Reinforcer parameter is retained for source compatibility. Existing facts
+// are reinforced by the built-in transaction-owned path; injected ID-only
+// reinforcers are not invoked because they cannot retain source snapshot policy.
 func NewSemanticExtractor(
 	store storage.Store,
 	extractionStore ExtractionStore,
-	reinforcer Reinforcer,
+	_ Reinforcer,
 	llm LLMClient,
 ) *SemanticExtractor {
 	return &SemanticExtractor{
 		store:           store,
 		extractionStore: extractionStore,
-		reinforcer:      reinforcer,
 		llm:             llm,
 		batchSize:       defaultExtractionBatchSize,
 		staleAge:        defaultExtractionStaleAge,
@@ -117,6 +127,7 @@ func (e *SemanticExtractor) processClaimedRecord(ctx context.Context, id string)
 	}
 
 	created := 0
+	processed := 0
 	hadProcessingError := false
 	for _, triple := range dedupeTriples(triples) {
 		inserted, err := e.upsertTriple(ctx, rec, triple)
@@ -125,12 +136,20 @@ func (e *SemanticExtractor) processClaimedRecord(ctx context.Context, id string)
 			hadProcessingError = true
 			continue
 		}
+		processed++
 		if inserted {
 			created++
 		}
 	}
 
-	if err := e.extractionStore.MarkEpisodicExtracted(ctx, id, created); err != nil {
+	if hadProcessingError {
+		if err := e.releaseClaim(ctx, id); err != nil {
+			return created, false, fmt.Errorf("release partially processed episodic claim: %w", err)
+		}
+		return created, false, nil
+	}
+
+	if err := e.extractionStore.MarkEpisodicExtracted(ctx, id, processed); err != nil {
 		return created, false, fmt.Errorf("mark episodic extracted: %w", err)
 	}
 
@@ -138,20 +157,15 @@ func (e *SemanticExtractor) processClaimedRecord(ctx context.Context, id string)
 }
 
 func (e *SemanticExtractor) upsertTriple(ctx context.Context, source *schema.MemoryRecord, triple Triple) (bool, error) {
-	existing, err := e.extractionStore.FindSemanticExact(ctx, triple.Subject, triple.Predicate, triple.Object)
+	existing, err := e.findExistingTriple(ctx, source, triple)
 	if err != nil {
 		return false, fmt.Errorf("find existing semantic record: %w", err)
 	}
 	if existing != nil {
-		if e.reinforcer == nil {
-			return false, nil
-		}
-		if err := e.reinforcer.Reinforce(
-			ctx,
-			existing.ID,
-			"consolidation/semantic_extractor",
-			fmt.Sprintf("Reinforced exact semantic fact extracted from episodic record %s", source.ID),
-		); err != nil {
+		// ID-only custom reinforcers cannot retain the consumed snapshot or the
+		// locked canonical match. Existing facts use the shared atomic path.
+		_, _, err := reinforceSemanticFact(ctx, e.store, source, existing, triple, "consolidation/semantic_extractor", time.Now().UTC(), nil)
+		if err != nil {
 			return false, fmt.Errorf("reinforce existing semantic record: %w", err)
 		}
 		return false, nil
@@ -159,13 +173,17 @@ func (e *SemanticExtractor) upsertTriple(ctx context.Context, source *schema.Mem
 
 	now := time.Now().UTC()
 	newRec := newExtractedSemanticRecord(source, triple, now)
-	entityEdges := canonicalizeSemanticRecordEntities(ctx, e.store, newRec)
+	candidates := snapshotEntityCandidates(ctx, e.store, source.Scope, triple.Subject, triple.Object)
 	if err := storage.WithTransaction(ctx, e.store, func(tx storage.Transaction) error {
+		if err := storage.ApplyDerivedSourcePolicy(ctx, tx, newRec, []*schema.MemoryRecord{source}); err != nil {
+			return err
+		}
+		entityEdges := canonicalizeSemanticRecordEntities(ctx, entityStoreInTransaction(candidates, tx), newRec)
 		if err := tx.Create(ctx, newRec); err != nil {
 			return err
 		}
 		if err := tx.AddRelation(ctx, newRec.ID, schema.Relation{
-			Predicate: "derived_from",
+			Predicate: schema.GraphPredicateDerivedFrom,
 			TargetID:  source.ID,
 			Weight:    1.0,
 			CreatedAt: now,
@@ -191,6 +209,52 @@ func (e *SemanticExtractor) upsertTriple(ctx context.Context, source *schema.Mem
 	}
 
 	return true, nil
+}
+
+func (e *SemanticExtractor) findExistingTriple(ctx context.Context, source *schema.MemoryRecord, triple Triple) (*schema.MemoryRecord, error) {
+	scope := ""
+	if source != nil {
+		scope = source.Scope
+	}
+	existing, err := e.findSemanticExactInScope(ctx, triple.Subject, triple.Predicate, triple.Object, scope)
+	if err != nil || existing != nil {
+		return existing, err
+	}
+
+	rawKey := semanticFactKey(triple.Subject, triple.Predicate, triple.Object)
+	var canonicalKey semanticFactKeyValue
+	candidates := snapshotEntityCandidates(ctx, e.store, scope, triple.Subject, triple.Object)
+	if err := storage.WithTransaction(ctx, e.store, func(tx storage.Transaction) error {
+		if source == nil {
+			return fmt.Errorf("missing semantic source")
+		}
+		policyRecord := &schema.MemoryRecord{Scope: source.Scope, Sensitivity: source.Sensitivity}
+		if err := storage.ApplyDerivedSourcePolicy(ctx, tx, policyRecord, []*schema.MemoryRecord{source}); err != nil {
+			return err
+		}
+		canonicalKey = semanticObservationFactKey(ctx, entityStoreInTransaction(candidates, tx), scope, policyRecord.Sensitivity, triple.Subject, triple.Predicate, triple.Object)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if canonicalKey == rawKey {
+		return nil, nil
+	}
+	return e.findSemanticExactInScope(ctx, canonicalKey.subject, canonicalKey.predicate, canonicalKey.object, scope)
+}
+
+func (e *SemanticExtractor) findSemanticExactInScope(ctx context.Context, subject, predicate, object, scope string) (*schema.MemoryRecord, error) {
+	if scoped, ok := e.extractionStore.(scopedExtractionStore); ok {
+		return scoped.FindSemanticExactInScope(ctx, subject, predicate, object, scope)
+	}
+	existing, err := e.extractionStore.FindSemanticExact(ctx, subject, predicate, object)
+	if err != nil || existing == nil {
+		return existing, err
+	}
+	if existing.Scope != scope {
+		return nil, nil
+	}
+	return existing, nil
 }
 
 func (e *SemanticExtractor) releaseClaim(ctx context.Context, id string) error {
@@ -233,7 +297,7 @@ func dedupeTriples(triples []Triple) []Triple {
 	for _, triple := range triples {
 		normalized := Triple{
 			Subject:   strings.TrimSpace(triple.Subject),
-			Predicate: strings.TrimSpace(triple.Predicate),
+			Predicate: schema.NormalizeSemanticPredicate(triple.Predicate),
 			Object:    strings.TrimSpace(triple.Object),
 		}
 		if normalized.Subject == "" || normalized.Predicate == "" || normalized.Object == "" {

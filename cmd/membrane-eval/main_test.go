@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	"github.com/BennettSchwartz/membrane/pkg/embedding"
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
@@ -101,15 +104,19 @@ func (s *stoppingEvalVectorStore) SearchByEmbedding(ctx context.Context, query [
 }
 
 type scriptedEvalEmbeddingClient struct {
-	errForText string
-	err        error
-	texts      []string
+	errForText   string
+	err          error
+	dimensions   int
+	vectorByText map[string][]float32
+	texts        []string
 }
 
 type fakeEvalMembrane struct {
-	startErr error
-	stopErr  error
-	response *ingestion.CaptureMemoryResponse
+	startErr      error
+	stopErr       error
+	response      *ingestion.CaptureMemoryResponse
+	graphResponse *retrieval.RetrieveGraphResponse
+	captures      int
 }
 
 func (f *fakeEvalMembrane) Start(context.Context) error {
@@ -124,10 +131,24 @@ func (f *fakeEvalMembrane) CaptureMemory(context.Context, ingestion.CaptureMemor
 	if f.response != nil {
 		return f.response, nil
 	}
-	return &ingestion.CaptureMemoryResponse{}, nil
+	f.captures++
+	rec := schema.NewMemoryRecord(fmt.Sprintf("capture-%d", f.captures), schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "subject",
+		Predicate: "predicate",
+		Object:    "object",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	return &ingestion.CaptureMemoryResponse{
+		PrimaryRecord:  rec,
+		CreatedRecords: []*schema.MemoryRecord{rec},
+	}, nil
 }
 
 func (f *fakeEvalMembrane) RetrieveGraph(context.Context, *retrieval.RetrieveGraphRequest) (*retrieval.RetrieveGraphResponse, error) {
+	if f.graphResponse != nil {
+		return f.graphResponse, nil
+	}
 	return &retrieval.RetrieveGraphResponse{}, nil
 }
 
@@ -136,7 +157,21 @@ func (c *scriptedEvalEmbeddingClient) Embed(_ context.Context, text string) ([]f
 	if c.err != nil && (c.errForText == "" || strings.Contains(text, c.errForText)) {
 		return nil, c.err
 	}
-	return []float32{float32(len(c.texts)), 0.5}, nil
+	for needle, vector := range c.vectorByText {
+		if strings.Contains(text, needle) {
+			return append([]float32(nil), vector...), nil
+		}
+	}
+	dimensions := c.dimensions
+	if dimensions <= 0 {
+		dimensions = 1536
+	}
+	vector := make([]float32, dimensions)
+	vector[0] = float32(len(c.texts))
+	if dimensions > 1 {
+		vector[1] = 0.5
+	}
+	return vector, nil
 }
 
 func TestMetricHelpers(t *testing.T) {
@@ -190,6 +225,66 @@ func TestMetricHelpers(t *testing.T) {
 	}
 }
 
+func TestRecordEmbeddingTextUsesTypedFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  recordEntry
+		want string
+	}{
+		{
+			name: "explicit text wins",
+			rec:  recordEntry{MemoryType: "entity", Text: "  explicit corpus text  ", CanonicalName: "Project Orchid"},
+			want: "explicit corpus text",
+		},
+		{
+			name: "entity",
+			rec: recordEntry{
+				MemoryType:    "entity",
+				CanonicalName: "Project Orchid",
+				Subject:       "legacy duplicate name",
+				PrimaryType:   schema.EntityTypeProject,
+				EntityTypes:   []string{"Repository"},
+				Aliases:       []string{"orchid"},
+				Identifiers:   []entityIdentifierEntry{{Namespace: " GitHub ", Value: "BennettSchwartz/orchid"}},
+				Summary:       "Staging deploy target",
+			},
+			want: "Project Orchid Project Repository orchid github:BennettSchwartz/orchid Staging deploy target",
+		},
+		{
+			name: "legacy entity subject fallback",
+			rec: recordEntry{
+				MemoryType:  "entity",
+				Subject:     "Project Orchid",
+				PrimaryType: schema.EntityTypeProject,
+				Summary:     "Staging deploy target",
+			},
+			want: "Project Orchid Project Staging deploy target",
+		},
+		{
+			name: "semantic",
+			rec:  recordEntry{MemoryType: "semantic", Subject: "Orchid", Predicate: "deploys_to", Object: "staging"},
+			want: "Orchid deploys_to staging",
+		},
+		{
+			name: "plan graph",
+			rec: recordEntry{
+				MemoryType: "plan_graph",
+				Key:        "deploy-plan",
+				Intent:     "deploy safely",
+				Nodes:      []planNodeEntry{{ID: "build", Op: "go test"}},
+				Edges:      []planEdgeEntry{{From: "build", To: "ship"}},
+			},
+			want: "deploy-plan deploy safely build go test build ship",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recordEmbeddingText(tc.rec); got != tc.want {
+				t.Fatalf("recordEmbeddingText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrintRowHandlesPositiveAndNegativeDelta(t *testing.T) {
 	printRow("recall", 0.2, 0.4)
 	printRow("precision", 0.4, 0.2)
@@ -234,12 +329,14 @@ func TestEvalCLIDependenciesDefaults(t *testing.T) {
 	}
 
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-	m, err := deps.newMembrane(cfg)
-	if err != nil {
-		t.Fatalf("default newMembrane: %v", err)
+	cfg.PostgresDSN = ""
+	t.Setenv("MEMBRANE_POSTGRES_DSN", "")
+	if m, err := deps.newMembrane(cfg); err == nil || !strings.Contains(err.Error(), "postgres_dsn is required") {
+		if m != nil {
+			t.Cleanup(func() { _ = m.Stop() })
+		}
+		t.Fatalf("default newMembrane error = %v, want postgres_dsn is required", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
 
 	if client := deps.newEmbeddingClient("http://127.0.0.1:1/embeddings", "test-model", "key", 3); client == nil {
 		t.Fatalf("default newEmbeddingClient = nil")
@@ -288,11 +385,124 @@ func TestRunEvalCLIValidationAndLoadErrors(t *testing.T) {
 	}
 }
 
+func TestRunEvalCLIRejectsInvalidNumericConfig(t *testing.T) {
+	ctx := context.Background()
+	base := []string{
+		"-postgres-dsn", "postgres://fake/db",
+		"-embedding-api-key", "flag-key",
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "empty dataset", args: []string{"-dataset", " "}, want: "--dataset is required"},
+		{name: "empty endpoint", args: []string{"-embedding-endpoint", " "}, want: "--embedding-endpoint is required"},
+		{name: "empty model", args: []string{"-embedding-model", " "}, want: "--embedding-model is required"},
+		{name: "zero dimensions", args: []string{"-embedding-dimensions", "0"}, want: "--embedding-dimensions must be positive"},
+		{name: "zero k", args: []string{"-k", "0"}, want: "--k must be positive"},
+		{name: "nan recall", args: []string{"-min-recall", "NaN"}, want: "--min-recall must be a finite value between 0 and 1"},
+		{name: "precision too high", args: []string{"-min-precision", "1.01"}, want: "--min-precision must be a finite value between 0 and 1"},
+		{name: "negative mrr", args: []string{"-min-mrr", "-0.01"}, want: "--min-mrr must be a finite value between 0 and 1"},
+		{name: "infinite ndcg", args: []string{"-min-ndcg", "+Inf"}, want: "--min-ndcg must be a finite value between 0 and 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(append([]string{}, base...), tc.args...)
+			err := runEvalCLIWithDeps(ctx, args, nil, evalCLIDependencies{
+				newMembrane: func(*membrane.Config) (evalMembrane, error) {
+					t.Fatal("newMembrane should not be called for invalid config")
+					return nil, nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runEvalCLIWithDeps error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvalEmbeddingValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vector     []float32
+		dimensions int
+		want       string
+	}{
+		{name: "empty", vector: nil, dimensions: 3, want: "empty"},
+		{name: "wrong dimensions", vector: []float32{1, 2}, dimensions: 3, want: "expected 3"},
+		{name: "nan", vector: []float32{1, float32(math.NaN()), 3}, dimensions: 3, want: "non-finite"},
+		{name: "infinite", vector: []float32{1, float32(math.Inf(1)), 3}, dimensions: 3, want: "non-finite"},
+		{name: "all zero", vector: []float32{0, 0, 0}, dimensions: 3, want: "all zeros"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateEvalEmbeddingVector(tc.vector, tc.dimensions)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateEvalEmbeddingVector error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := validateEvalEmbeddingVector([]float32{0, 1, 0}, 3); err != nil {
+		t.Fatalf("validateEvalEmbeddingVector valid = %v", err)
+	}
+}
+
+func TestEvalThresholdGate(t *testing.T) {
+	thresholds := evalThresholds{recall: 0.9, precision: 0.2, mrr: 0.8, ndcg: 0.7}
+	if err := thresholds.check(evalMetrics{recall: 0.9, precision: 0.2, mrr: 0.8, ndcg: 0.7}); err != nil {
+		t.Fatalf("threshold check exact match = %v", err)
+	}
+	err := thresholds.check(evalMetrics{recall: 0.5, precision: 0.1, mrr: 0.4, ndcg: 0.3})
+	if err == nil || !strings.Contains(err.Error(), "eval quality gate failed") || !strings.Contains(err.Error(), "recall@k") || !strings.Contains(err.Error(), "NDCG@k") {
+		t.Fatalf("threshold check failure = %v, want combined quality gate error", err)
+	}
+}
+
+func TestRunEvalCLIEnforcesThresholds(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dataset.jsonl")
+	body := []byte(`
+{"type":"record","memory_type":"semantic","key":"fact","text":"Orchid deploys to staging","sensitivity":"low","scope":"project:alpha","subject":"Orchid","predicate":"deploys_to","object":"staging"}
+{"type":"query","key":"q1","text":"Where does Orchid deploy?","expected":["fact"],"k":1,"trust":{"max_sensitivity":"low","authenticated":true,"actor_id":"tester","scopes":["project:alpha"]},"memory_types":["semantic"]}
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile dataset: %v", err)
+	}
+
+	store := &fakeEvalVectorStore{}
+	err := runEvalCLIWithDeps(ctx, []string{
+		"-postgres-dsn", "postgres://fake/db",
+		"-dataset", path,
+		"-embedding-api-key", "flag-key",
+		"-min-recall", "0.5",
+		"-min-precision", "0",
+		"-min-mrr", "0",
+		"-min-ndcg", "0",
+	}, nil, evalCLIDependencies{
+		newMembrane: func(_ *membrane.Config) (evalMembrane, error) {
+			return &fakeEvalMembrane{}, nil
+		},
+		openVectorStore: func(string, postgres.EmbeddingConfig) (evalVectorStore, error) {
+			return store, nil
+		},
+		newEmbeddingClient: func(_, _, _ string, dimensions int) embedding.Client {
+			return &scriptedEvalEmbeddingClient{dimensions: dimensions}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "eval quality gate failed") || !strings.Contains(err.Error(), "recall@k") {
+		t.Fatalf("runEvalCLIWithDeps threshold error = %v, want recall quality gate failure", err)
+	}
+	if !store.closed {
+		t.Fatalf("vector store was not closed after threshold failure")
+	}
+}
+
 func TestRunEvalCLIWithInjectedDependencies(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "dataset.jsonl")
 	body := []byte(`
 {"type":"record","memory_type":"semantic","key":"fact","text":"Orchid deploys to staging","sensitivity":"low","scope":"project:alpha","subject":"Orchid","predicate":"deploys_to","object":"staging","tags":["deploy"]}
+{"type":"record","memory_type":"entity","key":"entity-orchid","canonical_name":"Project Orchid","primary_type":"Project","aliases":["Orchid"],"identifiers":[{"namespace":"github","value":"BennettSchwartz/orchid"}],"summary":"Staging deploy target","sensitivity":"low","scope":"project:alpha"}
 {"type":"query","key":"q1","text":"Where does Orchid deploy?","expected":["fact"],"k":1,"trust":{"max_sensitivity":"low","authenticated":true,"actor_id":"tester","scopes":["project:alpha"]},"memory_types":["semantic"]}
 `)
 	if err := os.WriteFile(path, body, 0o600); err != nil {
@@ -301,11 +511,18 @@ func TestRunEvalCLIWithInjectedDependencies(t *testing.T) {
 
 	store := &fakeEvalVectorStore{}
 	client := &scriptedEvalEmbeddingClient{}
+	retrieved := schema.NewMemoryRecord("capture-1", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "Orchid",
+		Predicate: "deploys_to",
+		Object:    "staging",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
 	deps := evalCLIDependencies{
 		newMembrane: func(_ *membrane.Config) (evalMembrane, error) {
-			cfg := membrane.DefaultConfig()
-			cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-			return membrane.New(cfg)
+			return &fakeEvalMembrane{graphResponse: &retrieval.RetrieveGraphResponse{
+				Nodes: []retrieval.GraphNode{{Record: retrieved, Root: true}},
+			}}, nil
 		},
 		openVectorStore: func(dsn string, cfg postgres.EmbeddingConfig) (evalVectorStore, error) {
 			if dsn != "postgres://fake/db" || cfg.Dimensions != 7 || cfg.Model != "test-model" {
@@ -317,6 +534,7 @@ func TestRunEvalCLIWithInjectedDependencies(t *testing.T) {
 			if endpoint != "http://embed.example" || model != "test-model" || apiKey != "env-key" || dimensions != 7 {
 				t.Fatalf("newEmbeddingClient args = %q/%q/%q/%d, want configured values", endpoint, model, apiKey, dimensions)
 			}
+			client.dimensions = dimensions
 			return client
 		},
 	}
@@ -339,11 +557,14 @@ func TestRunEvalCLIWithInjectedDependencies(t *testing.T) {
 	if !store.closed {
 		t.Fatalf("vector store was not closed")
 	}
-	if len(store.storedIDs) != 1 || len(store.storedVectors[0]) != 2 || store.storedModels[0] != "test-model" {
-		t.Fatalf("stored embeddings = ids:%v vectors:%v models:%v, want one test-model embedding", store.storedIDs, store.storedVectors, store.storedModels)
+	if len(store.storedIDs) != 2 || len(store.storedVectors[0]) != 7 || store.storedModels[0] != "test-model" {
+		t.Fatalf("stored embeddings = ids:%v vectors:%v models:%v, want two test-model embeddings", store.storedIDs, store.storedVectors, store.storedModels)
 	}
-	if len(client.texts) != 2 {
-		t.Fatalf("embedding client texts = %v, want record and query embeddings", client.texts)
+	if len(client.texts) != 3 {
+		t.Fatalf("embedding client texts = %v, want two record embeddings and one query embedding", client.texts)
+	}
+	if client.texts[1] != "Project Orchid Project Orchid github:BennettSchwartz/orchid Staging deploy target" {
+		t.Fatalf("entity embedding text = %q, want typed fallback text", client.texts[1])
 	}
 }
 
@@ -360,14 +581,15 @@ func TestRunEvalCLIInjectedDependencyErrors(t *testing.T) {
 	baseDeps := func(store evalVectorStore, client embedding.Client) evalCLIDependencies {
 		return evalCLIDependencies{
 			newMembrane: func(_ *membrane.Config) (evalMembrane, error) {
-				cfg := membrane.DefaultConfig()
-				cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-				return membrane.New(cfg)
+				return &fakeEvalMembrane{}, nil
 			},
 			openVectorStore: func(string, postgres.EmbeddingConfig) (evalVectorStore, error) {
 				return store, nil
 			},
-			newEmbeddingClient: func(string, string, string, int) embedding.Client {
+			newEmbeddingClient: func(_, _, _ string, dimensions int) embedding.Client {
+				if scripted, ok := client.(*scriptedEvalEmbeddingClient); ok && scripted.dimensions == 0 {
+					scripted.dimensions = dimensions
+				}
 				return client
 			},
 		}
@@ -446,9 +668,7 @@ func TestRunEvalCLIWrapsIngestAndMembraneEvalErrors(t *testing.T) {
 			"-embedding-api-key", "flag-key",
 		}, nil, evalCLIDependencies{
 			newMembrane: func(_ *membrane.Config) (evalMembrane, error) {
-				cfg := membrane.DefaultConfig()
-				cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-				return membrane.New(cfg)
+				return &fakeEvalMembrane{}, nil
 			},
 			openVectorStore: func(string, postgres.EmbeddingConfig) (evalVectorStore, error) {
 				return &fakeEvalVectorStore{}, nil
@@ -479,11 +699,8 @@ func TestRunEvalCLIWrapsIngestAndMembraneEvalErrors(t *testing.T) {
 			"-embedding-api-key", "flag-key",
 		}, nil, evalCLIDependencies{
 			newMembrane: func(_ *membrane.Config) (evalMembrane, error) {
-				cfg := membrane.DefaultConfig()
-				cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-				var err error
-				m, err = membrane.New(cfg)
-				return m, err
+				m = newEvalTestMembrane(t)
+				return m, nil
 			},
 			openVectorStore: func(string, postgres.EmbeddingConfig) (evalVectorStore, error) {
 				store.membrane = m
@@ -503,6 +720,7 @@ func TestDatasetAndParseHelpers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dataset.jsonl")
 	data := []byte(`
 {"type":"record","memory_type":"semantic","key":"fact-1","text":"Orchid deploys to staging","sensitivity":"HIGH","scope":"project:alpha","subject":"Orchid","predicate":"deploys_to","object":"staging"}
+{"type":"record","memory_type":"entity","key":"entity-1","text":"Project Orchid","canonical_name":"Project Orchid","primary_type":"Project","types":["Project"],"aliases":["Orchid"],"identifiers":[{"namespace":"github","value":"BennettSchwartz/orchid"}]}
 {"type":"query","key":"query-1","text":"Where does Orchid deploy?","expected":["fact-1"],"trust":{"max_sensitivity":" high ","authenticated":true,"actor_id":"","scopes":["project:alpha"]}}
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -513,8 +731,11 @@ func TestDatasetAndParseHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadDataset: %v", err)
 	}
-	if len(loaded.records) != 1 || loaded.records[0].Key != "fact-1" {
-		t.Fatalf("records = %+v, want fact-1", loaded.records)
+	if len(loaded.records) != 2 || loaded.records[0].Key != "fact-1" || loaded.records[1].CanonicalName != "Project Orchid" {
+		t.Fatalf("records = %+v, want semantic and entity records", loaded.records)
+	}
+	if len(loaded.records[1].Aliases) != 1 || len(loaded.records[1].Identifiers) != 1 {
+		t.Fatalf("entity record = %+v, want alias and identifier decoded", loaded.records[1])
 	}
 	if len(loaded.queries) != 1 || loaded.queries[0].K != 7 {
 		t.Fatalf("queries = %+v, want default k applied", loaded.queries)
@@ -540,8 +761,16 @@ func TestDatasetAndParseHelpers(t *testing.T) {
 	if got := parseMemoryTypes([]string{"semantic", "working"}); len(got) != 2 || got[0] != schema.MemoryTypeSemantic || got[1] != schema.MemoryTypeWorking {
 		t.Fatalf("parseMemoryTypes = %+v, want semantic/working", got)
 	}
-	if len(allMemoryTypes()) != 5 {
-		t.Fatalf("allMemoryTypes len = %d, want 5", len(allMemoryTypes()))
+	wantAllTypes := []schema.MemoryType{
+		schema.MemoryTypeWorking,
+		schema.MemoryTypeEntity,
+		schema.MemoryTypeSemantic,
+		schema.MemoryTypeCompetence,
+		schema.MemoryTypePlanGraph,
+		schema.MemoryTypeEpisodic,
+	}
+	if got := allMemoryTypes(); !reflect.DeepEqual(got, wantAllTypes) {
+		t.Fatalf("allMemoryTypes = %+v, want %+v", got, wantAllTypes)
 	}
 	if ids, err := resolveExpected(loaded.queries[0], map[string]string{"fact-1": "record-id"}); err != nil || len(ids) != 1 || ids[0] != "record-id" {
 		t.Fatalf("resolveExpected = %+v, want record-id", ids)
@@ -618,6 +847,35 @@ func TestCaptureAndRetrieveRootRecordsUseMembraneGraph(t *testing.T) {
 	}
 }
 
+func TestRetrieveRootRecordsPreservesDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	rec := schema.NewMemoryRecord("root", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "Orchid",
+		Predicate: "deploys_to",
+		Object:    "staging",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	m := &fakeEvalMembrane{graphResponse: &retrieval.RetrieveGraphResponse{
+		Nodes: []retrieval.GraphNode{{Record: rec, Root: true}},
+		Diagnostics: []retrieval.RetrievalDiagnostic{{
+			Code:    retrieval.DiagnosticVectorRankFailed,
+			Message: "vector ranker unavailable",
+		}},
+	}}
+
+	resp, err := retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("retrieveRootRecords: %v", err)
+	}
+	if len(resp.Records) != 1 || resp.Records[0].ID != rec.ID {
+		t.Fatalf("records = %+v, want root record", resp.Records)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Code != retrieval.DiagnosticVectorRankFailed {
+		t.Fatalf("diagnostics = %+v, want vector rank failure", resp.Diagnostics)
+	}
+}
+
 func TestCaptureEventAndWorkingStateRecords(t *testing.T) {
 	ctx := context.Background()
 	m := newEvalTestMembrane(t)
@@ -683,6 +941,21 @@ func TestIngestRecordCoversAllMemoryTypes(t *testing.T) {
 			Scope:       "project:alpha",
 		},
 		{
+			MemoryType:    "entity",
+			Key:           "orchid",
+			CanonicalName: "Project Orchid",
+			PrimaryType:   schema.EntityTypeProject,
+			EntityTypes:   []string{" Project ", ""},
+			Aliases:       []string{"Orchid", " "},
+			Identifiers: []entityIdentifierEntry{
+				{Namespace: " GitHub ", Value: "BennettSchwartz/orchid"},
+				{Namespace: "", Value: "ignored"},
+			},
+			Summary:     "Staging deploy target",
+			Sensitivity: "low",
+			Scope:       "project:alpha",
+		},
+		{
 			MemoryType:  "competence",
 			Key:         "skill",
 			SkillName:   "debug oom",
@@ -711,18 +984,37 @@ func TestIngestRecordCoversAllMemoryTypes(t *testing.T) {
 			}
 		})
 	}
-	if len(store.records) != 2 {
-		t.Fatalf("fake store records = %d, want competence and plan graph records", len(store.records))
+	if len(store.records) != 3 {
+		t.Fatalf("fake store records = %d, want entity, competence, and plan graph records", len(store.records))
 	}
-	if store.records[0].Type != schema.MemoryTypeCompetence || store.records[1].Type != schema.MemoryTypePlanGraph {
-		t.Fatalf("fake store record types = %s/%s, want competence/plan_graph", store.records[0].Type, store.records[1].Type)
+	if store.records[0].Type != schema.MemoryTypeEntity || store.records[1].Type != schema.MemoryTypeCompetence || store.records[2].Type != schema.MemoryTypePlanGraph {
+		t.Fatalf("fake store record types = %s/%s/%s, want entity/competence/plan_graph", store.records[0].Type, store.records[1].Type, store.records[2].Type)
+	}
+	entity, ok := store.records[0].Payload.(*schema.EntityPayload)
+	if !ok {
+		t.Fatalf("entity payload = %T, want *schema.EntityPayload", store.records[0].Payload)
+	}
+	if entity.CanonicalName != "Project Orchid" || len(entity.Aliases) != 1 || entity.Aliases[0].Value != "Orchid" {
+		t.Fatalf("entity identity = %+v, want canonical name and trimmed alias", entity)
+	}
+	if len(entity.Identifiers) != 1 || entity.Identifiers[0].Namespace != "github" || entity.Identifiers[0].Value != "BennettSchwartz/orchid" {
+		t.Fatalf("entity identifiers = %+v, want normalized github identifier", entity.Identifiers)
 	}
 
 	if _, err := ingestRecord(ctx, m, store, recordEntry{MemoryType: "unknown"}); err == nil {
 		t.Fatalf("ingestRecord unknown memory type error = nil, want error")
 	}
+	if _, err := ingestRecord(ctx, m, store, recordEntry{MemoryType: "entity"}); err == nil || !strings.Contains(err.Error(), "requires canonical_name") {
+		t.Fatalf("ingestRecord empty entity error = %v, want canonical name error", err)
+	}
 
 	createErr := errors.New("create failed")
+	if _, err := ingestRecord(ctx, m, &fakeRecordCreator{err: createErr}, recordEntry{
+		MemoryType:    "entity",
+		CanonicalName: "Project Orchid",
+	}); !errors.Is(err, createErr) {
+		t.Fatalf("ingestRecord entity create error = %v, want %v", err, createErr)
+	}
 	if _, err := ingestRecord(ctx, m, &fakeRecordCreator{err: createErr}, recordEntry{
 		MemoryType: "competence",
 		SkillName:  "debug oom",
@@ -924,7 +1216,11 @@ func TestCaptureObservationRecordRequiresSemanticCreatedRecord(t *testing.T) {
 func newEvalTestMembrane(t *testing.T) *membrane.Membrane {
 	t.Helper()
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for eval integration tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 	m, err := membrane.New(cfg)
 	if err != nil {
 		t.Fatalf("membrane.New: %v", err)

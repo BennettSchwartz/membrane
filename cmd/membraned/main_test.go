@@ -94,7 +94,6 @@ func TestMainReportsCLIError(t *testing.T) {
 
 func TestConfigFromOptionsAppliesDefaultsOverridesAndEnvAPIKey(t *testing.T) {
 	cfg, err := configFromOptions(serverOptions{
-		dbPath:      "override.db",
 		postgresDSN: "postgres://user:pass@example/db",
 		addr:        "127.0.0.1:19090",
 	}, func(key string) string {
@@ -106,11 +105,8 @@ func TestConfigFromOptionsAppliesDefaultsOverridesAndEnvAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configFromOptions: %v", err)
 	}
-	if cfg.DBPath != "override.db" {
-		t.Fatalf("DBPath = %q, want override.db", cfg.DBPath)
-	}
-	if cfg.Backend != "postgres" || cfg.PostgresDSN != "postgres://user:pass@example/db" {
-		t.Fatalf("backend/dsn = %q/%q, want postgres override", cfg.Backend, cfg.PostgresDSN)
+	if cfg.PostgresDSN != "postgres://user:pass@example/db" {
+		t.Fatalf("PostgresDSN = %q, want postgres override", cfg.PostgresDSN)
 	}
 	if cfg.ListenAddr != "127.0.0.1:19090" {
 		t.Fatalf("ListenAddr = %q, want override", cfg.ListenAddr)
@@ -120,10 +116,73 @@ func TestConfigFromOptionsAppliesDefaultsOverridesAndEnvAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigFromOptionsUsesEnvPostgresDSN(t *testing.T) {
+	cfg, err := configFromOptions(serverOptions{}, func(key string) string {
+		switch key {
+		case "MEMBRANE_POSTGRES_DSN":
+			return "postgres://env/db"
+		case "MEMBRANE_API_KEY":
+			return "env-key"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("configFromOptions: %v", err)
+	}
+	if cfg.PostgresDSN != "postgres://env/db" {
+		t.Fatalf("PostgresDSN = %q, want env DSN", cfg.PostgresDSN)
+	}
+	if cfg.APIKey != "env-key" {
+		t.Fatalf("APIKey = %q, want env-key", cfg.APIKey)
+	}
+}
+
+func TestConfigFromOptionsRequiresPostgresDSN(t *testing.T) {
+	_, err := configFromOptions(serverOptions{}, func(string) string {
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "postgres_dsn is required") {
+		t.Fatalf("missing postgres dsn error = %v, want postgres_dsn is required", err)
+	}
+
+	_, err = configFromOptions(serverOptions{postgresDSN: " \t "}, func(string) string {
+		return " \n "
+	})
+	if err == nil || !strings.Contains(err.Error(), "postgres_dsn is required") {
+		t.Fatalf("whitespace postgres dsn error = %v, want postgres_dsn is required", err)
+	}
+}
+
+func TestConfigFromOptionsTrimsPostgresDSN(t *testing.T) {
+	cfg, err := configFromOptions(serverOptions{postgresDSN: "  postgres://flag/db  "}, func(string) string {
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("configFromOptions flag trim: %v", err)
+	}
+	if cfg.PostgresDSN != "postgres://flag/db" {
+		t.Fatalf("flag PostgresDSN = %q, want trimmed DSN", cfg.PostgresDSN)
+	}
+
+	cfg, err = configFromOptions(serverOptions{}, func(key string) string {
+		if key == "MEMBRANE_POSTGRES_DSN" {
+			return "  postgres://env/db  "
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("configFromOptions env trim: %v", err)
+	}
+	if cfg.PostgresDSN != "postgres://env/db" {
+		t.Fatalf("env PostgresDSN = %q, want trimmed DSN", cfg.PostgresDSN)
+	}
+}
+
 func TestConfigFromOptionsLoadsConfigFileAndPreservesConfiguredAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "membrane.yaml")
 	if err := os.WriteFile(path, []byte(`
-db_path: file.db
+postgres_dsn: postgres://file/db
 listen_addr: ":19091"
 api_key: file-key
 default_sensitivity: medium
@@ -133,15 +192,14 @@ default_sensitivity: medium
 
 	cfg, err := configFromOptions(serverOptions{
 		configPath: path,
-		dbPath:     "override.db",
 	}, func(string) string {
 		return "env-key"
 	})
 	if err != nil {
 		t.Fatalf("configFromOptions: %v", err)
 	}
-	if cfg.DBPath != "override.db" {
-		t.Fatalf("DBPath = %q, want flag override", cfg.DBPath)
+	if cfg.PostgresDSN != "postgres://file/db" {
+		t.Fatalf("PostgresDSN = %q, want config value", cfg.PostgresDSN)
 	}
 	if cfg.ListenAddr != ":19091" {
 		t.Fatalf("ListenAddr = %q, want config value", cfg.ListenAddr)
@@ -228,7 +286,7 @@ func TestRunMembranedCLIRunsWithInjectedDependencies(t *testing.T) {
 
 	go func() {
 		result <- runMembranedCLI(ctx, []string{
-			"-db", "override.db",
+			"-postgres-dsn", "postgres://cli/db",
 			"-addr", "127.0.0.1:19090",
 		}, func(key string) string {
 			if key == "MEMBRANE_API_KEY" {
@@ -253,7 +311,7 @@ func TestRunMembranedCLIRunsWithInjectedDependencies(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runMembranedCLI did not return after cancellation")
 	}
-	if gotConfig == nil || gotConfig.DBPath != "override.db" || gotConfig.ListenAddr != "127.0.0.1:19090" || gotConfig.APIKey != "env-key" {
+	if gotConfig == nil || gotConfig.PostgresDSN != "postgres://cli/db" || gotConfig.ListenAddr != "127.0.0.1:19090" || gotConfig.APIKey != "env-key" {
 		t.Fatalf("config = %+v, want CLI overrides and env API key", gotConfig)
 	}
 	if !signalStopped {
@@ -270,8 +328,15 @@ func TestRunMembranedCLIReturnsSetupErrors(t *testing.T) {
 		t.Fatalf("missing config error = %v, want configure error", err)
 	}
 
+	lookupPostgres := func(key string) string {
+		if key == "MEMBRANE_POSTGRES_DSN" {
+			return "postgres://test/db"
+		}
+		return ""
+	}
+
 	initErr := errors.New("init failed")
-	err := runMembranedCLI(context.Background(), nil, nil, io.Discard, daemonCLIDependencies{
+	err := runMembranedCLI(context.Background(), nil, lookupPostgres, io.Discard, daemonCLIDependencies{
 		newMembrane: func(*membrane.Config) (daemonMembrane, error) {
 			return nil, initErr
 		},
@@ -282,7 +347,7 @@ func TestRunMembranedCLIReturnsSetupErrors(t *testing.T) {
 
 	mem := &fakeDaemonMembrane{}
 	serverErr := errors.New("server failed")
-	err = runMembranedCLI(context.Background(), nil, nil, io.Discard, daemonCLIDependencies{
+	err = runMembranedCLI(context.Background(), nil, lookupPostgres, io.Discard, daemonCLIDependencies{
 		newMembrane: func(*membrane.Config) (daemonMembrane, error) {
 			return mem, nil
 		},
@@ -298,7 +363,7 @@ func TestRunMembranedCLIReturnsSetupErrors(t *testing.T) {
 	}
 
 	mem = &fakeDaemonMembrane{stopErr: errors.New("cleanup failed")}
-	err = runMembranedCLI(context.Background(), nil, nil, io.Discard, daemonCLIDependencies{
+	err = runMembranedCLI(context.Background(), nil, lookupPostgres, io.Discard, daemonCLIDependencies{
 		newMembrane: func(*membrane.Config) (daemonMembrane, error) {
 			return mem, nil
 		},
@@ -356,21 +421,18 @@ func TestDaemonCLIDependenciesDefaults(t *testing.T) {
 	}
 
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-	mem, err := deps.newMembrane(cfg)
-	if err != nil {
-		t.Fatalf("default newMembrane: %v", err)
+	cfg.PostgresDSN = ""
+	t.Setenv("MEMBRANE_POSTGRES_DSN", "")
+	if mem, err := deps.newMembrane(cfg); err == nil || !strings.Contains(err.Error(), "postgres_dsn is required") {
+		if mem != nil {
+			t.Cleanup(func() { _ = mem.Stop() })
+		}
+		t.Fatalf("default newMembrane error = %v, want postgres_dsn is required", err)
 	}
-	t.Cleanup(func() { _ = mem.Stop() })
 
 	if _, err := deps.newServer(&fakeDaemonMembrane{}, cfg); err == nil || !strings.Contains(err.Error(), "unsupported membrane implementation") {
 		t.Fatalf("default newServer fake membrane error = %v, want unsupported implementation", err)
 	}
-	srv, err := deps.newServer(mem, cfg)
-	if err != nil {
-		t.Fatalf("default newServer real membrane: %v", err)
-	}
-	srv.Stop()
 
 	sigCh, stopSignals := deps.signalChannel()
 	if sigCh == nil || stopSignals == nil {

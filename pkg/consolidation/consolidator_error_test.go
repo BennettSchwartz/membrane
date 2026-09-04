@@ -49,17 +49,47 @@ func (s *typedListConsolidationStore) Begin(context.Context) (storage.Transactio
 	if s.tx == nil {
 		s.tx = &consolidationTx{}
 	}
+	s.tx.store = s
 	return s.tx, nil
 }
 
 type consolidationTx struct {
+	store *typedListConsolidationStore
 	storage.Transaction
 	updateSalienceErr error
+	updateErr         error
 	auditErr          error
 	createErr         error
 	relationErr       error
 	relationErrAt     int
 	relationCalls     int
+}
+
+func (tx *consolidationTx) Get(_ context.Context, id string) (*schema.MemoryRecord, error) {
+	for _, records := range tx.store.byType {
+		for _, rec := range records {
+			if rec.ID == id {
+				return rec, nil
+			}
+		}
+	}
+	for _, records := range tx.store.entityMatches {
+		for _, rec := range records {
+			if rec.ID == id {
+				return rec, nil
+			}
+		}
+	}
+	return nil, storage.ErrNotFound
+}
+func (tx *consolidationTx) GetAuthorizationMetadata(ctx context.Context, ids []string) ([]storage.RecordAuthorizationMetadata, error) {
+	var rows []storage.RecordAuthorizationMetadata
+	for _, id := range ids {
+		if rec, err := tx.Get(ctx, id); err == nil {
+			rows = append(rows, storage.RecordAuthorizationMetadata{ID: id, Scope: rec.Scope, Sensitivity: rec.Sensitivity})
+		}
+	}
+	return rows, nil
 }
 
 func (tx *consolidationTx) Create(context.Context, *schema.MemoryRecord) error {
@@ -68,6 +98,10 @@ func (tx *consolidationTx) Create(context.Context, *schema.MemoryRecord) error {
 
 func (tx *consolidationTx) UpdateSalience(context.Context, string, float64) error {
 	return tx.updateSalienceErr
+}
+
+func (tx *consolidationTx) Update(context.Context, *schema.MemoryRecord) error {
+	return tx.updateErr
 }
 
 func (tx *consolidationTx) AddAuditEntry(context.Context, string, schema.AuditEntry) error {
@@ -103,6 +137,7 @@ func TestSemanticConsolidatorPropagatesListAndTransactionErrors(t *testing.T) {
 		Object:    "deployment completed",
 		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
 	})
+	existing.Scope = source.Scope
 
 	for _, tc := range []struct {
 		name      string
@@ -138,9 +173,9 @@ func TestSemanticConsolidatorPropagatesListAndTransactionErrors(t *testing.T) {
 						State:    schema.TaskStatePlanning,
 					})},
 				},
-				tx: &consolidationTx{updateSalienceErr: errors.New("update salience failed")},
+				tx: &consolidationTx{updateErr: errors.New("update failed")},
 			},
-			wantError: "update salience failed",
+			wantError: "update failed",
 		},
 		{
 			name: "create",
@@ -169,10 +204,11 @@ func TestSemanticConsolidatorPropagatesListAndTransactionErrors(t *testing.T) {
 					schema.MemoryTypeEpisodic: {source},
 				},
 				entityMatches: map[string][]*schema.MemoryRecord{
-					"deploy": {schema.NewMemoryRecord("entity-deploy", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
-						Kind:          "entity",
-						CanonicalName: "deploy",
-					})},
+					"deploy": {func() *schema.MemoryRecord {
+						entity := newEntityRecord("entity-deploy", "deploy")
+						entity.Sensitivity = source.Sensitivity
+						return entity
+					}()},
 				},
 				tx: &consolidationTx{relationErr: errors.New("inverse relation failed"), relationErrAt: 2},
 			},
@@ -291,24 +327,9 @@ func TestCompetenceConsolidatorPropagatesListAndTransactionErrors(t *testing.T) 
 					schema.MemoryTypeEpisodic:   {sourceA, sourceB},
 					schema.MemoryTypeCompetence: {existing},
 				},
-				tx: &consolidationTx{updateSalienceErr: errors.New("update salience failed")},
+				tx: &consolidationTx{updateErr: errors.New("update failed")},
 			},
-			wantError: "update salience failed",
-		},
-		{
-			name: "reinforce audit",
-			store: &typedListConsolidationStore{
-				byType: map[schema.MemoryType][]*schema.MemoryRecord{
-					schema.MemoryTypeEpisodic: {sourceA, sourceB},
-					schema.MemoryTypeCompetence: {existing, schema.NewMemoryRecord("bad-competence-payload", schema.MemoryTypeCompetence, schema.SensitivityLow, &schema.WorkingPayload{
-						Kind:     "working",
-						ThreadID: "thread",
-						State:    schema.TaskStatePlanning,
-					})},
-				},
-				tx: &consolidationTx{auditErr: errors.New("audit failed")},
-			},
-			wantError: "audit failed",
+			wantError: "update failed",
 		},
 		{
 			name: "create",
@@ -421,7 +442,7 @@ func TestPlanGraphConsolidatorPropagatesListAndTransactionErrors(t *testing.T) {
 			wantError: "list failed",
 		},
 		{
-			name: "existing relation lookup failure is skipped",
+			name: "existing relation lookup failure fails closed",
 			store: &typedListConsolidationStore{
 				byType: map[schema.MemoryType][]*schema.MemoryRecord{
 					schema.MemoryTypeEpisodic:  {source},
@@ -429,7 +450,7 @@ func TestPlanGraphConsolidatorPropagatesListAndTransactionErrors(t *testing.T) {
 				},
 				getRelationsErr: errors.New("relations unavailable"),
 			},
-			wantCount: 1,
+			wantError: "relations unavailable",
 		},
 		{
 			name: "non episodic payload",

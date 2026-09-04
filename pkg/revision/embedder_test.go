@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type recordingEmbedder struct {
@@ -20,12 +20,9 @@ func (e *recordingEmbedder) EmbedRecord(_ context.Context, rec *schema.MemoryRec
 	return e.err
 }
 
-func newRevisionTestStore(t *testing.T) *sqlite.SQLiteStore {
+func newRevisionTestStore(t *testing.T) *teststore.MemoryStore {
 	t.Helper()
-	store, err := sqlite.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
@@ -69,7 +66,7 @@ func TestServiceWithEmbedderEmbedsCreatedRevisionRecords(t *testing.T) {
 	if err := store.Create(ctx, source); err != nil {
 		t.Fatalf("Create source: %v", err)
 	}
-	forked := semanticRevisionRecord("forked", "database", "sqlite")
+	forked := semanticRevisionRecord("forked", "database", "postgres")
 	if _, err := svc.Fork(ctx, source.ID, forked, "tester", "local variant"); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}

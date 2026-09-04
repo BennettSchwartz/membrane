@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
 )
 
@@ -32,7 +34,7 @@ func TestChainInterceptorsAuthAndRateLimit(t *testing.T) {
 		return "ok", nil
 	}
 
-	interceptor := chainInterceptors("secret", 0)
+	interceptor := chainInterceptors("secret", 0, newAccessPolicy(membrane.DefaultConfig()))
 	if _, err := interceptor(context.Background(), nil, info, handler); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("missing metadata code = %v, want Unauthenticated", status.Code(err))
 	}
@@ -49,7 +51,7 @@ func TestChainInterceptorsAuthAndRateLimit(t *testing.T) {
 		t.Fatalf("handler calls = %d, want 1", calls)
 	}
 
-	rateLimited := chainInterceptors("", 1)
+	rateLimited := chainInterceptors("", 1, newAccessPolicy(membrane.DefaultConfig()))
 	if _, err := rateLimited(context.Background(), nil, info, handler); err != nil {
 		t.Fatalf("first rate-limited call: %v", err)
 	}
@@ -60,13 +62,13 @@ func TestChainInterceptorsAuthAndRateLimit(t *testing.T) {
 
 func TestClientIdentity(t *testing.T) {
 	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234}})
-	if got := clientIdentity(ctx); got != "127.0.0.1:1234" {
-		t.Fatalf("peer identity = %q, want 127.0.0.1:1234", got)
+	if got := clientIdentity(ctx); got != "127.0.0.1" {
+		t.Fatalf("peer identity = %q, want 127.0.0.1", got)
 	}
 
 	ctx = metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token"))
-	if got := clientIdentity(ctx); got != "auth:Bearer token" {
-		t.Fatalf("auth identity = %q, want auth:Bearer token", got)
+	if got := clientIdentity(ctx); got != "anonymous" {
+		t.Fatalf("metadata-only peer identity = %q, want anonymous", got)
 	}
 
 	ctx = metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-client", "tester"))
@@ -76,6 +78,89 @@ func TestClientIdentity(t *testing.T) {
 
 	if got := clientIdentity(context.Background()); got != "anonymous" {
 		t.Fatalf("anonymous identity = %q, want anonymous", got)
+	}
+}
+
+func TestRateLimitCannotBeResetByChangingSourcePort(t *testing.T) {
+	info := &basegrpc.UnaryServerInfo{FullMethod: "/membrane.Test/Call"}
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
+	interceptor := chainInterceptors("", 1, newAccessPolicy(membrane.DefaultConfig()))
+
+	first := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 1234},
+	})
+	second := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 5678},
+	})
+
+	if _, err := interceptor(first, nil, info, handler); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	if _, err := interceptor(second, nil, info, handler); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("request from a new source port code = %v, want ResourceExhausted", status.Code(err))
+	}
+}
+
+func TestAuthenticatedRateLimitCannotBeResetByChangingPeerIP(t *testing.T) {
+	info := &basegrpc.UnaryServerInfo{FullMethod: "/membrane.Test/Call"}
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
+	interceptor := chainInterceptors("secret", 1, newAccessPolicy(membrane.DefaultConfig()))
+
+	authenticatedPeer := func(ip string, port int) context.Context {
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer secret"))
+		return peer.NewContext(ctx, &peer.Peer{
+			Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: port},
+		})
+	}
+
+	if _, err := interceptor(authenticatedPeer("2001:db8::1", 1234), nil, info, handler); err != nil {
+		t.Fatalf("first authenticated request: %v", err)
+	}
+	if _, err := interceptor(authenticatedPeer("2001:db8::2", 5678), nil, info, handler); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("authenticated request from a new peer IP code = %v, want ResourceExhausted", status.Code(err))
+	}
+}
+
+func TestRateLimitIdentityDoesNotExposeAPIKey(t *testing.T) {
+	const apiKey = "high-entropy-secret-value"
+	first := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 1234},
+	})
+	second := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5678},
+	})
+
+	firstID := rateLimitIdentity(first, apiKey)
+	secondID := rateLimitIdentity(second, apiKey)
+	if firstID != secondID {
+		t.Fatalf("authenticated identities differ across peers: %q != %q", firstID, secondID)
+	}
+	if strings.Contains(firstID, apiKey) || strings.Contains(firstID, "Bearer") {
+		t.Fatalf("authenticated identity exposes credential material: %q", firstID)
+	}
+	if other := rateLimitIdentity(first, "another-secret"); other == firstID {
+		t.Fatalf("different configured API keys share identity %q", firstID)
+	}
+}
+
+func TestUnauthenticatedRateLimitRemainsPerPeerIP(t *testing.T) {
+	info := &basegrpc.UnaryServerInfo{FullMethod: "/membrane.Test/Call"}
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
+	interceptor := chainInterceptors("", 1, newAccessPolicy(membrane.DefaultConfig()))
+	peerContext := func(ip string) context.Context {
+		return peer.NewContext(context.Background(), &peer.Peer{
+			Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 1234},
+		})
+	}
+
+	if _, err := interceptor(peerContext("192.0.2.10"), nil, info, handler); err != nil {
+		t.Fatalf("first unauthenticated peer: %v", err)
+	}
+	if _, err := interceptor(peerContext("198.51.100.20"), nil, info, handler); err != nil {
+		t.Fatalf("different unauthenticated peer should have its own budget: %v", err)
+	}
+	if _, err := interceptor(peerContext("198.51.100.20"), nil, info, handler); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("second request from same unauthenticated peer code = %v, want ResourceExhausted", status.Code(err))
 	}
 }
 
@@ -190,6 +275,71 @@ func TestGracefulStopWithTimeoutBranches(t *testing.T) {
 	}
 }
 
+func TestNewServerRejectsPartialTLSConfig(t *testing.T) {
+	cfg := membrane.DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.TLSCertFile = filepath.Join(t.TempDir(), "server.crt")
+
+	if srv, err := NewServer(nil, cfg); err == nil {
+		srv.Stop()
+		t.Fatalf("NewServer partial TLS config error = nil")
+	}
+}
+
+func TestNewServerRejectsUnauthenticatedPublicListen(t *testing.T) {
+	cfg := membrane.DefaultConfig()
+	cfg.ListenAddr = "0.0.0.0:0"
+	cfg.APIKey = ""
+
+	if srv, err := NewServer(nil, cfg); err == nil {
+		srv.Stop()
+		t.Fatalf("NewServer public unauthenticated listen error = nil")
+	}
+}
+
+func TestNewServerRejectsPublicPlaintextAPIKeyByDefault(t *testing.T) {
+	cfg := membrane.DefaultConfig()
+	cfg.ListenAddr = "0.0.0.0:0"
+	cfg.APIKey = "secret"
+
+	srv, err := NewServer(nil, cfg)
+	if srv != nil {
+		srv.Stop()
+	}
+	if err == nil {
+		t.Fatalf("NewServer public plaintext API-key config error = nil")
+	}
+	if !strings.Contains(err.Error(), "API-key authentication over plaintext") {
+		t.Fatalf("NewServer public plaintext API-key error = %q", err)
+	}
+}
+
+func TestNewServerAllowsPublicPlaintextAPIKeyWithExplicitOverride(t *testing.T) {
+	cfg := membrane.DefaultConfig()
+	cfg.ListenAddr = "0.0.0.0:0"
+	cfg.APIKey = "secret"
+	cfg.AllowInsecureCredentials = true
+
+	srv, err := NewServer(nil, cfg)
+	if err != nil {
+		t.Fatalf("NewServer with explicit insecure-credentials override: %v", err)
+	}
+	srv.Stop()
+}
+
+func TestNewServerAllowsPublicAPIKeyWithTLS(t *testing.T) {
+	cfg := membrane.DefaultConfig()
+	cfg.ListenAddr = "0.0.0.0:0"
+	cfg.APIKey = "secret"
+	cfg.TLSCertFile, cfg.TLSKeyFile = writeTestTLSFiles(t)
+
+	srv, err := NewServer(nil, cfg)
+	if err != nil {
+		t.Fatalf("NewServer public TLS API-key config: %v", err)
+	}
+	srv.Stop()
+}
+
 func writeTestTLSFiles(t *testing.T) (string, string) {
 	t.Helper()
 
@@ -227,7 +377,11 @@ func writeTestTLSFiles(t *testing.T) (string, string) {
 
 func TestNewServerAddrStartStopAndTLSError(t *testing.T) {
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for server integration tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 	cfg.ListenAddr = "127.0.0.1:0"
 
 	m, err := membrane.New(cfg)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
 )
@@ -137,7 +136,7 @@ func TestStoreConsistencyAfterErrors(t *testing.T) {
 	_, _ = m.RetrieveByID(ctx, "bad-id-3", trust)
 
 	// Now verify the store is still functional by ingesting and retrieving.
-	rec, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	rec, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "test",
 		EventKind: "post_error_test",
 		Ref:       "ref-after-errors",
@@ -160,7 +159,7 @@ func TestStoreConsistencyAfterErrors(t *testing.T) {
 		// We can't directly access the store, but we can verify via the
 		// membrane that IDs are unique by checking ingestion always produces
 		// new IDs.
-		rec2, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+		rec2, err := captureEventRecord(ctx, m, eventCaptureFixture{
 			Source:    "test",
 			EventKind: "another",
 			Ref:       "ref-unique",

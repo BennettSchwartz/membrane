@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,6 +18,7 @@ import (
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/metrics"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/revision"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
@@ -30,15 +33,26 @@ import (
 // the Membrane API.
 type Handler struct {
 	pb.UnimplementedMembraneServiceServer
-	membrane *membrane.Membrane
+	membrane       *membrane.Membrane
+	access         *accessPolicy
+	boundedRecords boundedHandlerRecords
+}
+
+type boundedHandlerRecords interface {
+	RetrieveProjectedByID(context.Context, string, *retrieval.TrustContext) (*retrieval.ProjectedRecordResponse, error)
+	GetAuthorizationMetadata(context.Context, []string) ([]storage.RecordAuthorizationMetadata, error)
 }
 
 const (
-	maxPayloadSize  = 10 * 1024 * 1024 // 10 MB
-	maxStringLength = 100_000          // 100 KB
-	maxTags         = 100
-	maxTagLength    = 256
-	maxLimit        = 10_000
+	maxPayloadSize          = 10 * 1024 * 1024 // 10 MB
+	maxStringLength         = 100_000          // 100 KB
+	maxTags                 = 100
+	maxTagLength            = 256
+	maxLimit                = 10_000
+	maxRecordRelations      = 100
+	maxAuthorizationTargets = storage.MaxAuthorizationMetadataIDs
+	maxJSONDepth            = 64
+	maxJSONValues           = 100_000
 )
 
 // validateStringField checks that a string doesn't exceed the maximum length.
@@ -74,8 +88,157 @@ func validateValuePayload(name string, value *structpb.Value) error {
 	if value == nil {
 		return nil
 	}
-	data, _ := json.Marshal(value.AsInterface())
+	budget := jsonPayloadBudget{values: maxJSONValues, bytes: maxPayloadSize}
+	if err := budget.validate(value, 0); err != nil {
+		return status.Errorf(codes.InvalidArgument, "%s %v", name, err)
+	}
+	data, err := json.Marshal(value.AsInterface())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "%s must be JSON-compatible: %v", name, err)
+	}
 	return validateJSONPayload(name, data)
+}
+
+// Bound traversal and encoded size before AsInterface and Marshal allocate a
+// second representation. Keep only the top-level field name in errors: building
+// a complete path at every level makes deeply nested keys quadratic in size.
+type jsonPayloadBudget struct {
+	values int
+	bytes  int
+}
+
+func (b *jsonPayloadBudget) consume(size int) error {
+	if size > b.bytes {
+		return fmt.Errorf("exceeds maximum payload size of %d bytes", maxPayloadSize)
+	}
+	b.bytes -= size
+	return nil
+}
+
+func (b *jsonPayloadBudget) validate(value *structpb.Value, depth int) error {
+	if depth > maxJSONDepth {
+		return fmt.Errorf("exceeds maximum JSON depth of %d", maxJSONDepth)
+	}
+	if b.values <= 0 {
+		return fmt.Errorf("exceeds maximum JSON value count of %d", maxJSONValues)
+	}
+	b.values--
+	if value == nil {
+		return b.consume(4) // null
+	}
+	switch kind := value.Kind.(type) {
+	case *structpb.Value_NumberValue:
+		if math.IsNaN(kind.NumberValue) || math.IsInf(kind.NumberValue, 0) {
+			return errors.New("must be finite")
+		}
+		// Match encoding/json's finite float formatting without allocating.
+		format := byte('f')
+		abs := math.Abs(kind.NumberValue)
+		if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+			format = 'e'
+		}
+		var scratch [32]byte
+		encoded := strconv.AppendFloat(scratch[:0], kind.NumberValue, format, -1, 64)
+		size := len(encoded)
+		if format == 'e' && encoded[size-4] == 'e' && encoded[size-3] == '-' && encoded[size-2] == '0' {
+			size-- // encoding/json removes the zero in negative exponents.
+		}
+		return b.consume(size)
+	case *structpb.Value_StringValue:
+		return b.consumeString(kind.StringValue)
+	case *structpb.Value_BoolValue:
+		if kind.BoolValue {
+			return b.consume(4)
+		}
+		return b.consume(5)
+	case *structpb.Value_StructValue:
+		fields := kind.StructValue.GetFields()
+		if len(fields) > b.values {
+			return fmt.Errorf("exceeds maximum JSON value count of %d", maxJSONValues)
+		}
+		if err := b.consume(2 + max(0, len(fields)-1) + len(fields)); err != nil { // braces, commas, colons
+			return err
+		}
+		for key, child := range fields {
+			if err := b.consumeString(key); err != nil {
+				return err
+			}
+			if err := b.validate(child, depth+1); err != nil {
+				return err
+			}
+		}
+	case *structpb.Value_ListValue:
+		values := kind.ListValue.GetValues()
+		if len(values) > b.values {
+			return fmt.Errorf("exceeds maximum JSON value count of %d", maxJSONValues)
+		}
+		if err := b.consume(2 + max(0, len(values)-1)); err != nil { // brackets and commas
+			return err
+		}
+		for _, child := range values {
+			if err := b.validate(child, depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return b.consume(4) // null, including an unset protobuf Value
+	}
+	return nil
+}
+
+func (b *jsonPayloadBudget) consumeString(value string) error {
+	if err := b.consume(2); err != nil { // quotes
+		return err
+	}
+	if err := b.consume(len(value)); err != nil {
+		return err
+	}
+	for i := 0; i < len(value); {
+		c := value[i]
+		extra := 0
+		if c < utf8.RuneSelf {
+			i++
+			switch c {
+			case '"', '\\', '\n', '\r', '\t', '\b', '\f':
+				extra = 1
+			case '<', '>', '&':
+				extra = 5
+			default:
+				if c < 0x20 {
+					extra = 5
+				}
+			}
+		} else {
+			r, width := utf8.DecodeRuneInString(value[i:])
+			i += width
+			if r == utf8.RuneError && width == 1 {
+				extra = 5 // invalid UTF-8 becomes \ufffd
+			} else if r == '\u2028' || r == '\u2029' {
+				extra = 3
+			}
+		}
+		if err := b.consume(extra); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFloat32Slice(name string, values []float32) error {
+	nonZero := false
+	for i, value := range values {
+		asFloat64 := float64(value)
+		if math.IsNaN(asFloat64) || math.IsInf(asFloat64, 0) {
+			return status.Errorf(codes.InvalidArgument, "%s[%d] must be finite", name, i)
+		}
+		if value != 0 {
+			nonZero = true
+		}
+	}
+	if len(values) > 0 && !nonZero {
+		return status.Errorf(codes.InvalidArgument, "%s must be non-zero", name)
+	}
+	return nil
 }
 
 // validateSensitivity checks that a sensitivity value is either empty (when optional)
@@ -93,9 +256,67 @@ func validateSensitivity(name, value string, required bool) error {
 	return nil
 }
 
+func validateTrustContext(trust *pb.TrustContext) error {
+	if trust == nil {
+		return status.Error(codes.InvalidArgument, "trust context is required")
+	}
+	if err := validateSensitivity("trust.max_sensitivity", trust.MaxSensitivity, true); err != nil {
+		return err
+	}
+	if err := validateStringField("trust.actor_id", trust.ActorId); err != nil {
+		return err
+	}
+	if len(trust.Scopes) > maxTags {
+		return status.Errorf(codes.InvalidArgument, "too many trust.scopes: %d (max %d)", len(trust.Scopes), maxTags)
+	}
+	for i, scope := range trust.Scopes {
+		name := fmt.Sprintf("trust.scopes[%d]", i)
+		if err := validateStringField(name, scope); err != nil {
+			return err
+		}
+		if strings.TrimSpace(scope) == "" {
+			return status.Errorf(codes.InvalidArgument, "%s must be non-empty", name)
+		}
+	}
+	return nil
+}
+
+func validateSourceKind(name, value string) error {
+	if !ingestion.IsValidSourceKind(value) {
+		return status.Errorf(codes.InvalidArgument, "%s must be one of: event, tool_output, observation, working_state, agent_turn", name)
+	}
+	return nil
+}
+
 func validateMemoryType(name, value string) error {
 	if !schema.IsValidMemoryType(schema.MemoryType(value)) {
 		return status.Errorf(codes.InvalidArgument, "%s must be one of: episodic, working, semantic, competence, plan_graph, entity", name)
+	}
+	return nil
+}
+
+type validationField struct {
+	name     string
+	value    string
+	required bool
+}
+
+func requiredField(name, value string) validationField {
+	return validationField{name: name, value: value, required: true}
+}
+
+func optionalField(name, value string) validationField {
+	return validationField{name: name, value: value}
+}
+
+func validateRevisionStrings(fields ...validationField) error {
+	for _, field := range fields {
+		if err := validateStringField(field.name, field.value); err != nil {
+			return err
+		}
+		if field.required && strings.TrimSpace(field.value) == "" {
+			return status.Errorf(codes.InvalidArgument, "%s is required", field.name)
+		}
 	}
 	return nil
 }
@@ -112,6 +333,9 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 		return nil, err
 	}
 	if err := validateStringField("source_kind", req.SourceKind); err != nil {
+		return nil, err
+	}
+	if err := validateSourceKind("source_kind", req.SourceKind); err != nil {
 		return nil, err
 	}
 	if err := validateStringField("reason_to_remember", req.ReasonToRemember); err != nil {
@@ -140,13 +364,16 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 	if err := validateValuePayload("context", req.Context); err != nil {
 		return nil, err
 	}
+	if err := h.authorizeNewMemory(ctx, req.Scope, schema.Sensitivity(req.Sensitivity)); err != nil {
+		return nil, err
+	}
 
 	ts, err := parseOptionalTime(req.Timestamp)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid timestamp: %v", err)
 	}
 
-	resp, err := h.membrane.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
+	captureReq := ingestion.CaptureMemoryRequest{
 		Source:           req.Source,
 		SourceKind:       req.SourceKind,
 		Content:          valueFromPB(req.Content),
@@ -158,7 +385,22 @@ func (h *Handler) CaptureMemory(ctx context.Context, req *pb.CaptureMemoryReques
 		Scope:            req.Scope,
 		Sensitivity:      schema.Sensitivity(req.Sensitivity),
 		Timestamp:        ts,
-	})
+	}
+	var resp *ingestion.CaptureMemoryResponse
+	if h.access == nil {
+		resp, err = h.membrane.CaptureMemory(ctx, captureReq)
+	} else {
+		readTrust, trustErr := h.access.readTrust(ctx, h.access.readMax, nil)
+		if trustErr != nil {
+			return nil, trustErr
+		}
+		resp, err = h.membrane.CaptureMemoryWithAccess(ctx, captureReq, ingestion.CaptureAccess{
+			CanRead: readTrust.Allows,
+			CanWrite: func(record *schema.MemoryRecord) bool {
+				return h.access.allowsWriteRecord(ctx, record)
+			},
+		})
+	}
 	if err != nil {
 		return nil, serviceErr(err)
 	}
@@ -177,11 +419,14 @@ func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphReques
 	if err := validateStringField("task_descriptor", req.TaskDescriptor); err != nil {
 		return nil, err
 	}
-	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
+	if err := validateTrustContext(req.Trust); err != nil {
 		return nil, err
 	}
-	if req.MinSalience < 0 || math.IsNaN(req.MinSalience) || math.IsInf(req.MinSalience, 0) {
-		return nil, status.Error(codes.InvalidArgument, "min_salience must be non-negative and finite")
+	if req.MinSalience < 0 || req.MinSalience > 1 || math.IsNaN(req.MinSalience) || math.IsInf(req.MinSalience, 0) {
+		return nil, status.Error(codes.InvalidArgument, "min_salience must be finite and between 0 and 1")
+	}
+	if err := validateFloat32Slice("query_embedding", req.QueryEmbedding); err != nil {
+		return nil, err
 	}
 	for _, v := range []struct {
 		name  string
@@ -206,9 +451,15 @@ func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphReques
 		memTypes[i] = schema.MemoryType(mt)
 	}
 
+	trust, err := h.effectiveReadTrust(ctx, req.Trust)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := h.membrane.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
 		TaskDescriptor: req.TaskDescriptor,
-		Trust:          toTrustContext(req.Trust),
+		QueryEmbedding: req.QueryEmbedding,
+		Trust:          trust,
 		MemoryTypes:    memTypes,
 		MinSalience:    req.MinSalience,
 		RootLimit:      int(req.RootLimit),
@@ -223,7 +474,8 @@ func (h *Handler) RetrieveGraph(ctx context.Context, req *pb.RetrieveGraphReques
 	return marshalRetrieveGraphResponse(resp)
 }
 
-// RetrieveByID converts the gRPC request and delegates to Membrane.RetrieveByID.
+// RetrieveByID returns the bounded network projection for one exact ID. The
+// trusted in-process Membrane.RetrieveByID API remains complete.
 func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest) (*pb.MemoryRecordResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
@@ -231,18 +483,30 @@ func (h *Handler) RetrieveByID(ctx context.Context, req *pb.RetrieveByIDRequest)
 	if req.Trust == nil {
 		return nil, status.Error(codes.InvalidArgument, "trust context is required")
 	}
-	if err := validateSensitivity("trust.max_sensitivity", req.Trust.MaxSensitivity, true); err != nil {
+	if err := validateRevisionStrings(requiredField("id", req.Id)); err != nil {
+		return nil, err
+	}
+	if err := validateTrustContext(req.Trust); err != nil {
 		return nil, err
 	}
 
-	trust := toTrustContext(req.Trust)
+	trust, err := h.effectiveReadTrust(ctx, req.Trust)
+	if err != nil {
+		return nil, err
+	}
 
-	rec, err := h.membrane.RetrieveByID(ctx, req.Id, trust)
+	bounded := h.boundedRecordSource()
+	if bounded == nil {
+		return nil, internalErr(retrieval.ErrBoundedRetrievalUnsupported)
+	}
+	result, err := bounded.RetrieveProjectedByID(ctx, req.Id, trust)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
-
-	return marshalMemoryRecordResponse(rec)
+	if result == nil {
+		return nil, internalErr(errors.New("retrieve projected record returned nil response"))
+	}
+	return marshalMemoryRecordResponseWithProjection(result.Record, result.Projection)
 }
 
 // Supersede converts the gRPC request and delegates to Membrane.Supersede.
@@ -250,12 +514,32 @@ func (h *Handler) Supersede(ctx context.Context, req *pb.SupersedeRequest) (*pb.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	newRec, err := memoryRecordFromPB(req.NewRecord)
+	if err := validateRevisionStrings(
+		requiredField("old_id", req.OldId),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
+		return nil, err
+	}
+	newRec, err := validatedRevisionNewRecordFromPB(req.NewRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid new_record: %v", err)
 	}
+	// Revision records created through the public transport always receive a
+	// fresh server-assigned ID. Besides making identity server-owned, clearing
+	// it before relation authorization prevents a caller-declared self target
+	// from being excluded from referenced-record policy checks.
+	if err := h.authorizeExistingMemory(ctx, req.OldId); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeMemoryRecord(ctx, newRec); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeReferencedMemories(ctx, newRec); err != nil {
+		return nil, err
+	}
 
-	rec, err := h.membrane.Supersede(ctx, req.OldId, newRec, req.Actor, req.Rationale)
+	rec, err := h.membrane.Supersede(ctx, req.OldId, newRec, h.authorizedActor(ctx, req.Actor), req.Rationale)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
@@ -268,12 +552,28 @@ func (h *Handler) Fork(ctx context.Context, req *pb.ForkRequest) (*pb.MemoryReco
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	forkedRec, err := memoryRecordFromPB(req.ForkedRecord)
+	if err := validateRevisionStrings(
+		requiredField("source_id", req.SourceId),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
+		return nil, err
+	}
+	forkedRec, err := validatedRevisionNewRecordFromPB(req.ForkedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid forked_record: %v", err)
 	}
+	if err := h.authorizeExistingMemory(ctx, req.SourceId); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeMemoryRecord(ctx, forkedRec); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeReferencedMemories(ctx, forkedRec); err != nil {
+		return nil, err
+	}
 
-	rec, err := h.membrane.Fork(ctx, req.SourceId, forkedRec, req.Actor, req.Rationale)
+	rec, err := h.membrane.Fork(ctx, req.SourceId, forkedRec, h.authorizedActor(ctx, req.Actor), req.Rationale)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
@@ -286,7 +586,17 @@ func (h *Handler) Retract(ctx context.Context, req *pb.RetractRequest) (*pb.Retr
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := h.membrane.Retract(ctx, req.Id, req.Actor, req.Rationale); err != nil {
+	if err := validateRevisionStrings(
+		requiredField("id", req.Id),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeExistingMemory(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := h.membrane.Retract(ctx, req.Id, h.authorizedActor(ctx, req.Actor), req.Rationale); err != nil {
 		return nil, serviceErr(err)
 	}
 	return &pb.RetractResponse{}, nil
@@ -300,15 +610,38 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 	if len(req.Ids) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "ids must not be empty")
 	}
-	if len(req.Ids) > maxLimit {
-		return nil, status.Errorf(codes.InvalidArgument, "too many ids: %d (max %d)", len(req.Ids), maxLimit)
+	if len(req.Ids) > maxAuthorizationTargets {
+		return nil, status.Errorf(codes.InvalidArgument, "too many ids: %d (max %d)", len(req.Ids), maxAuthorizationTargets)
 	}
-	mergedRec, err := memoryRecordFromPB(req.MergedRecord)
+	for i, id := range req.Ids {
+		if err := validateRevisionStrings(requiredField(fmt.Sprintf("ids[%d]", i), id)); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateUniqueMergeIDs(req.Ids); err != nil {
+		return nil, err
+	}
+	if err := validateRevisionStrings(
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
+		return nil, err
+	}
+	mergedRec, err := validatedRevisionNewRecordFromPB(req.MergedRecord)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid merged_record: %v", err)
 	}
+	if err := h.authorizeExistingMemories(ctx, req.Ids); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeMemoryRecord(ctx, mergedRec); err != nil {
+		return nil, err
+	}
+	if err := h.authorizeReferencedMemories(ctx, mergedRec); err != nil {
+		return nil, err
+	}
 
-	rec, err := h.membrane.Merge(ctx, req.Ids, mergedRec, req.Actor, req.Rationale)
+	rec, err := h.membrane.Merge(ctx, req.Ids, mergedRec, h.authorizedActor(ctx, req.Actor), req.Rationale)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
@@ -316,19 +649,35 @@ func (h *Handler) Merge(ctx context.Context, req *pb.MergeRequest) (*pb.MemoryRe
 	return marshalMemoryRecordResponse(rec)
 }
 
+func validateUniqueMergeIDs(ids []string) error {
+	seen := make(map[string]struct{}, len(ids))
+	for i, id := range ids {
+		normalized := strings.TrimSpace(id)
+		if _, ok := seen[normalized]; ok {
+			return status.Errorf(codes.InvalidArgument, "ids[%d] duplicates earlier merge source ID %q", i, normalized)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
 // Reinforce converts the gRPC request and delegates to Membrane.Reinforce.
 func (h *Handler) Reinforce(ctx context.Context, req *pb.ReinforceRequest) (*pb.ReinforceResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := validateStringField("actor", req.Actor); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("rationale", req.Rationale); err != nil {
+	if err := validateRevisionStrings(
+		requiredField("id", req.Id),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
 		return nil, err
 	}
 
-	if err := h.membrane.Reinforce(ctx, req.Id, req.Actor, req.Rationale); err != nil {
+	if err := h.authorizeExistingMemory(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := h.membrane.Reinforce(ctx, req.Id, h.authorizedActor(ctx, req.Actor), req.Rationale); err != nil {
 		return nil, serviceErr(err)
 	}
 	return &pb.ReinforceResponse{}, nil
@@ -342,22 +691,36 @@ func (h *Handler) Penalize(ctx context.Context, req *pb.PenalizeRequest) (*pb.Pe
 	if req.Amount < 0 || math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
 		return nil, status.Error(codes.InvalidArgument, "amount must be non-negative and finite")
 	}
-	if err := validateStringField("actor", req.Actor); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("rationale", req.Rationale); err != nil {
+	if err := validateRevisionStrings(
+		requiredField("id", req.Id),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
 		return nil, err
 	}
 
-	if err := h.membrane.Penalize(ctx, req.Id, req.Amount, req.Actor, req.Rationale); err != nil {
+	if err := h.authorizeExistingMemory(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := h.membrane.Penalize(ctx, req.Id, req.Amount, h.authorizedActor(ctx, req.Actor), req.Rationale); err != nil {
 		return nil, serviceErr(err)
 	}
 	return &pb.PenalizeResponse{}, nil
 }
 
-// GetMetrics delegates to Membrane.GetMetrics and returns a typed snapshot.
+// GetMetrics derives observability visibility from the server read policy and
+// returns only aggregates over records the caller may read.
 func (h *Handler) GetMetrics(ctx context.Context, _ *pb.GetMetricsRequest) (*pb.MetricsResponse, error) {
-	snap, err := h.membrane.GetMetrics(ctx)
+	trust, err := h.metricsReadTrust(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var snap *metrics.Snapshot
+	if trust == nil {
+		snap, err = h.membrane.GetMetrics(ctx)
+	} else {
+		snap, err = h.membrane.GetMetricsForTrust(ctx, trust)
+	}
 	if err != nil {
 		return nil, serviceErr(err)
 	}
@@ -371,14 +734,28 @@ func (h *Handler) Contest(ctx context.Context, req *pb.ContestRequest) (*pb.Cont
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := validateStringField("actor", req.Actor); err != nil {
-		return nil, err
-	}
-	if err := validateStringField("rationale", req.Rationale); err != nil {
+	if err := validateRevisionStrings(
+		requiredField("id", req.Id),
+		optionalField("contesting_ref", req.ContestingRef),
+		optionalField("actor", req.Actor),
+		optionalField("rationale", req.Rationale),
+	); err != nil {
 		return nil, err
 	}
 
-	if err := h.membrane.Contest(ctx, req.Id, req.ContestingRef, req.Actor, req.Rationale); err != nil {
+	if err := h.authorizeExistingMemory(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	actor := h.authorizedActor(ctx, req.Actor)
+	var err error
+	if h.access == nil {
+		err = h.membrane.Contest(ctx, req.Id, req.ContestingRef, actor, req.Rationale)
+	} else {
+		err = h.membrane.ContestWithAccess(ctx, req.Id, req.ContestingRef, actor, req.Rationale, func(record *schema.MemoryRecord) bool {
+			return h.access.allowsWriteRecord(ctx, record)
+		})
+	}
+	if err != nil {
 		return nil, serviceErr(err)
 	}
 	return &pb.ContestResponse{}, nil
@@ -406,6 +783,208 @@ func toTrustContext(tc *pb.TrustContext) *retrieval.TrustContext {
 		tc.ActorId,
 		tc.Scopes,
 	)
+}
+
+func (h *Handler) effectiveReadTrust(ctx context.Context, requested *pb.TrustContext) (*retrieval.TrustContext, error) {
+	if h.access == nil {
+		return toTrustContext(requested), nil
+	}
+	return h.access.readTrust(ctx, schema.Sensitivity(requested.MaxSensitivity), requested.Scopes)
+}
+
+func (h *Handler) metricsReadTrust(ctx context.Context) (*retrieval.TrustContext, error) {
+	if h.access == nil {
+		return nil, nil
+	}
+	return h.access.readTrust(ctx, h.access.readMax, nil)
+}
+
+func (h *Handler) boundedRecordSource() boundedHandlerRecords {
+	if h.boundedRecords != nil {
+		return h.boundedRecords
+	}
+	if h.membrane != nil {
+		return h.membrane
+	}
+	return nil
+}
+
+func (h *Handler) authorizeNewMemory(ctx context.Context, scope string, sensitivity schema.Sensitivity) error {
+	if h.access == nil {
+		return nil
+	}
+	if sensitivity == "" {
+		sensitivity = h.access.defaultSensitivity
+	}
+	return h.authorizeScopeSensitivity(ctx, scope, sensitivity)
+}
+
+func (h *Handler) authorizeMemoryRecord(ctx context.Context, rec *schema.MemoryRecord) error {
+	if h.access == nil || rec == nil {
+		return nil
+	}
+	return h.authorizeScopeSensitivity(ctx, rec.Scope, rec.Sensitivity)
+}
+
+func (h *Handler) authorizeScopeSensitivity(ctx context.Context, scope string, sensitivity schema.Sensitivity) error {
+	trust := h.access.writeTrust(ctx)
+	if !isSensitivityAllowed(sensitivity, trust.MaxSensitivity) {
+		return status.Errorf(codes.PermissionDenied, "sensitivity %q exceeds the server write policy", sensitivity)
+	}
+	if strings.TrimSpace(scope) == "" {
+		return status.Error(codes.PermissionDenied, "scope is required by the server write policy")
+	}
+	if !scopeAllowed(scope, trust.Scopes) {
+		return status.Errorf(codes.PermissionDenied, "scope %q is outside the server write policy", scope)
+	}
+	return nil
+}
+
+func (h *Handler) authorizeExistingMemory(ctx context.Context, id string) error {
+	if h.access == nil {
+		return nil
+	}
+	return h.authorizeExistingMemories(ctx, []string{id})
+}
+
+const unavailableRelationTargetMessage = "relation target is unavailable under the server write policy"
+
+func (h *Handler) authorizeExistingMemories(ctx context.Context, ids []string) error {
+	if h.access == nil || len(ids) == 0 {
+		return nil
+	}
+	if len(ids) > maxAuthorizationTargets {
+		return status.Errorf(codes.InvalidArgument, "too many authorization targets: %d (max %d)", len(ids), maxAuthorizationTargets)
+	}
+	metadata, err := h.getAuthorizationMetadata(ctx, ids)
+	if err != nil {
+		return serviceErr(err)
+	}
+	byID := sanitizeAuthorizationMetadata(metadata, ids)
+	for _, id := range ids {
+		record, ok := byID[id]
+		if !ok || !h.authorizationMetadataAllowed(ctx, record) {
+			// Primary/source mutation targets use the same opaque disposition
+			// whether the ID is absent or exists outside the write policy.
+			return serviceErr(storage.ErrNotFound)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) authorizeReferencedMemories(ctx context.Context, rec *schema.MemoryRecord) error {
+	if h.access == nil || rec == nil {
+		return nil
+	}
+	if len(rec.Relations) > maxAuthorizationTargets {
+		return status.Error(codes.PermissionDenied, unavailableRelationTargetMessage)
+	}
+	for _, relation := range rec.Relations {
+		if strings.TrimSpace(relation.TargetID) == "" {
+			return status.Error(codes.PermissionDenied, unavailableRelationTargetMessage)
+		}
+	}
+	ids := referencedMemoryIDs(rec)
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(ids) > maxAuthorizationTargets {
+		return status.Error(codes.PermissionDenied, unavailableRelationTargetMessage)
+	}
+	metadata, err := h.getAuthorizationMetadata(ctx, ids)
+	if err != nil {
+		return status.Error(codes.PermissionDenied, unavailableRelationTargetMessage)
+	}
+	byID := sanitizeAuthorizationMetadata(metadata, ids)
+	for _, id := range ids {
+		record, ok := byID[id]
+		if !ok || !h.authorizationMetadataAllowed(ctx, record) {
+			return status.Error(codes.PermissionDenied, unavailableRelationTargetMessage)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) getAuthorizationMetadata(ctx context.Context, ids []string) ([]storage.RecordAuthorizationMetadata, error) {
+	bounded := h.boundedRecordSource()
+	if bounded == nil {
+		return nil, storage.ErrAuthorizationMetadataUnsupported
+	}
+	return bounded.GetAuthorizationMetadata(ctx, ids)
+}
+
+func (h *Handler) authorizationMetadataAllowed(ctx context.Context, record storage.RecordAuthorizationMetadata) bool {
+	if h.access == nil || strings.TrimSpace(record.Scope) == "" {
+		return false
+	}
+	trust := h.access.writeTrust(ctx)
+	return isSensitivityAllowed(record.Sensitivity, trust.MaxSensitivity) && scopeAllowed(record.Scope, trust.Scopes)
+}
+
+func sanitizeAuthorizationMetadata(records []storage.RecordAuthorizationMetadata, requested []string) map[string]storage.RecordAuthorizationMetadata {
+	limit := len(requested)
+	if limit > maxAuthorizationTargets {
+		limit = maxAuthorizationTargets
+	}
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	requestedSet := make(map[string]struct{}, limit)
+	for i, id := range requested {
+		if i >= limit {
+			break
+		}
+		requestedSet[id] = struct{}{}
+	}
+	byID := make(map[string]storage.RecordAuthorizationMetadata, limit)
+	for _, record := range records {
+		if _, ok := requestedSet[record.ID]; !ok {
+			continue
+		}
+		if _, exists := byID[record.ID]; !exists {
+			byID[record.ID] = record
+		}
+	}
+	return byID
+}
+
+func referencedMemoryIDs(rec *schema.MemoryRecord) []string {
+	if rec == nil {
+		return nil
+	}
+	capacity := len(rec.Relations)
+	if capacity > maxAuthorizationTargets+1 {
+		capacity = maxAuthorizationTargets + 1
+	}
+	ids := make([]string, 0, capacity)
+	seen := make(map[string]struct{}, capacity)
+	add := func(id string) {
+		if len(ids) > maxAuthorizationTargets {
+			return
+		}
+		if strings.TrimSpace(id) == "" || id == rec.ID {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, rel := range rec.Relations {
+		add(rel.TargetID)
+		if len(ids) > maxAuthorizationTargets {
+			break
+		}
+	}
+	return ids
+}
+
+func (h *Handler) authorizedActor(ctx context.Context, requested string) string {
+	if h.access == nil {
+		return requested
+	}
+	return h.access.actor(ctx, requested)
 }
 
 func valueFromPB(value *structpb.Value) any {
@@ -563,6 +1142,41 @@ func memoryRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
 		Interpretation: interpretationFromPB(rec.Interpretation),
 		AuditLog:       auditLog,
 	}, nil
+}
+
+func validatedMemoryRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
+	if rec != nil && len(rec.Relations) > maxRecordRelations {
+		return nil, fmt.Errorf("too many relations: %d (max %d)", len(rec.Relations), maxRecordRelations)
+	}
+	out, err := memoryRecordFromPB(rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := out.Validate(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// validatedRevisionNewRecordFromPB validates a public revision record while
+// keeping its identity server-owned. The converted record's ID is cleared
+// before validation and is never restored; a private copy receives a sentinel
+// solely so MemoryRecord.Validate can check every non-ID invariant.
+func validatedRevisionNewRecordFromPB(rec *pb.MemoryRecord) (*schema.MemoryRecord, error) {
+	if rec != nil && len(rec.Relations) > maxRecordRelations {
+		return nil, fmt.Errorf("too many relations: %d (max %d)", len(rec.Relations), maxRecordRelations)
+	}
+	out, err := memoryRecordFromPB(rec)
+	if err != nil {
+		return nil, err
+	}
+	out.ID = ""
+	validationRecord := *out
+	validationRecord.ID = "server-assigned-revision-id"
+	if err := validationRecord.Validate(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func lifecycleToPB(lifecycle schema.Lifecycle) *pb.Lifecycle {
@@ -1604,11 +2218,19 @@ func planMetricsFromPB(metrics *pb.PlanMetrics) (*schema.PlanMetrics, error) {
 
 // marshalMemoryRecordResponse converts a MemoryRecord into a typed MemoryRecordResponse.
 func marshalMemoryRecordResponse(rec *schema.MemoryRecord) (*pb.MemoryRecordResponse, error) {
+	return marshalMemoryRecordResponseWithProjection(rec, retrieval.RecordProjection{})
+}
+
+func marshalMemoryRecordResponseWithProjection(rec *schema.MemoryRecord, projection retrieval.RecordProjection) (*pb.MemoryRecordResponse, error) {
 	out, err := memoryRecordToPB(rec)
 	if err != nil {
 		return nil, internalErr(fmt.Errorf("marshal record: %w", err))
 	}
-	return &pb.MemoryRecordResponse{Record: out}, nil
+	response := &pb.MemoryRecordResponse{Record: out}
+	if projection != (retrieval.RecordProjection{}) {
+		response.Projection = recordProjectionToPB(projection)
+	}
+	return response, nil
 }
 
 func marshalCaptureMemoryResponse(resp *ingestion.CaptureMemoryResponse) (*pb.CaptureMemoryResponse, error) {
@@ -1652,11 +2274,36 @@ func marshalRetrieveGraphResponse(resp *retrieval.RetrieveGraphResponse) (*pb.Re
 		return nil, internalErr(fmt.Errorf("marshal graph selection: %w", err))
 	}
 	return &pb.RetrieveGraphResponse{
-		Nodes:     nodes,
-		Edges:     graphEdgesToPB(resp.Edges),
-		RootIds:   resp.RootIDs,
-		Selection: selection,
+		Nodes:       nodes,
+		Edges:       graphEdgesToPB(resp.Edges),
+		RootIds:     resp.RootIDs,
+		Selection:   selection,
+		Diagnostics: retrievalDiagnosticsToPB(resp.Diagnostics),
+		Projection:  recordProjectionToPB(resp.Projection),
 	}, nil
+}
+
+func recordProjectionToPB(projection retrieval.RecordProjection) *pb.RecordProjection {
+	return &pb.RecordProjection{
+		RelationsOmitted:   projection.RelationsOmitted,
+		RelationsTruncated: projection.RelationsTruncated,
+		HistoryOmitted:     projection.HistoryOmitted,
+		RecordsTruncated:   projection.RecordsTruncated,
+	}
+}
+
+func retrievalDiagnosticsToPB(diagnostics []retrieval.RetrievalDiagnostic) []*pb.RetrievalDiagnostic {
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	out := make([]*pb.RetrievalDiagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, &pb.RetrievalDiagnostic{
+			Code:    diagnostic.Code,
+			Message: diagnostic.Message,
+		})
+	}
+	return out
 }
 
 func serviceErr(err error) error {
@@ -1668,6 +2315,7 @@ func serviceErr(err error) error {
 	}
 
 	var validationErr *schema.ValidationError
+	var projectedTooLarge *retrieval.ProjectedRecordTooLargeError
 	switch {
 	case errors.As(err, &validationErr):
 		return status.Error(codes.InvalidArgument, validationErr.Error())
@@ -1679,6 +2327,8 @@ func serviceErr(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, retrieval.ErrNilTrust):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &projectedTooLarge):
+		return status.Error(codes.ResourceExhausted, projectedTooLarge.Error())
 	case errors.Is(err, revision.ErrEpisodicImmutable):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case isInvalidInputError(err):
@@ -1691,6 +2341,8 @@ func serviceErr(err error) error {
 func isInvalidInputError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "ingestion policy:") ||
+		strings.Contains(msg, "ingestion: invalid source_kind") ||
+		strings.Contains(msg, "ingestion: invalid proposed_type") ||
 		strings.Contains(msg, "semantic revision requires evidence") ||
 		strings.HasSuffix(msg, " is not episodic")
 }

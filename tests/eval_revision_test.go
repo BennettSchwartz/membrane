@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
@@ -14,11 +13,11 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 	m := newTestMembrane(t)
 	trust := fullTrust()
 
-	base, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	base, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "project",
 		Predicate: "uses_database",
-		Object:    "SQLite",
+		Object:    "Redis",
 		Tags:      []string{"eval"},
 	})
 	if err != nil {
@@ -70,7 +69,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 		}
 	}
 
-	toRetract, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	toRetract, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses_queue",
@@ -106,7 +105,7 @@ func TestEvalRevisionLifecycle(t *testing.T) {
 	}
 
 	// Fork creates a conditional variant without retracting the original.
-	source, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	source, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses_cache",

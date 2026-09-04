@@ -28,7 +28,7 @@ func TestSupersedeRetractsOldRecordAndLinksReplacement(t *testing.T) {
 	if got.ID == "" {
 		t.Fatalf("Supersede replacement ID = empty, want generated ID")
 	}
-	if len(got.Relations) != 1 || got.Relations[0].Predicate != "supersedes" || got.Relations[0].TargetID != old.ID {
+	if !hasRevisionRelation(got.Relations, schema.GraphPredicateSupersedes, old.ID) {
 		t.Fatalf("replacement relations = %+v, want supersedes old record", got.Relations)
 	}
 	payload, ok := got.Payload.(*schema.SemanticPayload)
@@ -44,6 +44,9 @@ func TestSupersedeRetractsOldRecordAndLinksReplacement(t *testing.T) {
 	if retracted.Salience != 0 || oldPayload.Revision == nil || oldPayload.Revision.Status != schema.RevisionStatusRetracted || oldPayload.Revision.SupersededBy != got.ID {
 		t.Fatalf("old record = %+v payload=%+v, want retracted and superseded_by replacement", retracted, oldPayload)
 	}
+	if !hasRevisionRelation(retracted.Relations, schema.GraphPredicateSupersededBy, got.ID) {
+		t.Fatalf("old relations = %+v, want superseded_by replacement", retracted.Relations)
+	}
 	if !hasAuditAction(retracted.AuditLog, schema.AuditActionRevise) {
 		t.Fatalf("old audit log = %+v, want revision audit entry", retracted.AuditLog)
 	}
@@ -55,7 +58,7 @@ func TestForkCreatesDerivedRecordWithoutRetractingSource(t *testing.T) {
 	svc := NewService(store)
 
 	source := semanticRevisionRecord("source-db", "database", "postgres")
-	forked := semanticRevisionRecord("", "database", "sqlite")
+	forked := semanticRevisionRecord("", "database", "postgres")
 	if err := store.Create(ctx, source); err != nil {
 		t.Fatalf("Create source: %v", err)
 	}
@@ -67,8 +70,12 @@ func TestForkCreatesDerivedRecordWithoutRetractingSource(t *testing.T) {
 	if got.ID == "" {
 		t.Fatalf("Fork ID = empty, want generated ID")
 	}
-	if len(got.Relations) != 1 || got.Relations[0].Predicate != "derived_from" || got.Relations[0].TargetID != source.ID {
+	if !hasRevisionRelation(got.Relations, schema.GraphPredicateDerivedFrom, source.ID) {
 		t.Fatalf("fork relations = %+v, want derived_from source", got.Relations)
+	}
+	forkPayload, ok := got.Payload.(*schema.SemanticPayload)
+	if !ok || forkPayload.Revision == nil || forkPayload.Revision.Status != schema.RevisionStatusActive {
+		t.Fatalf("fork payload = %+v, want active semantic revision", got.Payload)
 	}
 
 	storedSource, err := store.Get(ctx, source.ID)
@@ -77,6 +84,9 @@ func TestForkCreatesDerivedRecordWithoutRetractingSource(t *testing.T) {
 	}
 	if storedSource.Salience == 0 {
 		t.Fatalf("source salience = 0, want fork to leave source active")
+	}
+	if !hasRevisionRelation(storedSource.Relations, schema.GraphPredicateDerivedSemantic, got.ID) {
+		t.Fatalf("source relations = %+v, want derived_semantic fork", storedSource.Relations)
 	}
 	if !hasAuditAction(storedSource.AuditLog, schema.AuditActionFork) {
 		t.Fatalf("source audit log = %+v, want fork audit entry", storedSource.AuditLog)
@@ -107,6 +117,10 @@ func TestMergeRetractsSourcesAndCreatesMergedRecord(t *testing.T) {
 	if len(got.Relations) != 2 {
 		t.Fatalf("merged relations = %+v, want derived_from both sources", got.Relations)
 	}
+	mergedPayload, ok := got.Payload.(*schema.SemanticPayload)
+	if !ok || mergedPayload.Revision == nil || mergedPayload.Revision.Status != schema.RevisionStatusActive {
+		t.Fatalf("merged payload = %+v, want active semantic revision", got.Payload)
+	}
 	for _, id := range []string{first.ID, second.ID} {
 		rec, err := store.Get(ctx, id)
 		if err != nil {
@@ -115,6 +129,9 @@ func TestMergeRetractsSourcesAndCreatesMergedRecord(t *testing.T) {
 		payload := rec.Payload.(*schema.SemanticPayload)
 		if rec.Salience != 0 || payload.Revision == nil || payload.Revision.Status != schema.RevisionStatusRetracted {
 			t.Fatalf("source %s = %+v payload=%+v, want retracted", id, rec, payload)
+		}
+		if !hasRevisionRelation(rec.Relations, schema.GraphPredicateDerivedSemantic, got.ID) {
+			t.Fatalf("source %s relations = %+v, want derived_semantic merged record", id, rec.Relations)
 		}
 		if !hasAuditAction(rec.AuditLog, schema.AuditActionMerge) {
 			t.Fatalf("source %s audit log = %+v, want merge audit entry", id, rec.AuditLog)
@@ -166,8 +183,15 @@ func TestRetractAndContestUpdateSemanticRevisionState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRelations contested: %v", err)
 	}
-	if len(relations) != 1 || relations[0].Predicate != "contested_by" || relations[0].TargetID != contesting.ID {
+	if !hasRevisionRelation(relations, schema.GraphPredicateContestedBy, contesting.ID) {
 		t.Fatalf("contest relations = %+v, want contested_by relation", relations)
+	}
+	contestingRelations, err := store.GetRelations(ctx, contesting.ID)
+	if err != nil {
+		t.Fatalf("GetRelations contesting: %v", err)
+	}
+	if !hasRevisionRelation(contestingRelations, schema.GraphPredicateContests, contested.ID) {
+		t.Fatalf("contesting relations = %+v, want contests relation", contestingRelations)
 	}
 }
 
@@ -208,6 +232,9 @@ func TestRevisionRejectsInvalidInputs(t *testing.T) {
 	}
 	if _, err := svc.Merge(ctx, nil, semanticRevisionRecord("unused", "runtime", "go1.26"), "tester", "empty"); err == nil {
 		t.Fatalf("Merge empty source IDs error = nil")
+	}
+	if _, err := svc.Merge(ctx, []string{semantic.ID, semantic.ID}, semanticRevisionRecord("unused", "runtime", "go1.26"), "tester", "duplicate"); err == nil || !strings.Contains(err.Error(), "duplicate source record ID") {
+		t.Fatalf("Merge duplicate source IDs error = %v, want duplicate source record ID", err)
 	}
 	if _, err := svc.Merge(ctx, []string{semantic.ID}, nil, "tester", "nil merge"); err == nil {
 		t.Fatalf("Merge nil record error = nil")
@@ -272,6 +299,67 @@ func TestContestWithoutContestingReferenceSkipsRelation(t *testing.T) {
 	}
 	if len(relations) != 0 {
 		t.Fatalf("relations = %+v, want none when contesting ref is empty", relations)
+	}
+}
+
+func TestContestExternalEvidenceReferenceStillMarksRecordContested(t *testing.T) {
+	ctx := context.Background()
+	store := newRevisionTestStore(t)
+	svc := NewService(store)
+	rec := semanticRevisionRecord("contest-external-ref", "queue", "sqs")
+	if err := store.Create(ctx, rec); err != nil {
+		t.Fatalf("Create record: %v", err)
+	}
+
+	if err := svc.Contest(ctx, rec.ID, "ticket:INC-123", "tester", "external ticket disagrees"); err != nil {
+		t.Fatalf("Contest external evidence ref: %v", err)
+	}
+
+	got, err := store.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("Get contested record: %v", err)
+	}
+	payload := got.Payload.(*schema.SemanticPayload)
+	if payload.Revision == nil || payload.Revision.Status != schema.RevisionStatusContested {
+		t.Fatalf("revision = %+v, want contested status", payload.Revision)
+	}
+	if !hasAuditAction(got.AuditLog, schema.AuditActionRevise) {
+		t.Fatalf("audit log = %+v, want revise entry", got.AuditLog)
+	}
+	relations, err := store.GetRelations(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("GetRelations: %v", err)
+	}
+	if len(relations) != 0 {
+		t.Fatalf("relations = %+v, want no graph relation for external evidence ref", relations)
+	}
+}
+
+func TestContestWithAccessTreatsDeniedStoredReferenceAsExternal(t *testing.T) {
+	ctx := context.Background()
+	store := newRevisionTestStore(t)
+	svc := NewService(store)
+	contested := semanticRevisionRecord("contest-access-source", "queue", "sqs")
+	hidden := semanticRevisionRecord("contest-access-hidden", "queue", "secret")
+	for _, rec := range []*schema.MemoryRecord{contested, hidden} {
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("Create %s: %v", rec.ID, err)
+		}
+	}
+
+	if err := svc.ContestWithAccess(ctx, contested.ID, hidden.ID, "tester", "externalized", func(rec *schema.MemoryRecord) bool {
+		return rec.ID != hidden.ID
+	}); err != nil {
+		t.Fatalf("ContestWithAccess: %v", err)
+	}
+	for _, id := range []string{contested.ID, hidden.ID} {
+		relations, err := store.GetRelations(ctx, id)
+		if err != nil {
+			t.Fatalf("GetRelations %s: %v", id, err)
+		}
+		if len(relations) != 0 {
+			t.Fatalf("relations for %s = %+v, want denied reference treated as external", id, relations)
+		}
 	}
 }
 
@@ -465,7 +553,10 @@ func TestRevisionMutationErrorBranches(t *testing.T) {
 	})
 
 	t.Run("contest relation error", func(t *testing.T) {
-		tx := newRevisionErrorTx(semanticRevisionRecord("contest-relation", "queue", "sqs"))
+		tx := newRevisionErrorTx(
+			semanticRevisionRecord("contest-relation", "queue", "sqs"),
+			semanticRevisionRecord("contesting-ref", "queue", "kafka"),
+		)
 		tx.addRelationErr = errors.New("relation failed")
 		svc := NewService(&revisionErrorStore{tx: tx})
 
@@ -489,7 +580,7 @@ func TestRevisionMutationErrorBranches(t *testing.T) {
 		tx.getErr = errors.New("get failed")
 		svc := NewService(&revisionErrorStore{tx: tx})
 
-		if _, err := svc.Fork(ctx, "fork-missing", semanticRevisionRecord("fork-target", "database", "sqlite"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "get source record fork-missing") {
+		if _, err := svc.Fork(ctx, "fork-missing", semanticRevisionRecord("fork-target", "database", "postgres"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "get source record fork-missing") {
 			t.Fatalf("Fork get error = %v, want wrapped get error", err)
 		}
 	})
@@ -499,7 +590,7 @@ func TestRevisionMutationErrorBranches(t *testing.T) {
 		tx.addAuditErr = errors.New("audit failed")
 		svc := NewService(&revisionErrorStore{tx: tx})
 
-		if _, err := svc.Fork(ctx, "fork-source", semanticRevisionRecord("fork-target", "database", "sqlite"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "add audit entry to source record") {
+		if _, err := svc.Fork(ctx, "fork-source", semanticRevisionRecord("fork-target", "database", "postgres"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "add audit entry to source record") {
 			t.Fatalf("Fork audit error = %v, want wrapped audit error", err)
 		}
 	})
@@ -509,7 +600,7 @@ func TestRevisionMutationErrorBranches(t *testing.T) {
 		tx.createErr = errors.New("create failed")
 		svc := NewService(&revisionErrorStore{tx: tx})
 
-		if _, err := svc.Fork(ctx, "fork-create-source", semanticRevisionRecord("fork-create-target", "database", "sqlite"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "create forked record") {
+		if _, err := svc.Fork(ctx, "fork-create-source", semanticRevisionRecord("fork-create-target", "database", "postgres"), "tester", "variant"); err == nil || !strings.Contains(err.Error(), "create forked record") {
 			t.Fatalf("Fork create error = %v, want wrapped create error", err)
 		}
 	})
@@ -609,6 +700,15 @@ func TestRevisionMutationErrorBranches(t *testing.T) {
 func hasAuditAction(entries []schema.AuditEntry, action schema.AuditAction) bool {
 	for _, entry := range entries {
 		if entry.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRevisionRelation(relations []schema.Relation, predicate, targetID string) bool {
+	for _, rel := range relations {
+		if rel.Predicate == predicate && rel.TargetID == targetID {
 			return true
 		}
 	}

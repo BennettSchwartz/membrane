@@ -9,7 +9,6 @@ import (
 
 func TestMembraneNewRejectsInvalidDefaultSensitivity(t *testing.T) {
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = t.TempDir() + "/membrane.db"
 	cfg.DefaultSensitivity = "invalid"
 
 	_, err := membrane.New(cfg)

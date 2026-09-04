@@ -37,6 +37,11 @@ type planEdgeEntry struct {
 	To   string `json:"to"`
 }
 
+type entityIdentifierEntry struct {
+	Namespace string `json:"namespace"`
+	Value     string `json:"value"`
+}
+
 type recordEntry struct {
 	Type        string   `json:"type"`
 	MemoryType  string   `json:"memory_type"`
@@ -49,6 +54,12 @@ type recordEntry struct {
 	Subject   string `json:"subject"`
 	Predicate string `json:"predicate"`
 	Object    string `json:"object"`
+	// Entity
+	CanonicalName string                  `json:"canonical_name"`
+	PrimaryType   string                  `json:"primary_type"`
+	EntityTypes   []string                `json:"types"`
+	Aliases       []string                `json:"aliases"`
+	Identifiers   []entityIdentifierEntry `json:"identifiers"`
 	// Episodic
 	EventKind string `json:"event_kind"`
 	Ref       string `json:"ref"`
@@ -182,6 +193,10 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 		embeddingAPIKey   = fs.String("embedding-api-key", "", "Embedding API key (or MEMBRANE_EMBEDDING_API_KEY)")
 		embeddingDims     = fs.Int("embedding-dimensions", 1536, "Embedding dimensions")
 		defaultK          = fs.Int("k", 5, "Default top-K")
+		minRecall         = fs.Float64("min-recall", 0.90, "Minimum acceptable Membrane recall@k")
+		minPrecision      = fs.Float64("min-precision", 0.20, "Minimum acceptable Membrane precision@k")
+		minMRR            = fs.Float64("min-mrr", 0.90, "Minimum acceptable Membrane MRR@k")
+		minNDCG           = fs.Float64("min-ndcg", 0.90, "Minimum acceptable Membrane NDCG@k")
 		verbose           = fs.Bool("verbose", false, "Per-query results")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -195,6 +210,15 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 	if *postgresDSN == "" || apiKey == "" {
 		return fmt.Errorf("config: %w", errors.New("--postgres-dsn and embedding API key are required"))
 	}
+	thresholds := evalThresholds{
+		recall:    *minRecall,
+		precision: *minPrecision,
+		mrr:       *minMRR,
+		ndcg:      *minNDCG,
+	}
+	if err := validateEvalConfig(*datasetPath, *embeddingEndpoint, *embeddingModel, *embeddingDims, *defaultK, thresholds); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 
 	data, err := loadDataset(*datasetPath, *defaultK)
 	if err != nil {
@@ -203,7 +227,6 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 
 	// --- Create Membrane instance (fully equipped) ---
 	cfg := membrane.DefaultConfig()
-	cfg.Backend = "postgres"
 	cfg.PostgresDSN = *postgresDSN
 	cfg.EmbeddingEndpoint = *embeddingEndpoint
 	cfg.EmbeddingModel = *embeddingModel
@@ -251,8 +274,11 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 	fmt.Printf("Embedding %d records via %s...\n", len(data.records), *embeddingModel)
 	for _, rec := range data.records {
 		id := idByKey[rec.Key]
-		vec, err := embClient.Embed(ctx, rec.Text)
+		vec, err := embClient.Embed(ctx, recordEmbeddingText(rec))
 		if err != nil {
+			return fmt.Errorf("embed %s: %w", rec.Key, err)
+		}
+		if err := validateEvalEmbeddingVector(vec, *embeddingDims); err != nil {
 			return fmt.Errorf("embed %s: %w", rec.Key, err)
 		}
 		if err := pgStore.StoreTriggerEmbedding(ctx, id, vec, *embeddingModel); err != nil {
@@ -267,6 +293,9 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 	for _, q := range data.queries {
 		vec, err := embClient.Embed(ctx, q.Text)
 		if err != nil {
+			return fmt.Errorf("embed query %s: %w", q.Key, err)
+		}
+		if err := validateEvalEmbeddingVector(vec, *embeddingDims); err != nil {
 			return fmt.Errorf("embed query %s: %w", q.Key, err)
 		}
 		queryEmbeddings[q.Key] = vec
@@ -294,6 +323,97 @@ func runEvalCLIWithDeps(ctx context.Context, args []string, getenv func(string) 
 	printRow("MRR@k", ragMetrics.mrr, memMetrics.mrr)
 	printRow("NDCG@k", ragMetrics.ndcg, memMetrics.ndcg)
 	fmt.Println("====================================================")
+	if err := thresholds.check(memMetrics); err != nil {
+		return err
+	}
+	return nil
+}
+
+type evalThresholds struct {
+	recall    float64
+	precision float64
+	mrr       float64
+	ndcg      float64
+}
+
+func validateEvalConfig(datasetPath, embeddingEndpoint, embeddingModel string, embeddingDims, defaultK int, thresholds evalThresholds) error {
+	if strings.TrimSpace(datasetPath) == "" {
+		return errors.New("--dataset is required")
+	}
+	if strings.TrimSpace(embeddingEndpoint) == "" {
+		return errors.New("--embedding-endpoint is required")
+	}
+	if strings.TrimSpace(embeddingModel) == "" {
+		return errors.New("--embedding-model is required")
+	}
+	if embeddingDims <= 0 {
+		return fmt.Errorf("--embedding-dimensions must be positive, got %d", embeddingDims)
+	}
+	if defaultK <= 0 {
+		return fmt.Errorf("--k must be positive, got %d", defaultK)
+	}
+	if err := validateMetricThreshold("--min-recall", thresholds.recall); err != nil {
+		return err
+	}
+	if err := validateMetricThreshold("--min-precision", thresholds.precision); err != nil {
+		return err
+	}
+	if err := validateMetricThreshold("--min-mrr", thresholds.mrr); err != nil {
+		return err
+	}
+	if err := validateMetricThreshold("--min-ndcg", thresholds.ndcg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMetricThreshold(name string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+		return fmt.Errorf("%s must be a finite value between 0 and 1, got %v", name, value)
+	}
+	return nil
+}
+
+func validateEvalEmbeddingVector(values []float32, dimensions int) error {
+	if len(values) == 0 {
+		return errors.New("embedding vector is empty")
+	}
+	if dimensions > 0 && len(values) != dimensions {
+		return fmt.Errorf("embedding vector has %d dimensions, expected %d", len(values), dimensions)
+	}
+	hasSignal := false
+	for i, value := range values {
+		f := float64(value)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("embedding vector contains non-finite value at index %d", i)
+		}
+		if value != 0 {
+			hasSignal = true
+		}
+	}
+	if !hasSignal {
+		return errors.New("embedding vector is all zeros")
+	}
+	return nil
+}
+
+func (t evalThresholds) check(metrics evalMetrics) error {
+	var failures []string
+	if metrics.recall < t.recall {
+		failures = append(failures, fmt.Sprintf("recall@k %.3f below minimum %.3f", metrics.recall, t.recall))
+	}
+	if metrics.precision < t.precision {
+		failures = append(failures, fmt.Sprintf("precision@k %.3f below minimum %.3f", metrics.precision, t.precision))
+	}
+	if metrics.mrr < t.mrr {
+		failures = append(failures, fmt.Sprintf("MRR@k %.3f below minimum %.3f", metrics.mrr, t.mrr))
+	}
+	if metrics.ndcg < t.ndcg {
+		failures = append(failures, fmt.Sprintf("NDCG@k %.3f below minimum %.3f", metrics.ndcg, t.ndcg))
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("eval quality gate failed: %s", strings.Join(failures, "; "))
+	}
 	return nil
 }
 
@@ -334,6 +454,57 @@ func ingestRecord(ctx context.Context, m evalMembrane, store recordCreator, rec 
 			return "", err
 		}
 		return r.ID, nil
+
+	case "entity":
+		canonicalName := strings.TrimSpace(rec.CanonicalName)
+		if canonicalName == "" {
+			canonicalName = strings.TrimSpace(rec.Subject)
+		}
+		if canonicalName == "" {
+			canonicalName = strings.TrimSpace(rec.Key)
+		}
+		if canonicalName == "" {
+			canonicalName = strings.TrimSpace(rec.Text)
+		}
+		if canonicalName == "" {
+			return "", fmt.Errorf("entity record %q requires canonical_name, subject, key, or text", rec.Key)
+		}
+		aliases := make([]schema.EntityAlias, 0, len(rec.Aliases))
+		for _, alias := range rec.Aliases {
+			if value := strings.TrimSpace(alias); value != "" {
+				aliases = append(aliases, schema.EntityAlias{Value: value})
+			}
+		}
+		identifiers := make([]schema.EntityIdentifier, 0, len(rec.Identifiers))
+		for _, identifier := range rec.Identifiers {
+			namespace := schema.NormalizeEntityIdentifierNamespace(identifier.Namespace)
+			value := strings.TrimSpace(identifier.Value)
+			if namespace != "" && value != "" {
+				identifiers = append(identifiers, schema.EntityIdentifier{Namespace: namespace, Value: value})
+			}
+		}
+		entityTypes := make([]string, 0, len(rec.EntityTypes))
+		for _, entityType := range rec.EntityTypes {
+			if value := strings.TrimSpace(entityType); value != "" {
+				entityTypes = append(entityTypes, value)
+			}
+		}
+		record := schema.NewMemoryRecord(uuid.New().String(), schema.MemoryTypeEntity, sens, &schema.EntityPayload{
+			Kind:          "entity",
+			CanonicalName: canonicalName,
+			PrimaryType:   strings.TrimSpace(rec.PrimaryType),
+			Types:         entityTypes,
+			Aliases:       aliases,
+			Identifiers:   identifiers,
+			Summary:       strings.TrimSpace(rec.Summary),
+		})
+		record.Scope = rec.Scope
+		record.Tags = rec.Tags
+		record.Confidence = 0.9
+		if err := store.Create(ctx, record); err != nil {
+			return "", err
+		}
+		return record.ID, nil
 
 	case "competence":
 		triggers := make([]schema.Trigger, len(rec.Triggers))
@@ -559,13 +730,76 @@ func queryLimit(queryK, defaultK int) int {
 	return 0
 }
 
+func recordEmbeddingText(rec recordEntry) string {
+	if text := strings.TrimSpace(rec.Text); text != "" {
+		return text
+	}
+	switch rec.MemoryType {
+	case "semantic":
+		return joinEmbeddingParts(rec.Subject, rec.Predicate, rec.Object)
+	case "episodic":
+		return joinEmbeddingParts(rec.EventKind, rec.Ref, rec.Summary)
+	case "working":
+		parts := []string{rec.ThreadID, rec.State}
+		parts = append(parts, rec.NextActions...)
+		return joinEmbeddingParts(parts...)
+	case "entity":
+		parts := []string{entityEmbeddingName(rec), rec.PrimaryType}
+		parts = append(parts, rec.EntityTypes...)
+		parts = append(parts, rec.Aliases...)
+		for _, identifier := range rec.Identifiers {
+			namespace := schema.NormalizeEntityIdentifierNamespace(identifier.Namespace)
+			value := strings.TrimSpace(identifier.Value)
+			if namespace != "" && value != "" {
+				parts = append(parts, namespace+":"+value)
+			}
+		}
+		parts = append(parts, rec.Summary)
+		return joinEmbeddingParts(parts...)
+	case "competence":
+		parts := []string{rec.SkillName}
+		parts = append(parts, rec.Triggers...)
+		parts = append(parts, rec.Steps...)
+		return joinEmbeddingParts(parts...)
+	case "plan_graph":
+		parts := []string{rec.Key, rec.Intent}
+		for _, node := range rec.Nodes {
+			parts = append(parts, node.ID, node.Op)
+		}
+		for _, edge := range rec.Edges {
+			parts = append(parts, edge.From, edge.To)
+		}
+		return joinEmbeddingParts(parts...)
+	default:
+		return strings.TrimSpace(rec.Key)
+	}
+}
+
+func entityEmbeddingName(rec recordEntry) string {
+	if name := strings.TrimSpace(rec.CanonicalName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(rec.Subject)
+}
+
+func joinEmbeddingParts(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if text := strings.TrimSpace(part); text != "" {
+			out = append(out, text)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 func allMemoryTypes() []schema.MemoryType {
 	return []schema.MemoryType{
-		schema.MemoryTypeEpisodic,
 		schema.MemoryTypeWorking,
+		schema.MemoryTypeEntity,
 		schema.MemoryTypeSemantic,
 		schema.MemoryTypeCompetence,
 		schema.MemoryTypePlanGraph,
+		schema.MemoryTypeEpisodic,
 	}
 }
 
@@ -663,7 +897,11 @@ func retrieveRootRecords(ctx context.Context, m evalMembrane, req *retrieval.Ret
 			records = append(records, node.Record)
 		}
 	}
-	return &retrieval.RetrieveResponse{Records: records, Selection: graphResp.Selection}, nil
+	return &retrieval.RetrieveResponse{
+		Records:     records,
+		Selection:   graphResp.Selection,
+		Diagnostics: append([]retrieval.RetrievalDiagnostic(nil), graphResp.Diagnostics...),
+	}, nil
 }
 
 func computeMetrics(got, expected []string, k int) (recall, precision, mrr, ndcg float64) {

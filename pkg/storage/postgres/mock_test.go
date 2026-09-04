@@ -256,9 +256,9 @@ func TestEnsureEmbeddingMetadataRejectsMismatch(t *testing.T) {
 	}
 }
 
-func TestEnsureEmbeddingMetadataRejectsModelMismatch(t *testing.T) {
+func TestEnsureEmbeddingMetadataAllowsModelRotation(t *testing.T) {
 	ctx := context.Background()
-	store, mock := newMockStore(t, EmbeddingConfig{Dimensions: 3, Model: "expected-model"})
+	store, mock := newMockStore(t, EmbeddingConfig{Dimensions: 3, Model: "new-model"})
 
 	mock.ExpectQuery(`SELECT value FROM embedding_metadata WHERE key = \$1`).
 		WithArgs("dimensions").
@@ -266,9 +266,12 @@ func TestEnsureEmbeddingMetadataRejectsModelMismatch(t *testing.T) {
 	mock.ExpectQuery(`SELECT value FROM embedding_metadata WHERE key = \$1`).
 		WithArgs("model").
 		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("other-model"))
+	mock.ExpectExec(`UPDATE embedding_metadata SET value = \$2 WHERE key = \$1`).
+		WithArgs("model", "new-model").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	if err := store.ensureEmbeddingMetadata(ctx); err == nil || !strings.Contains(err.Error(), "embedding metadata mismatch for model") {
-		t.Fatalf("ensureEmbeddingMetadata model mismatch error = %v, want mismatch error", err)
+	if err := store.ensureEmbeddingMetadata(ctx); err != nil {
+		t.Fatalf("ensureEmbeddingMetadata model rotation: %v", err)
 	}
 }
 
@@ -299,17 +302,43 @@ func TestEnsureEmbeddingMetadataPropagatesReadAndInsertErrors(t *testing.T) {
 			t.Fatalf("ensureEmbeddingMetadata insert error = %v, want wrapped insert error", err)
 		}
 	})
+
+	t.Run("model update error", func(t *testing.T) {
+		store, mock := newMockStore(t, EmbeddingConfig{Dimensions: 3, Model: "new-model"})
+		mock.ExpectQuery(`SELECT value FROM embedding_metadata WHERE key = \$1`).
+			WithArgs("dimensions").
+			WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("3"))
+		mock.ExpectQuery(`SELECT value FROM embedding_metadata WHERE key = \$1`).
+			WithArgs("model").
+			WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("old-model"))
+		mock.ExpectExec(`UPDATE embedding_metadata SET value = \$2 WHERE key = \$1`).
+			WithArgs("model", "new-model").
+			WillReturnError(errors.New("update failed"))
+
+		if err := store.ensureEmbeddingMetadata(ctx); err == nil || !strings.Contains(err.Error(), "update embedding metadata model") {
+			t.Fatalf("ensureEmbeddingMetadata model update error = %v, want wrapped update error", err)
+		}
+	})
 }
 
 func TestStoreTriggerEmbeddingValidationAndUpsert(t *testing.T) {
 	ctx := context.Background()
 	store, mock := newMockStore(t, EmbeddingConfig{Dimensions: 3, Model: "fallback-model"})
 
+	if err := store.StoreTriggerEmbedding(ctx, "", []float32{1, 2, 3}, ""); err == nil || !strings.Contains(err.Error(), "record id is required") {
+		t.Fatalf("StoreTriggerEmbedding empty record id error = %v, want required record id", err)
+	}
 	if err := store.StoreTriggerEmbedding(ctx, "rec-1", nil, ""); err == nil {
 		t.Fatalf("StoreTriggerEmbedding empty vector error = nil, want error")
 	}
 	if err := store.StoreTriggerEmbedding(ctx, "rec-1", []float32{1, 2}, ""); err == nil {
 		t.Fatalf("StoreTriggerEmbedding dimension mismatch error = nil, want error")
+	}
+	if err := store.StoreTriggerEmbedding(ctx, "rec-1", []float32{0, 0, 0}, ""); err == nil || !strings.Contains(err.Error(), "all zeros") {
+		t.Fatalf("StoreTriggerEmbedding zero vector error = %v, want all zeros error", err)
+	}
+	if err := store.StoreTriggerEmbedding(ctx, "rec-1", []float32{1, float32(math.Inf(1)), 3}, ""); err == nil || !strings.Contains(err.Error(), "non-finite") {
+		t.Fatalf("StoreTriggerEmbedding non-finite error = %v, want non-finite error", err)
 	}
 
 	mock.ExpectExec(`INSERT INTO trigger_embeddings`).
@@ -354,6 +383,28 @@ func TestGetTriggerEmbedding(t *testing.T) {
 		t.Fatalf("GetTriggerEmbedding = %#v, want [0.25 1.5]", got)
 	}
 
+	modelStore, modelMock := newMockStore(t, EmbeddingConfig{Model: "current-model"})
+	modelMock.ExpectQuery(`SELECT embedding::text FROM trigger_embeddings WHERE record_id = \$1 AND model = \$2`).
+		WithArgs("rec-current", "current-model").
+		WillReturnRows(sqlmock.NewRows([]string{"embedding"}).AddRow("[0.5,0.75]"))
+	got, err = modelStore.GetTriggerEmbedding(ctx, "rec-current")
+	if err != nil {
+		t.Fatalf("GetTriggerEmbedding model-filtered: %v", err)
+	}
+	if len(got) != 2 || got[0] != 0.5 || got[1] != 0.75 {
+		t.Fatalf("GetTriggerEmbedding model-filtered = %#v, want [0.5 0.75]", got)
+	}
+	modelMock.ExpectQuery(`SELECT embedding::text FROM trigger_embeddings WHERE record_id = \$1 AND model = \$2`).
+		WithArgs("rec-old", "current-model").
+		WillReturnError(sql.ErrNoRows)
+	got, err = modelStore.GetTriggerEmbedding(ctx, "rec-old")
+	if err != nil {
+		t.Fatalf("GetTriggerEmbedding stale model: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("GetTriggerEmbedding stale model = %#v, want nil", got)
+	}
+
 	mock.ExpectQuery(`SELECT embedding::text FROM trigger_embeddings WHERE record_id = \$1`).
 		WithArgs("query-error").
 		WillReturnError(errors.New("query failed"))
@@ -371,7 +422,7 @@ func TestGetTriggerEmbedding(t *testing.T) {
 
 func TestSearchByEmbedding(t *testing.T) {
 	ctx := context.Background()
-	store, mock := newMockStore(t, EmbeddingConfig{})
+	store, mock := newMockStore(t, EmbeddingConfig{Dimensions: 3})
 
 	ids, err := store.SearchByEmbedding(ctx, nil, 5)
 	if err != nil {
@@ -380,12 +431,21 @@ func TestSearchByEmbedding(t *testing.T) {
 	if ids != nil {
 		t.Fatalf("SearchByEmbedding empty = %#v, want nil", ids)
 	}
+	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0}, 5); err == nil || !strings.Contains(err.Error(), "embedding dimension 2 does not match configured dimension 3") {
+		t.Fatalf("SearchByEmbedding dimension error = %v, want dimension mismatch", err)
+	}
+	if _, err := store.SearchByEmbedding(ctx, []float32{0, 0, 0}, 5); err == nil || !strings.Contains(err.Error(), "all zeros") {
+		t.Fatalf("SearchByEmbedding zero vector error = %v, want all zeros error", err)
+	}
+	if _, err := store.SearchByEmbedding(ctx, []float32{1, float32(math.NaN()), 0}, 5); err == nil || !strings.Contains(err.Error(), "non-finite") {
+		t.Fatalf("SearchByEmbedding non-finite error = %v, want non-finite error", err)
+	}
 
-	mock.ExpectQuery(`SELECT record_id FROM trigger_embeddings`).
-		WithArgs("[1,0]", 10).
+	mock.ExpectQuery(`SELECT record_id FROM trigger_embeddings\s+WHERE embedding IS NOT NULL\s+ORDER BY embedding <=> \$1::vector, record_id`).
+		WithArgs("[1,0,0]", 10).
 		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("rec-1").AddRow("rec-2"))
 
-	ids, err = store.SearchByEmbedding(ctx, []float32{1, 0}, 0)
+	ids, err = store.SearchByEmbedding(ctx, []float32{1, 0, 0}, 0)
 	if err != nil {
 		t.Fatalf("SearchByEmbedding: %v", err)
 	}
@@ -393,27 +453,111 @@ func TestSearchByEmbedding(t *testing.T) {
 		t.Fatalf("SearchByEmbedding = %#v, want [rec-1 rec-2]", ids)
 	}
 
+	modelStore, modelMock := newMockStore(t, EmbeddingConfig{Dimensions: 3, Model: "text-embedding-current"})
+	modelMock.ExpectQuery(`SELECT record_id FROM trigger_embeddings\s+WHERE embedding IS NOT NULL AND model = \$2\s+ORDER BY embedding <=> \$1::vector, record_id`).
+		WithArgs("[1,0,0]", "text-embedding-current", 4).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("current-model-rec"))
+	ids, err = modelStore.SearchByEmbedding(ctx, []float32{1, 0, 0}, 4)
+	if err != nil {
+		t.Fatalf("SearchByEmbedding model-filtered: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "current-model-rec" {
+		t.Fatalf("SearchByEmbedding model-filtered = %#v, want [current-model-rec]", ids)
+	}
+
+	candidateIDs, err := store.SearchByEmbeddingCandidates(ctx, nil, []string{"rec-1"}, 5)
+	if err != nil {
+		t.Fatalf("SearchByEmbeddingCandidates empty query: %v", err)
+	}
+	if candidateIDs != nil {
+		t.Fatalf("SearchByEmbeddingCandidates empty query = %#v, want nil", candidateIDs)
+	}
+	candidateIDs, err = store.SearchByEmbeddingCandidates(ctx, []float32{1, 0, 0}, nil, 5)
+	if err != nil {
+		t.Fatalf("SearchByEmbeddingCandidates empty candidates: %v", err)
+	}
+	if candidateIDs != nil {
+		t.Fatalf("SearchByEmbeddingCandidates empty candidates = %#v, want nil", candidateIDs)
+	}
+	if _, err := store.SearchByEmbeddingCandidates(ctx, []float32{1, 0}, []string{"rec-1"}, 5); err == nil || !strings.Contains(err.Error(), "embedding dimension 2 does not match configured dimension 3") {
+		t.Fatalf("SearchByEmbeddingCandidates dimension error = %v, want dimension mismatch", err)
+	}
+	mock.ExpectQuery(`(?s)WITH candidates\(record_id\) AS \(VALUES \(\$2\), \(\$3\)\).*JOIN candidates c ON c\.record_id = e\.record_id\s+WHERE e\.embedding IS NOT NULL.*ORDER BY e\.embedding <=> \$1::vector, e\.record_id`).
+		WithArgs("[1,0,0]", "rec-2", "rec-1", 2).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("rec-1").AddRow("rec-2"))
+	candidateIDs, err = store.SearchByEmbeddingCandidates(ctx, []float32{1, 0, 0}, []string{"rec-2", "", "rec-1", "rec-2"}, 0)
+	if err != nil {
+		t.Fatalf("SearchByEmbeddingCandidates: %v", err)
+	}
+	if len(candidateIDs) != 2 || candidateIDs[0] != "rec-1" || candidateIDs[1] != "rec-2" {
+		t.Fatalf("SearchByEmbeddingCandidates = %#v, want [rec-1 rec-2]", candidateIDs)
+	}
+
+	modelMock.ExpectQuery(`(?s)WITH candidates\(record_id\) AS \(VALUES \(\$2\), \(\$3\)\).*JOIN candidates c ON c\.record_id = e\.record_id\s+WHERE e\.embedding IS NOT NULL AND e\.model = \$4.*ORDER BY e\.embedding <=> \$1::vector, e\.record_id`).
+		WithArgs("[1,0,0]", "rec-old-model", "rec-current-model", "text-embedding-current", 2).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("rec-current-model"))
+	candidateIDs, err = modelStore.SearchByEmbeddingCandidates(ctx, []float32{1, 0, 0}, []string{"rec-old-model", "rec-current-model"}, 5)
+	if err != nil {
+		t.Fatalf("SearchByEmbeddingCandidates model-filtered: %v", err)
+	}
+	if len(candidateIDs) != 1 || candidateIDs[0] != "rec-current-model" {
+		t.Fatalf("SearchByEmbeddingCandidates model-filtered = %#v, want [rec-current-model]", candidateIDs)
+	}
+
 	mock.ExpectQuery(`SELECT record_id FROM trigger_embeddings`).
-		WithArgs("[1,0]", 2).
+		WithArgs("[1,0,0]", 2).
 		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).
 			AddRow("rec-1").
 			RowError(0, errors.New("embedding rows failed")))
-	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0}, 2); err == nil || !strings.Contains(err.Error(), "iterate trigger embedding results") {
+	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0, 0}, 2); err == nil || !strings.Contains(err.Error(), "iterate trigger embedding results") {
 		t.Fatalf("SearchByEmbedding rows error = %v, want iterate error", err)
 	}
 
 	mock.ExpectQuery(`SELECT record_id FROM trigger_embeddings`).
-		WithArgs("[1,0]", 2).
+		WithArgs("[1,0,0]", 2).
 		WillReturnError(errors.New("search failed"))
-	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0}, 2); err == nil || !strings.Contains(err.Error(), "search trigger embeddings") {
+	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0, 0}, 2); err == nil || !strings.Contains(err.Error(), "search trigger embeddings") {
 		t.Fatalf("SearchByEmbedding query error = %v, want wrapped search error", err)
 	}
 
 	mock.ExpectQuery(`SELECT record_id FROM trigger_embeddings`).
-		WithArgs("[1,0]", 2).
+		WithArgs("[1,0,0]", 2).
 		WillReturnRows(sqlmock.NewRows([]string{"record_id", "extra"}).AddRow("rec-1", "extra"))
-	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0}, 2); err == nil || !strings.Contains(err.Error(), "scan trigger embedding result") {
+	if _, err := store.SearchByEmbedding(ctx, []float32{1, 0, 0}, 2); err == nil || !strings.Contains(err.Error(), "scan trigger embedding result") {
 		t.Fatalf("SearchByEmbedding scan error = %v, want scan error", err)
+	}
+}
+
+func TestEmbeddingStats(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT COUNT\(mr\.id\), COUNT\(te\.record_id\)\s+FROM memory_records mr\s+LEFT JOIN trigger_embeddings te\s+ON te\.record_id = mr\.id\s+AND te\.embedding IS NOT NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"total", "embedded"}).AddRow(5, 3))
+	stats, err := store.EmbeddingStats(ctx)
+	if err != nil {
+		t.Fatalf("EmbeddingStats: %v", err)
+	}
+	if stats.Model != "" || stats.TotalRecords != 5 || stats.EmbeddedRecords != 3 {
+		t.Fatalf("EmbeddingStats = %+v, want model blank total 5 embedded 3", stats)
+	}
+
+	modelStore, modelMock := newMockStore(t, EmbeddingConfig{Model: "text-embedding-current"})
+	modelMock.ExpectQuery(`SELECT COUNT\(mr\.id\), COUNT\(te\.record_id\)\s+FROM memory_records mr\s+LEFT JOIN trigger_embeddings te\s+ON te\.record_id = mr\.id\s+AND te\.embedding IS NOT NULL\s+AND te\.model = \$1`).
+		WithArgs("text-embedding-current").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "embedded"}).AddRow(7, 4))
+	stats, err = modelStore.EmbeddingStats(ctx)
+	if err != nil {
+		t.Fatalf("EmbeddingStats model-filtered: %v", err)
+	}
+	if stats.Model != "text-embedding-current" || stats.TotalRecords != 7 || stats.EmbeddedRecords != 4 {
+		t.Fatalf("EmbeddingStats model-filtered = %+v, want model current total 7 embedded 4", stats)
+	}
+
+	mock.ExpectQuery(`SELECT COUNT\(mr\.id\), COUNT\(te\.record_id\)`).
+		WillReturnError(errors.New("stats failed"))
+	if _, err := store.EmbeddingStats(ctx); err == nil || !strings.Contains(err.Error(), "embedding stats") {
+		t.Fatalf("EmbeddingStats error = %v, want wrapped stats error", err)
 	}
 }
 
@@ -430,8 +574,8 @@ func TestEntityLookupValidationAndNoMatches(t *testing.T) {
 	}
 
 	mock.ExpectQuery(`SELECT record_id`).
-		WithArgs("orchid", "project", 10).
-		WillReturnRows(sqlmock.NewRows([]string{"record_id"}))
+		WithArgs("project", "orchid", 100).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}))
 	records, err = store.FindEntitiesByTerm(ctx, "Orchid", "project", 0)
 	if err != nil {
 		t.Fatalf("FindEntitiesByTerm no matches: %v", err)
@@ -440,12 +584,39 @@ func TestEntityLookupValidationAndNoMatches(t *testing.T) {
 		t.Fatalf("FindEntitiesByTerm no matches = %#v, want empty", records)
 	}
 
+	records, err = store.FindEntitiesByTermAllScopes(ctx, "   ", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTermAllScopes empty: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("FindEntitiesByTermAllScopes empty = %#v, want empty", records)
+	}
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("orchid", 100).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}))
+	records, err = store.FindEntitiesByTermAllScopes(ctx, "Orchid", 0)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTermAllScopes no matches: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("FindEntitiesByTermAllScopes no matches = %#v, want empty", records)
+	}
+
 	record, err := store.FindEntityByIdentifier(ctx, "", "orchid", "project")
 	if !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("FindEntityByIdentifier empty namespace: err = %v, want ErrNotFound", err)
 	}
 	if record != nil {
 		t.Fatalf("FindEntityByIdentifier empty namespace = %#v, want nil", record)
+	}
+
+	record, err = store.FindEntityByIdentifierAllScopes(ctx, "", "orchid")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("FindEntityByIdentifierAllScopes empty namespace: err = %v, want ErrNotFound", err)
+	}
+	if record != nil {
+		t.Fatalf("FindEntityByIdentifierAllScopes empty namespace = %#v, want nil", record)
 	}
 
 	mock.ExpectQuery(`SELECT record_id FROM entity_identifiers`).
@@ -457,6 +628,17 @@ func TestEntityLookupValidationAndNoMatches(t *testing.T) {
 	}
 	if record != nil {
 		t.Fatalf("FindEntityByIdentifier no matches = %#v, want nil", record)
+	}
+
+	mock.ExpectQuery(`SELECT record_id FROM entity_identifiers`).
+		WithArgs("github", "BennettSchwartz/orchid", "project").
+		WillReturnRows(sqlmock.NewRows([]string{"record_id"}))
+	record, err = store.FindEntityByIdentifier(ctx, " GitHub ", " BennettSchwartz/orchid ", "project")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("FindEntityByIdentifier normalized namespace: err = %v, want ErrNotFound", err)
+	}
+	if record != nil {
+		t.Fatalf("FindEntityByIdentifier normalized namespace = %#v, want nil", record)
 	}
 
 	mock.ExpectQuery(`SELECT record_id FROM entity_identifiers`).
@@ -496,6 +678,18 @@ func TestEntityLookupValidationAndNoMatches(t *testing.T) {
 	if record.ID != "entity-1" {
 		t.Fatalf("FindEntityByIdentifier ID = %q, want entity-1", record.ID)
 	}
+
+	mock.ExpectQuery(`SELECT record_id FROM entity_identifiers`).
+		WithArgs("slug", "lotus").
+		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("entity-2"))
+	expectGetSemanticRecord(mock, "entity-2", now)
+	record, err = store.FindEntityByIdentifierAllScopes(ctx, " slug ", " lotus ")
+	if err != nil {
+		t.Fatalf("FindEntityByIdentifierAllScopes success: %v", err)
+	}
+	if record.ID != "entity-2" {
+		t.Fatalf("FindEntityByIdentifierAllScopes ID = %q, want entity-2", record.ID)
+	}
 }
 
 func TestEntityLookupQueryAndRowErrors(t *testing.T) {
@@ -503,7 +697,7 @@ func TestEntityLookupQueryAndRowErrors(t *testing.T) {
 	store, mock := newMockStore(t, EmbeddingConfig{})
 
 	mock.ExpectQuery(`SELECT record_id`).
-		WithArgs("orchid", "project", 10).
+		WithArgs("project", "orchid", 100).
 		WillReturnError(errors.New("term query failed"))
 	if records, err := store.FindEntitiesByTerm(ctx, "Orchid", "project", 0); err == nil || !strings.Contains(err.Error(), "query entity terms") {
 		t.Fatalf("FindEntitiesByTerm query error = %v, records = %#v; want query entity terms error", err, records)
@@ -534,13 +728,211 @@ func TestEntityLookupQueryAndRowErrors(t *testing.T) {
 	_ = iterRows.Close()
 
 	mock.ExpectQuery(`SELECT record_id`).
-		WithArgs("orchid", "project", 1).
-		WillReturnRows(sqlmock.NewRows([]string{"record_id"}).AddRow("missing-entity"))
+		WithArgs("project", "orchid", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).AddRow("missing-entity", "orchid"))
 	mock.ExpectQuery(`SELECT id, type, sensitivity, confidence, salience, scope, created_at, updated_at FROM memory_records WHERE id = \$1`).
 		WithArgs("missing-entity").
 		WillReturnError(sql.ErrNoRows)
 	if records, err := store.FindEntitiesByTerm(ctx, "orchid", "project", 1); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("FindEntitiesByTerm missing record error = %v, records = %#v; want ErrNotFound", err, records)
+	}
+}
+
+func TestFindEntitiesByTermPrefersExactMatchesBeforeDescriptorContainment(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 6, 19, 30, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project", "project orchid", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow("entity-broad", "project orchid rollout").
+			AddRow("entity-exact", "project orchid"))
+	expectGetSemanticRecord(mock, "entity-broad", now)
+	expectGetSemanticRecord(mock, "entity-exact", now)
+
+	records, err := store.FindEntitiesByTerm(ctx, "project orchid", "project", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("FindEntitiesByTerm len = %d, want 2", len(records))
+	}
+	if records[0].ID != "entity-exact" {
+		t.Fatalf("FindEntitiesByTerm order = [%s, %s], want exact match first", records[0].ID, records[1].ID)
+	}
+}
+
+func TestFindEntitiesByTermPrefersScopedMatchBeforeGlobalFallback(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 6, 19, 32, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project:alpha", "orchid", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow("entity-global-orchid", "orchid").
+			AddRow("entity-scoped-orchid", "orchid"))
+	expectGetSemanticRecordInScope(mock, "entity-global-orchid", "", now)
+	expectGetSemanticRecordInScope(mock, "entity-scoped-orchid", "project:alpha", now)
+
+	records, err := store.FindEntitiesByTerm(ctx, "Orchid", "project:alpha", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("FindEntitiesByTerm len = %d, want 2", len(records))
+	}
+	if records[0].ID != "entity-scoped-orchid" || records[1].ID != "entity-global-orchid" {
+		t.Fatalf("FindEntitiesByTerm order = [%s, %s], want scoped before global", records[0].ID, records[1].ID)
+	}
+}
+
+func TestFindEntitiesByTermAllScopesIncludesScopedRows(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 6, 19, 35, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project orchid", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow("entity-scoped", "project orchid").
+			AddRow("entity-global", "project orchid"))
+	expectGetSemanticRecord(mock, "entity-scoped", now)
+	expectGetSemanticRecord(mock, "entity-global", now)
+
+	records, err := store.FindEntitiesByTermAllScopes(ctx, "project orchid", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTermAllScopes: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("FindEntitiesByTermAllScopes len = %d, want 2", len(records))
+	}
+	if records[0].ID != "entity-global" || records[1].ID != "entity-scoped" {
+		t.Fatalf("FindEntitiesByTermAllScopes order = [%s, %s], want deterministic record ID order", records[0].ID, records[1].ID)
+	}
+}
+
+func TestFindEntitiesByTermPrefersSpecificDescriptorPhrase(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 6, 19, 45, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project", "debug project orchid rollout failure", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow("entity-project", "project").
+			AddRow("entity-project-orchid", "project orchid"))
+	expectGetSemanticRecord(mock, "entity-project", now)
+	expectGetSemanticRecord(mock, "entity-project-orchid", now)
+
+	records, err := store.FindEntitiesByTerm(ctx, "debug project orchid rollout failure", "project", 2)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("FindEntitiesByTerm len = %d, want 2", len(records))
+	}
+	if records[0].ID != "entity-project-orchid" {
+		t.Fatalf("FindEntitiesByTerm first = %s, want more specific descriptor match", records[0].ID)
+	}
+}
+
+func TestFindEntitiesByTermCollapsesWhitespace(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 6, 19, 50, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project", "debug project orchid rollout", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow("entity-spaced", "project orchid"))
+	expectGetSemanticRecord(mock, "entity-spaced", now)
+
+	records, err := store.FindEntitiesByTerm(ctx, "debug  project\torchid\nrollout", "project", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm: %v", err)
+	}
+	if len(records) != 1 || records[0].ID != "entity-spaced" {
+		t.Fatalf("FindEntitiesByTerm = %+v, want whitespace-normalized match", records)
+	}
+}
+
+func TestFindEntitiesByTermHydratesLargeMatchSetInBatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	ids := []string{"batch-1", "batch-2", "batch-3", "batch-4"}
+
+	mock.ExpectQuery(`SELECT record_id`).
+		WithArgs("project", "project orchid", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).
+			AddRow(ids[0], "project orchid").
+			AddRow(ids[1], "project orchid").
+			AddRow(ids[2], "project orchid").
+			AddRow(ids[3], "project orchid"))
+	expectPostgresBatchBaseRows(mock, now)
+	expectPostgresBatchEmptyDecayRows(mock)
+	expectPostgresBatchEmptyPayloadRows(mock)
+	expectPostgresBatchEmptyInterpretationRows(mock)
+	expectPostgresBatchEmptyTagRows(mock)
+	expectPostgresBatchEmptyProvenanceRows(mock)
+	expectPostgresBatchEmptyRelationRows(mock)
+	mock.ExpectQuery(`SELECT record_id, action, actor, timestamp, rationale FROM audit_log WHERE record_id IN`).
+		WithArgs("batch-1", "batch-2", "batch-3", "batch-4").
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "action", "actor", "timestamp", "rationale"}))
+
+	records, err := store.FindEntitiesByTerm(ctx, "project orchid", "project", 4)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm: %v", err)
+	}
+	if len(records) != len(ids) {
+		t.Fatalf("FindEntitiesByTerm len = %d, want %d", len(records), len(ids))
+	}
+	for i, id := range ids {
+		if records[i].ID != id {
+			t.Fatalf("records[%d].ID = %q, want %q", i, records[i].ID, id)
+		}
+	}
+}
+
+func TestFindEntitiesByTermUsesLiteralSubstringMatching(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`POSITION\(normalized_term IN \$2\) > 0`).
+		WithArgs("project", "%", 100).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}))
+
+	records, err := store.FindEntitiesByTerm(ctx, "%", "project", 10)
+	if err != nil {
+		t.Fatalf("FindEntitiesByTerm wildcard descriptor: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("FindEntitiesByTerm wildcard descriptor = %+v, want no matches", records)
+	}
+}
+
+func TestEntityCandidateLimitKeepsLookupBounded(t *testing.T) {
+	tests := []struct {
+		limit int
+		want  int
+	}{
+		{limit: 0, want: 100},
+		{limit: 1, want: 50},
+		{limit: 5, want: 50},
+		{limit: 6, want: 60},
+		{limit: 1001, want: 10_000},
+	}
+	for _, tt := range tests {
+		if got := entityCandidateLimit(tt.limit); got != tt.want {
+			t.Fatalf("entityCandidateLimit(%d) = %d, want %d", tt.limit, got, tt.want)
+		}
 	}
 }
 
@@ -621,6 +1013,126 @@ func TestListEmptyResults(t *testing.T) {
 	}
 }
 
+func TestListPushesTrustAndCandidateBoundsIntoSQL(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT id FROM memory_records WHERE 1=1 AND type IN \(\$1, \$2\) AND \(scope IS NULL OR scope = '' OR scope IN \(\$3\)\) AND sensitivity IN \(\$4, \$5\) AND salience >= \$6 ORDER BY salience DESC, created_at DESC, id LIMIT \$7`).
+		WithArgs(
+			string(schema.MemoryTypeWorking),
+			string(schema.MemoryTypeSemantic),
+			"project:alpha",
+			string(schema.SensitivityPublic),
+			string(schema.SensitivityLow),
+			0.25,
+			100,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	records, err := store.List(ctx, storage.ListOptions{
+		Types:           []schema.MemoryType{schema.MemoryTypeWorking, schema.MemoryTypeSemantic},
+		Scopes:          []string{"project:alpha"},
+		IncludeUnscoped: true,
+		MaxSensitivity:  schema.SensitivityLow,
+		MinSalience:     0.25,
+		Limit:           100,
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("List = %#v, want empty", records)
+	}
+}
+
+func TestListBlankOnlyScopeIncludesOnlyUnscopedRecords(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT id FROM memory_records WHERE 1=1 AND \(scope IS NULL OR scope = ''\) ORDER BY salience DESC, created_at DESC, id`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	records, err := store.List(ctx, storage.ListOptions{
+		Scopes:          []string{""},
+		IncludeUnscoped: true,
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("List = %#v, want empty", records)
+	}
+}
+
+func TestMetricsFilterBlankOnlyScopeIncludesOnlyUnscopedRecords(t *testing.T) {
+	where, args := metricsFilterClause(storage.MetricsFilter{
+		Scopes:          []string{""},
+		IncludeUnscoped: true,
+	}, "mr", 1)
+	if where != "(mr.scope IS NULL OR mr.scope = '')" {
+		t.Fatalf("where = %q, want unscoped-only predicate", where)
+	}
+	if len(args) != 0 {
+		t.Fatalf("args = %#v, want none", args)
+	}
+}
+
+func TestAggregateMetricsUsesPolicyFilteredFixedSizeQueries(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{Model: "current-model"})
+	mock.ExpectQuery(`SELECT[\s\S]+COUNT\(te\.record_id\)[\s\S]+FROM memory_records mr[\s\S]+WHERE \(mr\.scope IS NULL OR mr\.scope = '' OR mr\.scope IN \(\$1\)\)[\s\S]+mr\.sensitivity IN \(\$2, \$3\)`).
+		WithArgs("project:alpha", string(schema.SensitivityPublic), string(schema.SensitivityLow), "current-model").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total_records", "avg_salience", "avg_confidence", "active_records", "pinned_records", "recent_records",
+			"bucket_0", "bucket_1", "bucket_2", "bucket_3", "bucket_4", "embedded_records",
+		}).AddRow(4, 0.6, 0.7, 3, 1, 2, 1, 0, 1, 1, 1, 3))
+	mock.ExpectQuery(`SELECT mr\.type, COUNT\(\*\)[\s\S]+FROM memory_records mr[\s\S]+GROUP BY mr\.type`).
+		WithArgs("project:alpha", string(schema.SensitivityPublic), string(schema.SensitivityLow)).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "count"}).
+			AddRow(string(schema.MemoryTypeSemantic), 3).
+			AddRow(string(schema.MemoryTypeCompetence), 1))
+	mock.ExpectQuery(`SELECT COUNT\(\*\)[\s\S]+FROM audit_log a[\s\S]+JOIN memory_records mr`).
+		WithArgs("project:alpha", string(schema.SensitivityPublic), string(schema.SensitivityLow)).
+		WillReturnRows(sqlmock.NewRows([]string{"total", "reinforce", "revision"}).AddRow(8, 2, 3))
+	mock.ExpectQuery(`SELECT[\s\S]+payload_json[\s\S]+FROM memory_records mr[\s\S]+JOIN payloads p`).
+		WithArgs("project:alpha", string(schema.SensitivityPublic), string(schema.SensitivityLow)).
+		WillReturnRows(sqlmock.NewRows([]string{"competence_success", "plan_reuse"}).AddRow(0.75, 5.0))
+
+	aggregate, err := store.AggregateMetrics(ctx, storage.MetricsFilter{
+		MaxSensitivity:  schema.SensitivityLow,
+		Scopes:          []string{"project:alpha"},
+		IncludeUnscoped: true,
+	})
+	if err != nil {
+		t.Fatalf("AggregateMetrics: %v", err)
+	}
+	if aggregate.TotalRecords != 4 || aggregate.RecordsByType[string(schema.MemoryTypeSemantic)] != 3 {
+		t.Fatalf("record aggregate = %+v", aggregate)
+	}
+	if aggregate.TotalAuditEntries != 8 || aggregate.RetrievalUsefulness != 0.25 || aggregate.RevisionRate != 0.375 {
+		t.Fatalf("audit aggregate = %+v", aggregate)
+	}
+	if aggregate.EmbeddedRecords != 3 || aggregate.EmbeddingModel != "current-model" || aggregate.CompetenceSuccessRate != 0.75 || aggregate.PlanReuseFrequency != 5 {
+		t.Fatalf("specialized aggregate = %+v", aggregate)
+	}
+}
+
+func TestListOrdersEqualSalienceAndTimestampByID(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT id FROM memory_records WHERE 1=1 ORDER BY salience DESC, created_at DESC, id`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	records, err := store.List(ctx, storage.ListOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("List = %#v, want empty", records)
+	}
+}
+
 func TestMutatingHelpers(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -664,6 +1176,10 @@ func TestMutatingHelpers(t *testing.T) {
 		if err := store.UpdateSalience(ctx, "missing", 0.5); !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("UpdateSalience missing: err = %v, want ErrNotFound", err)
 		}
+
+		if err := store.UpdateSalience(ctx, "rec-1", math.NaN()); err == nil || !strings.Contains(err.Error(), "salience") {
+			t.Fatalf("UpdateSalience invalid salience error = %v, want salience validation", err)
+		}
 	})
 
 	t.Run("audit", func(t *testing.T) {
@@ -697,6 +1213,9 @@ func TestMutatingHelpers(t *testing.T) {
 		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
 			WithArgs("src").
 			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("target").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
 		mock.ExpectExec(`INSERT INTO relations`).
 			WithArgs("src", "related_to", "target", 1.0, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(1, 1))
@@ -705,10 +1224,49 @@ func TestMutatingHelpers(t *testing.T) {
 		}
 
 		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("src").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("target").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+		mock.ExpectExec(`INSERT INTO relations`).
+			WithArgs("src", schema.GraphPredicateDependsOn, "target", 1.0, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		if err := store.AddRelation(ctx, "src", schema.Relation{Predicate: "Depends-On", TargetID: "target"}); err != nil {
+			t.Fatalf("AddRelation normalized: %v", err)
+		}
+
+		if err := store.AddRelation(ctx, "", schema.Relation{Predicate: "related_to", TargetID: "target"}); err == nil {
+			t.Fatalf("AddRelation empty source error = nil, want validation error")
+		} else if verr, ok := err.(*schema.ValidationError); !ok || verr.Field != "source_id" {
+			t.Fatalf("AddRelation empty source error = %T/%v, want source_id ValidationError", err, err)
+		}
+		if err := store.AddRelation(ctx, "src", schema.Relation{Predicate: " ", TargetID: "target"}); err == nil {
+			t.Fatalf("AddRelation empty predicate error = nil, want validation error")
+		} else if verr, ok := err.(*schema.ValidationError); !ok || verr.Field != "relation.predicate" {
+			t.Fatalf("AddRelation empty predicate error = %T/%v, want relation.predicate ValidationError", err, err)
+		}
+		if err := store.AddRelation(ctx, "src", schema.Relation{Predicate: "related_to", TargetID: "target", Weight: math.NaN()}); err == nil {
+			t.Fatalf("AddRelation invalid weight error = nil, want validation error")
+		} else if verr, ok := err.(*schema.ValidationError); !ok || verr.Field != "relation.weight" {
+			t.Fatalf("AddRelation invalid weight error = %T/%v, want relation.weight ValidationError", err, err)
+		}
+
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
 			WithArgs("missing").
 			WillReturnError(sql.ErrNoRows)
 		if err := store.AddRelation(ctx, "missing", schema.Relation{Predicate: "related_to", TargetID: "target"}); !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("AddRelation missing: err = %v, want ErrNotFound", err)
+		}
+
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("src").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("target-missing").
+			WillReturnError(sql.ErrNoRows)
+		if err := store.AddRelation(ctx, "src", schema.Relation{Predicate: "related_to", TargetID: "target-missing"}); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("AddRelation missing target: err = %v, want ErrNotFound", err)
 		}
 	})
 }
@@ -772,6 +1330,9 @@ func TestMutationHelperErrorBranches(t *testing.T) {
 		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
 			WithArgs("src").
 			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs(rel.TargetID).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
 		mock.ExpectExec(`INSERT INTO relations`).
 			WithArgs("src", rel.Predicate, rel.TargetID, rel.Weight, rel.CreatedAt.UTC()).
 			WillReturnError(errors.New("relation insert failed"))
@@ -795,8 +1356,7 @@ func TestCreateEntityRecordWritesIndexes(t *testing.T) {
 			{Value: "Project Orchid", Kind: "display"},
 		},
 		Identifiers: []schema.EntityIdentifier{
-			{Namespace: "slug", Value: "orchid"},
-			{Namespace: " ", Value: "ignored"},
+			{Namespace: "Slug", Value: "orchid"},
 		},
 	})
 	rec.Scope = "project"
@@ -812,7 +1372,7 @@ func TestCreateEntityRecordWritesIndexes(t *testing.T) {
 		CreatedBy: "tester",
 		Timestamp: now,
 	}}
-	rec.Relations = []schema.Relation{{Predicate: "related_to", TargetID: "entity-2"}}
+	rec.Relations = []schema.Relation{{Predicate: "Depends-On", TargetID: "entity-2"}}
 	rec.AuditLog = []schema.AuditEntry{{Action: schema.AuditActionCreate, Actor: "tester", Timestamp: now, Rationale: "entity create"}}
 
 	mock.ExpectBegin()
@@ -835,7 +1395,7 @@ func TestCreateEntityRecordWritesIndexes(t *testing.T) {
 		WithArgs(rec.ID, string(schema.ProvenanceKindObservation), "obs-1", "hash", "tester", now.UTC()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO relations`).
-		WithArgs(rec.ID, "related_to", "entity-2", 1.0, sqlmock.AnyArg()).
+		WithArgs(rec.ID, schema.GraphPredicateDependsOn, "entity-2", 1.0, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO audit_log`).
 		WithArgs(rec.ID, string(schema.AuditActionCreate), "tester", now.UTC(), "entity create", nil).
@@ -867,6 +1427,12 @@ func TestCreateEntityRecordWritesIndexes(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO entity_identifiers`).
 		WithArgs(rec.ID, "slug", "orchid", rec.Scope).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`INSERT INTO entity_terms`).
+		WithArgs(rec.ID, "orchid", schema.EntityTermKindIdentifier, rec.Scope).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`INSERT INTO entity_terms`).
+		WithArgs(rec.ID, "slug:orchid", schema.EntityTermKindIdentifier, rec.Scope).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	if err := store.Create(ctx, rec); err != nil {
@@ -884,6 +1450,14 @@ func TestCreateAndUpdateValidateBeforeDB(t *testing.T) {
 	}
 	if err := store.Update(ctx, invalid); err == nil {
 		t.Fatalf("Update invalid error = nil, want validation error")
+	}
+	malformedEntity := schema.NewMemoryRecord("bad-entity", schema.MemoryTypeEntity, schema.SensitivityLow, &schema.EntityPayload{
+		Kind:          "entity",
+		CanonicalName: "Bad Entity",
+		Identifiers:   []schema.EntityIdentifier{{Namespace: " ", Value: "ignored"}},
+	})
+	if err := store.Create(ctx, malformedEntity); err == nil || !strings.Contains(err.Error(), "payload.identifiers[0].namespace") {
+		t.Fatalf("Create malformed entity identifier error = %v, want identifier namespace validation", err)
 	}
 }
 
@@ -2067,7 +2641,7 @@ func TestUpdateSemanticRecord(t *testing.T) {
 		Ref:       "obs-1",
 		Timestamp: now,
 	}}
-	rec.Relations = []schema.Relation{{Predicate: "supports", TargetID: "semantic-2", Weight: 0.4, CreatedAt: now}}
+	rec.Relations = []schema.Relation{{Predicate: "Depends-On", TargetID: "semantic-2", Weight: 0.4, CreatedAt: now}}
 	rec.AuditLog = nil
 	rec.Interpretation = nil
 
@@ -2100,7 +2674,7 @@ func TestUpdateSemanticRecord(t *testing.T) {
 		WithArgs(rec.ID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO relations`).
-		WithArgs(rec.ID, "supports", "semantic-2", 0.4, now.UTC()).
+		WithArgs(rec.ID, schema.GraphPredicateDependsOn, "semantic-2", 0.4, now.UTC()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`DELETE FROM entity_terms WHERE record_id = \$1`).
 		WithArgs(rec.ID).
@@ -2225,6 +2799,332 @@ func TestGetRelations(t *testing.T) {
 	if _, err := store.GetRelations(ctx, "missing"); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("GetRelations missing err = %v, want ErrNotFound", err)
 	}
+}
+
+func TestBoundedGraphRelationQueriesPushLimitsIntoSQL(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 16, 13, 0, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT predicate, target_id, weight, created_at FROM relations WHERE source_id = \$1 ORDER BY weight DESC NULLS LAST, created_at DESC, predicate, target_id LIMIT \$2`).
+		WithArgs("src", 2).
+		WillReturnRows(sqlmock.NewRows([]string{"predicate", "target_id", "weight", "created_at"}).
+			AddRow("supports", "target", 0.75, ts))
+	relations, err := store.GetRelationsLimited(ctx, "src", 2)
+	if err != nil {
+		t.Fatalf("GetRelationsLimited: %v", err)
+	}
+	if len(relations) != 1 || relations[0].TargetID != "target" {
+		t.Fatalf("GetRelationsLimited = %+v, want bounded target relation", relations)
+	}
+
+	mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations WHERE target_id = \$1 ORDER BY weight DESC NULLS LAST, created_at DESC, predicate, source_id LIMIT \$2`).
+		WithArgs("target", 3).
+		WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}).
+			AddRow("src", "supports", "target", 0.75, ts))
+	edges, err := store.GetIncomingRelationsLimited(ctx, "target", 3)
+	if err != nil {
+		t.Fatalf("GetIncomingRelationsLimited: %v", err)
+	}
+	if len(edges) != 1 || edges[0].SourceID != "src" {
+		t.Fatalf("GetIncomingRelationsLimited = %+v, want bounded source edge", edges)
+	}
+}
+
+func TestGraphHydrationOmitsEagerRelations(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 16, 14, 0, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT id FROM memory_records WHERE 1=1 ORDER BY salience DESC, created_at DESC, id LIMIT \$1`).
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("graph-root"))
+	expectGetGraphSemanticRecord(mock, "graph-root", now)
+	records, err := store.List(ctx, storage.ListOptions{Limit: 1, OmitRelations: true, OmitHistory: true})
+	if err != nil {
+		t.Fatalf("List graph roots: %v", err)
+	}
+	if len(records) != 1 || records[0].Relations != nil || records[0].AuditLog != nil || records[0].Provenance.Sources != nil {
+		t.Fatalf("List graph roots = %+v, want one record with relation/history projection", records)
+	}
+
+	expectGetGraphSemanticRecord(mock, "graph-neighbor", now)
+	record, err := store.GetGraphRecord(ctx, "graph-neighbor")
+	if err != nil {
+		t.Fatalf("GetGraphRecord: %v", err)
+	}
+	if record.Relations != nil || record.AuditLog != nil || record.Provenance.Sources != nil {
+		t.Fatalf("GetGraphRecord = %+v, want relation/history projection", record)
+	}
+
+	mock.ExpectQuery(`SELECT record_id, normalized_term FROM entity_terms`).
+		WithArgs("project", "orchid", 33).
+		WillReturnRows(sqlmock.NewRows([]string{"record_id", "normalized_term"}).AddRow("graph-entity-root", "orchid"))
+	mock.ExpectQuery(`(?s)WITH bounded_candidates\(id, ord\) AS \(VALUES \(\$1, 0\)\).*octet_length\(payload_json::text\).*FROM bounded_candidates`).
+		WithArgs("graph-entity-root").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "payload_bytes", "interpretation_bytes"}).AddRow("graph-entity-root", int64(1024), int64(0)))
+	expectGetGraphSemanticRecord(mock, "graph-entity-root", now)
+	entities, err := store.FindGraphEntitiesByTerm(ctx, "orchid", "project", 1)
+	if err != nil {
+		t.Fatalf("FindGraphEntitiesByTerm: %v", err)
+	}
+	if len(entities) != 1 || entities[0].Relations != nil || entities[0].AuditLog != nil || entities[0].Provenance.Sources != nil {
+		t.Fatalf("FindGraphEntitiesByTerm = %+v, want one entity candidate with bounded projection", entities)
+	}
+}
+
+func TestListBoundedAppliesByteBudgetBeforeBatchHydration(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 16, 14, 30, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`(?s)WITH bounded_candidates AS MATERIALIZED \(SELECT id, salience, created_at FROM memory_records WHERE 1=1.*ORDER BY salience DESC, created_at DESC, id LIMIT \$1\).*SELECT id,.*octet_length\(payload_json::text\).*octet_length\(interpretation_json::text\).*FROM bounded_candidates`).
+		WithArgs(2).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "payload_bytes", "interpretation_bytes"}).
+			AddRow("bounded-small", int64(1<<20), int64(0)).
+			AddRow("bounded-overflow", storage.MaxBoundedHydrationBytes, int64(0)))
+	expectGetGraphSemanticRecord(mock, "bounded-small", now)
+
+	result, err := store.ListBounded(ctx, storage.ListOptions{
+		Limit:            2,
+		OmitRelations:    true,
+		OmitHistory:      true,
+		MaxHydratedBytes: storage.MaxBoundedHydrationBytes,
+	})
+	if err != nil {
+		t.Fatalf("ListBounded: %v", err)
+	}
+	if !result.HydrationBytesTruncated {
+		t.Fatalf("ListBounded result = %+v, want byte truncation metadata", result)
+	}
+	if len(result.Records) != 1 || result.Records[0].ID != "bounded-small" {
+		t.Fatalf("ListBounded records = %+v, want only prefix hydrated before overflow", result.Records)
+	}
+}
+
+func TestListBoundedCapsCandidateSizePreflightFromByteBudget(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`(?s)WITH bounded_candidates AS MATERIALIZED \(SELECT id, salience, created_at FROM memory_records WHERE 1=1.*ORDER BY salience DESC, created_at DESC, id LIMIT \$1\).*octet_length\(payload_json::text\)`).
+		WithArgs(33).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "payload_bytes", "interpretation_bytes"}))
+
+	result, err := store.ListBounded(ctx, storage.ListOptions{
+		Limit:            storage.MaxBoundedLookupLimit,
+		MaxHydratedBytes: storage.MaxBoundedHydrationBytes,
+	})
+	if err != nil {
+		t.Fatalf("ListBounded: %v", err)
+	}
+	if len(result.Records) != 0 {
+		t.Fatalf("ListBounded records = %+v, want empty", result.Records)
+	}
+}
+
+func TestListBoundedAppliesExactIDBeforeSizePreflight(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`(?s)WITH bounded_candidates AS MATERIALIZED \(SELECT id, salience, created_at FROM memory_records WHERE 1=1 AND id = \$1.*ORDER BY salience DESC, created_at DESC, id LIMIT \$2\).*octet_length\(payload_json::text\)`).
+		WithArgs("wanted", 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "payload_bytes", "interpretation_bytes"}))
+
+	result, err := store.ListBounded(ctx, storage.ListOptions{
+		ID: "wanted", Limit: 1, OmitRelations: true, OmitHistory: true,
+		MaxHydratedBytes: storage.MaxBoundedHydrationBytes,
+	})
+	if err != nil {
+		t.Fatalf("ListBounded: %v", err)
+	}
+	if len(result.Records) != 0 {
+		t.Fatalf("records = %+v, want empty exact-ID result", result.Records)
+	}
+}
+
+func TestGetAuthorizationMetadataUsesOneCappedFieldOnlyQuery(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT id, COALESCE\(scope, ''\), sensitivity FROM memory_records WHERE id IN \(\$1,\$2\) ORDER BY id`).
+		WithArgs("record-a", "record-b").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scope", "sensitivity"}).
+			AddRow("record-a", "project:alpha", string(schema.SensitivityLow)))
+
+	metadata, err := store.GetAuthorizationMetadata(ctx, []string{"record-a", "record-b"})
+	if err != nil {
+		t.Fatalf("GetAuthorizationMetadata: %v", err)
+	}
+	if len(metadata) != 1 || metadata[0] != (storage.RecordAuthorizationMetadata{
+		ID: "record-a", Scope: "project:alpha", Sensitivity: schema.SensitivityLow,
+	}) {
+		t.Fatalf("metadata = %+v, want one exact field-only row", metadata)
+	}
+
+	tooMany := make([]string, storage.MaxAuthorizationMetadataIDs+1)
+	if _, err := store.GetAuthorizationMetadata(ctx, tooMany); !errors.Is(err, storage.ErrAuthorizationMetadataLimit) {
+		t.Fatalf("over-limit error = %v, want ErrAuthorizationMetadataLimit", err)
+	}
+}
+
+func TestTransactionAuthorizationMetadataUsesFieldOnlyLockedQuery(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectBegin()
+	rawTx, err := store.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	tx := &postgresTx{tx: rawTx}
+	mock.ExpectQuery(`SELECT id, COALESCE\(scope, ''\), sensitivity FROM memory_records WHERE id IN \(\$1\) ORDER BY id FOR SHARE`).
+		WithArgs("record-a").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scope", "sensitivity"}).
+			AddRow("record-a", "project:alpha", string(schema.SensitivityLow)))
+
+	metadata, err := tx.GetAuthorizationMetadata(ctx, []string{"record-a"})
+	if err != nil {
+		t.Fatalf("GetAuthorizationMetadata: %v", err)
+	}
+	if len(metadata) != 1 || metadata[0].ID != "record-a" || metadata[0].Scope != "project:alpha" {
+		t.Fatalf("metadata = %+v, want locked field-only row", metadata)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+func TestBudgetedGraphRelationQueriesHydrateOnlyByteBoundedPrefix(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 16, 15, 0, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`(?s)SELECT id,.*octet_length\(predicate\).*octet_length\(target_id\).*FROM relations.*WHERE source_id = \$1.*LIMIT \$2`).
+		WithArgs("src", 3).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "projected_bytes"}).
+			AddRow(int64(11), int64(5<<10)).
+			AddRow(int64(12), int64(20<<10)))
+	mock.ExpectQuery(`(?s)WITH selected\(id, ord\) AS \(VALUES \(\$1::bigint, 0\)\).*JOIN selected.*ORDER BY selected.ord`).
+		WithArgs(int64(11)).
+		WillReturnRows(sqlmock.NewRows([]string{"predicate", "target_id", "weight", "created_at"}).
+			AddRow("supports", "target", 0.75, ts))
+
+	result, err := store.GetRelationsBounded(ctx, "src", 3, 16<<10)
+	if err != nil {
+		t.Fatalf("GetRelationsBounded: %v", err)
+	}
+	if !result.HydrationBytesTruncated || result.ProjectedBytes != 5<<10 {
+		t.Fatalf("GetRelationsBounded metadata = %+v, want 5KiB and truncated", result)
+	}
+	if len(result.Relations) != 1 || result.Relations[0].TargetID != "target" {
+		t.Fatalf("GetRelationsBounded relations = %+v, want one bounded row", result.Relations)
+	}
+}
+
+func TestGetIncomingRelations(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC)
+	store, mock := newMockStore(t, EmbeddingConfig{})
+
+	mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+		WithArgs("target").
+		WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}).
+			AddRow("source-1", "Subject Entity", "target", 0.8, ts).
+			AddRow("source-2", "mentions_entity", "target", nil, ts.Add(time.Second)))
+
+	edges, err := store.GetIncomingRelations(ctx, "target")
+	if err != nil {
+		t.Fatalf("GetIncomingRelations: %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("incoming edges len = %d, want 2", len(edges))
+	}
+	if edges[0].SourceID != "source-1" || edges[0].Predicate != schema.GraphPredicateSubjectEntity || edges[0].TargetID != "target" || edges[0].Weight != 0.8 {
+		t.Fatalf("incoming edge[0] = %+v, want normalized weighted source-1 edge", edges[0])
+	}
+	if edges[1].SourceID != "source-2" || edges[1].Predicate != schema.GraphPredicateMentionsEntity || edges[1].TargetID != "target" || edges[1].Weight != 0 {
+		t.Fatalf("incoming edge[1] = %+v, want normalized null-weight source-2 edge", edges[1])
+	}
+
+	mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+		WithArgs("empty").
+		WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}))
+	mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+		WithArgs("empty").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+	edges, err = store.GetIncomingRelations(ctx, "empty")
+	if err != nil {
+		t.Fatalf("GetIncomingRelations empty: %v", err)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("GetIncomingRelations empty = %#v, want empty", edges)
+	}
+
+	mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+		WithArgs("missing").
+		WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}))
+	mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+		WithArgs("missing").
+		WillReturnError(sql.ErrNoRows)
+	if _, err := store.GetIncomingRelations(ctx, "missing"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetIncomingRelations missing err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetIncomingRelationsErrorBranches(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 7, 11, 15, 0, 0, time.UTC)
+
+	t.Run("query error", func(t *testing.T) {
+		store, mock := newMockStore(t, EmbeddingConfig{})
+		mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+			WithArgs("target").
+			WillReturnError(errors.New("query failed"))
+
+		if _, err := store.GetIncomingRelations(ctx, "target"); err == nil || !strings.Contains(err.Error(), "query incoming relations") {
+			t.Fatalf("GetIncomingRelations query error = %v, want wrapped query error", err)
+		}
+	})
+
+	t.Run("scan error", func(t *testing.T) {
+		store, mock := newMockStore(t, EmbeddingConfig{})
+		mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+			WithArgs("target").
+			WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}).
+				AddRow("source", "supports", "target", "bad-weight", ts))
+
+		if _, err := store.GetIncomingRelations(ctx, "target"); err == nil || !strings.Contains(err.Error(), "scan incoming relation") {
+			t.Fatalf("GetIncomingRelations scan error = %v, want wrapped scan error", err)
+		}
+	})
+
+	t.Run("iterate error", func(t *testing.T) {
+		store, mock := newMockStore(t, EmbeddingConfig{})
+		mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+			WithArgs("target").
+			WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}).
+				AddRow("source", "supports", "target", 0.5, ts).
+				RowError(0, errors.New("rows failed")))
+
+		if _, err := store.GetIncomingRelations(ctx, "target"); err == nil || !strings.Contains(err.Error(), "iterate incoming relations") {
+			t.Fatalf("GetIncomingRelations iteration error = %v, want wrapped iteration error", err)
+		}
+	})
+
+	t.Run("target existence error", func(t *testing.T) {
+		store, mock := newMockStore(t, EmbeddingConfig{})
+		mock.ExpectQuery(`SELECT source_id, predicate, target_id, weight, created_at FROM relations`).
+			WithArgs("target").
+			WillReturnRows(sqlmock.NewRows([]string{"source_id", "predicate", "target_id", "weight", "created_at"}))
+		mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+			WithArgs("target").
+			WillReturnError(errors.New("existence failed"))
+
+		if _, err := store.GetIncomingRelations(ctx, "target"); err == nil || !strings.Contains(err.Error(), "check record existence") {
+			t.Fatalf("GetIncomingRelations existence error = %v, want wrapped existence error", err)
+		}
+	})
 }
 
 func TestGetRelationsErrorBranches(t *testing.T) {
@@ -2470,7 +3370,7 @@ func TestFindSemanticExactNoMatch(t *testing.T) {
 	store, mock := newMockStore(t, EmbeddingConfig{})
 
 	mock.ExpectQuery(`SELECT mr.id FROM memory_records mr`).
-		WithArgs("subject", "predicate", "object").
+		WithArgs("subject", "predicate", "object", `"object"`).
 		WillReturnError(sql.ErrNoRows)
 	record, err := store.FindSemanticExact(ctx, "subject", "predicate", "object")
 	if err != nil {
@@ -2488,7 +3388,7 @@ func TestFindSemanticExactSuccessAndQueryError(t *testing.T) {
 		store, mock := newMockStore(t, EmbeddingConfig{})
 		now := time.Date(2026, 5, 1, 16, 30, 0, 0, time.UTC)
 		mock.ExpectQuery(`SELECT mr.id FROM memory_records mr`).
-			WithArgs("subject", "predicate", "object").
+			WithArgs("subject", "predicate", "object", `"object"`).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("semantic-found"))
 		expectGetSemanticRecord(mock, "semantic-found", now)
 
@@ -2504,7 +3404,7 @@ func TestFindSemanticExactSuccessAndQueryError(t *testing.T) {
 	t.Run("query error", func(t *testing.T) {
 		store, mock := newMockStore(t, EmbeddingConfig{})
 		mock.ExpectQuery(`SELECT mr.id FROM memory_records mr`).
-			WithArgs("subject", "predicate", "object").
+			WithArgs("subject", "predicate", "object", `"object"`).
 			WillReturnError(errors.New("database unavailable"))
 		record, err := store.FindSemanticExact(ctx, "subject", "predicate", "object")
 		if err == nil || !strings.Contains(err.Error(), "find semantic exact") {
@@ -2514,6 +3414,44 @@ func TestFindSemanticExactSuccessAndQueryError(t *testing.T) {
 			t.Fatalf("FindSemanticExact error record = %+v, want nil", record)
 		}
 	})
+}
+
+func TestFindSemanticExactOrdersDuplicateMatchesDeterministically(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	now := time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(`ORDER BY mr.updated_at DESC, mr.id`).
+		WithArgs("subject", "predicate", `{"db":"postgres","lang":"go"}`, `{"db":"postgres","lang":"go"}`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("semantic-newer"))
+	expectGetSemanticRecord(mock, "semantic-newer", now)
+
+	record, err := store.FindSemanticExact(ctx, "subject", "predicate", `{"db":"postgres","lang":"go"}`)
+	if err != nil {
+		t.Fatalf("FindSemanticExact: %v", err)
+	}
+	if record == nil || record.ID != "semantic-newer" {
+		t.Fatalf("FindSemanticExact = %+v, want deterministic newest duplicate semantic-newer", record)
+	}
+}
+
+func TestFindSemanticExactInScopeFiltersScope(t *testing.T) {
+	ctx := context.Background()
+	store, mock := newMockStore(t, EmbeddingConfig{})
+	now := time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(`COALESCE\(mr.scope, ''\) = \$5`).
+		WithArgs("subject", "predicate", "object", `"object"`, "project:beta").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("semantic-beta"))
+	expectGetSemanticRecord(mock, "semantic-beta", now)
+
+	record, err := store.FindSemanticExactInScope(ctx, "subject", "predicate", "object", "project:beta")
+	if err != nil {
+		t.Fatalf("FindSemanticExactInScope: %v", err)
+	}
+	if record == nil || record.ID != "semantic-beta" {
+		t.Fatalf("FindSemanticExactInScope = %+v, want semantic-beta", record)
+	}
 }
 
 func TestRecordsFromRowsHydratesRecordsAndPropagatesErrors(t *testing.T) {
@@ -2705,6 +3643,9 @@ func TestPostgresTransactionOpenOperationsDelegate(t *testing.T) {
 	mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
 		WithArgs("rec-rel").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+	mock.ExpectQuery(`SELECT 1 FROM memory_records WHERE id = \$1`).
+		WithArgs(rel.TargetID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
 	mock.ExpectExec(`INSERT INTO relations`).
 		WithArgs("rec-rel", rel.Predicate, rel.TargetID, rel.Weight, rel.CreatedAt.UTC()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -2745,6 +3686,9 @@ func TestPostgresTransactionClosedGuards(t *testing.T) {
 	if _, err := tx.Get(ctx, rec.ID); !errors.Is(err, storage.ErrTxClosed) {
 		t.Fatalf("Get closed: err = %v, want ErrTxClosed", err)
 	}
+	if _, err := tx.GetAuthorizationMetadata(ctx, []string{rec.ID}); !errors.Is(err, storage.ErrTxClosed) {
+		t.Fatalf("GetAuthorizationMetadata closed: err = %v, want ErrTxClosed", err)
+	}
 	if err := tx.Update(ctx, rec); !errors.Is(err, storage.ErrTxClosed) {
 		t.Fatalf("Update closed: err = %v, want ErrTxClosed", err)
 	}
@@ -2778,11 +3722,15 @@ func TestPostgresTransactionClosedGuards(t *testing.T) {
 }
 
 func expectGetSemanticRecord(mock sqlmock.Sqlmock, id string, now time.Time) {
+	expectGetSemanticRecordInScope(mock, id, "project", now)
+}
+
+func expectGetSemanticRecordInScope(mock sqlmock.Sqlmock, id, scope string, now time.Time) {
 	payloadJSON := []byte(`{"kind":"semantic","subject":"Go","predicate":"is","object":"typed","validity":{"mode":"global"}}`)
 	mock.ExpectQuery(`SELECT id, type, sensitivity, confidence, salience, scope, created_at, updated_at FROM memory_records WHERE id = \$1`).
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "type", "sensitivity", "confidence", "salience", "scope", "created_at", "updated_at"}).
-			AddRow(id, string(schema.MemoryTypeSemantic), string(schema.SensitivityLow), 0.9, 0.8, "project", now, now))
+			AddRow(id, string(schema.MemoryTypeSemantic), string(schema.SensitivityLow), 0.9, 0.8, scope, now, now))
 	mock.ExpectQuery(`SELECT curve, half_life_seconds, min_salience, max_age_seconds, reinforcement_gain, last_reinforced_at, pinned, deletion_policy FROM decay_profiles WHERE record_id = \$1`).
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"curve", "half_life_seconds", "min_salience", "max_age_seconds", "reinforcement_gain", "last_reinforced_at", "pinned", "deletion_policy"}).
@@ -2805,4 +3753,25 @@ func expectGetSemanticRecord(mock sqlmock.Sqlmock, id string, now time.Time) {
 	mock.ExpectQuery(`SELECT action, actor, timestamp, rationale FROM audit_log WHERE record_id = \$1 ORDER BY id`).
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"action", "actor", "timestamp", "rationale"}))
+}
+
+func expectGetGraphSemanticRecord(mock sqlmock.Sqlmock, id string, now time.Time) {
+	payloadJSON := []byte(`{"kind":"semantic","subject":"Go","predicate":"is","object":"typed","validity":{"mode":"global"}}`)
+	mock.ExpectQuery(`SELECT id, type, sensitivity, confidence, salience, scope, created_at, updated_at FROM memory_records WHERE id = \$1`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "type", "sensitivity", "confidence", "salience", "scope", "created_at", "updated_at"}).
+			AddRow(id, string(schema.MemoryTypeSemantic), string(schema.SensitivityLow), 0.9, 0.8, "project", now, now))
+	mock.ExpectQuery(`SELECT curve, half_life_seconds, min_salience, max_age_seconds, reinforcement_gain, last_reinforced_at, pinned, deletion_policy FROM decay_profiles WHERE record_id = \$1`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"curve", "half_life_seconds", "min_salience", "max_age_seconds", "reinforcement_gain", "last_reinforced_at", "pinned", "deletion_policy"}).
+			AddRow(string(schema.DecayCurveExponential), int64(3600), 0.1, nil, 0.2, now, false, string(schema.DeletionPolicyAutoPrune)))
+	mock.ExpectQuery(`SELECT payload_json FROM payloads WHERE record_id = \$1`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"payload_json"}).AddRow(payloadJSON))
+	mock.ExpectQuery(`SELECT interpretation_json FROM interpretations WHERE record_id = \$1`).
+		WithArgs(id).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT tag FROM tags WHERE record_id = \$1`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"tag"}))
 }

@@ -4,6 +4,6 @@ services:
     environment:
       POSTGRES_DB: membrane_test
       POSTGRES_USER: membrane
-      POSTGRES_PASSWORD: membrane
+      POSTGRES_PASSWORD: ${MEMBRANE_POSTGRES_PASSWORD:?set MEMBRANE_POSTGRES_PASSWORD to a generated development secret}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"

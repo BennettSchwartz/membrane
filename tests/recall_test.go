@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
@@ -22,12 +21,14 @@ func TestRetrievalRecallAtK(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	recA := mustIngestObservation(t, ctx, m, "project:alpha", schema.SensitivityLow)
-	recB := mustIngestObservation(t, ctx, m, "project:alpha", schema.SensitivityLow)
-	recC := mustIngestObservation(t, ctx, m, "project:alpha", schema.SensitivityHigh)
-	recD := mustIngestObservation(t, ctx, m, "project:beta", schema.SensitivityLow)
-	recE := mustIngestObservation(t, ctx, m, "", schema.SensitivityLow)
-	recF := mustIngestObservation(t, ctx, m, "project:alpha", schema.SensitivityLow)
+	// Distinct facts keep this a ranking test: repeated exact observations
+	// intentionally reuse a semantic record within the same scope.
+	recA := mustIngestObservation(t, ctx, m, "signal-a", "project:alpha", schema.SensitivityLow)
+	recB := mustIngestObservation(t, ctx, m, "signal-b", "project:alpha", schema.SensitivityLow)
+	recC := mustIngestObservation(t, ctx, m, "signal-c", "project:alpha", schema.SensitivityHigh)
+	recD := mustIngestObservation(t, ctx, m, "signal-d", "project:beta", schema.SensitivityLow)
+	recE := mustIngestObservation(t, ctx, m, "signal-e", "", schema.SensitivityLow)
+	recF := mustIngestObservation(t, ctx, m, "signal-f", "project:alpha", schema.SensitivityLow)
 
 	// Shape salience to produce deterministic ordering in retrieval results.
 	mustPenalize(t, ctx, m, recB.ID, 0.10)
@@ -90,13 +91,13 @@ func TestRetrievalRecallAtK(t *testing.T) {
 	}
 }
 
-func mustIngestObservation(t *testing.T, ctx context.Context, m *membrane.Membrane, scope string, sensitivity schema.Sensitivity) *schema.MemoryRecord {
+func mustIngestObservation(t *testing.T, ctx context.Context, m *membrane.Membrane, signal, scope string, sensitivity schema.Sensitivity) *schema.MemoryRecord {
 	t.Helper()
-	rec, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	rec, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:      "test",
 		Subject:     "system",
 		Predicate:   "observed",
-		Object:      "signal",
+		Object:      signal,
 		Tags:        []string{"recall"},
 		Scope:       scope,
 		Sensitivity: sensitivity,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
@@ -13,7 +12,7 @@ func TestEvalTypedMemory(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	event, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "user_input",
 		Ref:       "evt-1",
@@ -24,7 +23,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestEvent: %v", err)
 	}
 
-	tool, err := captureToolOutputRecord(ctx, m, ingestion.IngestToolOutputRequest{
+	tool, err := captureToolOutputRecord(ctx, m, toolCaptureFixture{
 		Source:   "eval",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go build"},
@@ -35,7 +34,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestToolOutput: %v", err)
 	}
 
-	obs, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	obs, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "user",
 		Predicate: "prefers_language",
@@ -46,7 +45,7 @@ func TestEvalTypedMemory(t *testing.T) {
 		t.Fatalf("IngestObservation: %v", err)
 	}
 
-	working, err := captureWorkingStateRecord(ctx, m, ingestion.IngestWorkingStateRequest{
+	working, err := captureWorkingStateRecord(ctx, m, workingCaptureFixture{
 		Source:      "eval",
 		ThreadID:    "thread-1",
 		State:       schema.TaskStateExecuting,

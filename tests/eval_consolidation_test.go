@@ -2,19 +2,17 @@ package tests_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/consolidation"
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 func TestEvalConsolidationSemantic(t *testing.T) {
@@ -22,7 +20,7 @@ func TestEvalConsolidationSemantic(t *testing.T) {
 	store := newEvalStore(t)
 	ingest := newEvalIngestionService(store)
 
-	episode, err := ingest.IngestEvent(ctx, ingestion.IngestEventRequest{
+	episode, err := createConsolidationEvent(ctx, store, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "latency_check",
 		Ref:       "evt-1",
@@ -80,7 +78,7 @@ func TestEvalConsolidationSemanticReinforce(t *testing.T) {
 	store := newEvalStore(t)
 	ingest := newEvalIngestionService(store)
 
-	ep1, err := ingest.IngestEvent(ctx, ingestion.IngestEventRequest{
+	ep1, err := createConsolidationEvent(ctx, store, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "deploy",
 		Ref:       "evt-1",
@@ -99,7 +97,7 @@ func TestEvalConsolidationSemanticReinforce(t *testing.T) {
 		t.Fatalf("IngestOutcome 1: %v", err)
 	}
 
-	ep2, err := ingest.IngestEvent(ctx, ingestion.IngestEventRequest{
+	ep2, err := createConsolidationEvent(ctx, store, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "deploy",
 		Ref:       "evt-2",
@@ -144,7 +142,7 @@ func TestEvalConsolidationCompetence(t *testing.T) {
 	store := newEvalStore(t)
 	ingest := newEvalIngestionService(store)
 
-	rec1, err := ingest.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+	rec1, err := captureToolOutputRecord(ctx, ingest, toolCaptureFixture{
 		Source:   "eval",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go test ./..."},
@@ -163,7 +161,7 @@ func TestEvalConsolidationCompetence(t *testing.T) {
 		t.Fatalf("IngestOutcome 1: %v", err)
 	}
 
-	rec2, err := ingest.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+	rec2, err := captureToolOutputRecord(ctx, ingest, toolCaptureFixture{
 		Source:   "eval",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go test ./..."},
@@ -216,7 +214,7 @@ func TestEvalConsolidationCompetenceUsesMaxSensitivity(t *testing.T) {
 	ingest := newEvalIngestionService(store)
 
 	for _, sensitivity := range []schema.Sensitivity{schema.SensitivityLow, schema.SensitivityHigh} {
-		rec, err := ingest.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+		rec, err := captureToolOutputRecord(ctx, ingest, toolCaptureFixture{
 			Source:      "eval",
 			ToolName:    "bash",
 			Args:        map[string]any{"cmd": "go test ./..."},
@@ -265,13 +263,13 @@ func TestEvalConsolidationCompetenceUsesMaxSensitivity(t *testing.T) {
 	}
 }
 
-func TestEvalConsolidationCompetenceUsesRestrictedScopeForMixedSources(t *testing.T) {
+func TestEvalConsolidationCompetenceIsolatesSourceScopes(t *testing.T) {
 	ctx := context.Background()
 	store := newEvalStore(t)
 	ingest := newEvalIngestionService(store)
 
 	for _, scope := range []string{"project:alpha", "project:beta"} {
-		rec, err := ingest.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+		rec, err := captureToolOutputRecord(ctx, ingest, toolCaptureFixture{
 			Source:      "eval",
 			ToolName:    "bash",
 			Args:        map[string]any{"cmd": "go test ./..."},
@@ -298,22 +296,49 @@ func TestEvalConsolidationCompetenceUsesRestrictedScopeForMixedSources(t *testin
 	if err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
-	if created != 1 || reinforced != 0 {
-		t.Fatalf("expected created=1 reinforced=0, got created=%d reinforced=%d", created, reinforced)
+	if created != 0 || reinforced != 0 {
+		t.Fatalf("separate scopes must not combine: created=%d reinforced=%d", created, reinforced)
 	}
 
 	competences, err := store.ListByType(ctx, schema.MemoryTypeCompetence)
 	if err != nil {
 		t.Fatalf("ListByType competence: %v", err)
 	}
-	if len(competences) != 1 {
-		t.Fatalf("expected 1 competence record, got %d", len(competences))
+	if len(competences) != 0 {
+		t.Fatalf("expected no competence from one source per scope, got %d", len(competences))
 	}
-	if competences[0].Scope != "consolidated:mixed-scope" {
-		t.Fatalf("expected restricted mixed scope, got %q", competences[0].Scope)
+
+	// A second observation in alpha forms a valid same-scope pattern while beta
+	// remains isolated and contributes no evidence to the alpha competence.
+	rec, err := captureToolOutputRecord(ctx, ingest, toolCaptureFixture{
+		Source: "eval", ToolName: "bash", Args: map[string]any{"cmd": "go test ./..."}, Result: "ok",
+		Scope: "project:alpha", Sensitivity: schema.SensitivityMedium, Tags: []string{"eval"},
+	})
+	if err != nil {
+		t.Fatalf("IngestToolOutput control: %v", err)
 	}
-	if !strings.Contains(competences[0].AuditLog[0].Rationale, "scope=consolidated:mixed-scope from project:alpha, project:beta") {
-		t.Fatalf("expected audit rationale to record scope policy, got %q", competences[0].AuditLog[0].Rationale)
+	if _, err := ingest.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{Source: "eval", TargetRecordID: rec.ID, OutcomeStatus: schema.OutcomeStatusSuccess}); err != nil {
+		t.Fatalf("IngestOutcome control: %v", err)
+	}
+	created, reinforced, err = consol.Consolidate(ctx)
+	if err != nil || created != 1 || reinforced != 0 {
+		t.Fatalf("same-scope control: created=%d reinforced=%d err=%v", created, reinforced, err)
+	}
+	competences, err = store.ListByType(ctx, schema.MemoryTypeCompetence)
+	if err != nil {
+		t.Fatalf("ListByType competence control: %v", err)
+	}
+	if len(competences) != 1 || competences[0].Scope != "project:alpha" {
+		t.Fatalf("expected one alpha competence, got %+v", competences)
+	}
+	if cp := competences[0].Payload.(*schema.CompetencePayload); cp.Performance == nil || cp.Performance.SuccessCount != 2 {
+		t.Fatalf("same-scope performance = %+v", cp.Performance)
+	}
+	for _, evidence := range competences[0].Provenance.Sources {
+		source, err := store.Get(ctx, evidence.Ref)
+		if err != nil || source.Scope != "project:alpha" {
+			t.Fatalf("competence incorporated incompatible source %s: %+v, %v", evidence.Ref, source, err)
+		}
 	}
 }
 
@@ -367,19 +392,41 @@ func TestEvalConsolidationPlanGraph(t *testing.T) {
 	}
 }
 
+// These consolidation fixtures exercise stored timeline event kinds, including
+// custom kinds predating CaptureMemory's source-kind normalization.
+func createConsolidationEvent(ctx context.Context, store storage.Store, fixture eventCaptureFixture) (*schema.MemoryRecord, error) {
+	now := fixture.Timestamp
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	sensitivity := fixture.Sensitivity
+	if sensitivity == "" {
+		sensitivity = schema.SensitivityLow
+	}
+	rec := schema.NewMemoryRecord(uuid.NewString(), schema.MemoryTypeEpisodic, sensitivity, &schema.EpisodicPayload{
+		Kind: "episodic",
+		Timeline: []schema.TimelineEvent{{
+			T: now, EventKind: fixture.EventKind, Ref: fixture.Ref, Summary: fixture.Summary,
+		}},
+	})
+	rec.Scope = fixture.Scope
+	rec.Tags = append([]string(nil), fixture.Tags...)
+	rec.Provenance.CreatedBy = fixture.Source
+	rec.CreatedAt = now
+	rec.UpdatedAt = now
+	if err := store.Create(ctx, rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
 func newEvalStore(t *testing.T) storage.Store {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "eval.db")
-	store, err := sqlite.Open(path, "")
-	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
 			_ = err
 		}
-		_ = os.Remove(path)
 	})
 	return store
 }

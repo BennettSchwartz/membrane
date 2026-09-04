@@ -9,7 +9,6 @@ import (
 
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 	"github.com/BennettSchwartz/membrane/pkg/storage"
-	sqlitestore "github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type observationCreateFailStore struct {
@@ -71,13 +70,7 @@ func TestIngestEventDirectTimestampAndErrors(t *testing.T) {
 		t.Fatalf("IngestEvent validation error = %v, want source validation", err)
 	}
 
-	store, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close sqlite: %v", err)
-	}
+	store := &createFailStore{err: errors.New("store closed")}
 	closedSvc := NewService(store, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 	if _, err := closedSvc.IngestEvent(ctx, IngestEventRequest{Source: "tester", EventKind: "event", Ref: "evt-store-error"}); err == nil || !strings.Contains(err.Error(), "store event") {
 		t.Fatalf("IngestEvent closed store error = %v, want store event wrapper", err)
@@ -86,13 +79,7 @@ func TestIngestEventDirectTimestampAndErrors(t *testing.T) {
 
 func TestDirectIngestCreateErrors(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlitestore.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("Open sqlite: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close sqlite: %v", err)
-	}
+	store := &createFailStore{err: errors.New("store closed")}
 	svc := NewService(store, NewClassifier(), NewPolicyEngine(DefaultPolicyDefaults()))
 
 	if _, err := svc.IngestToolOutput(ctx, IngestToolOutputRequest{Source: "tester", ToolName: "rg"}); err == nil || !strings.Contains(err.Error(), "store tool output") {

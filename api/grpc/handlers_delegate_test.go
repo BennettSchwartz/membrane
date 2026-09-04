@@ -3,7 +3,7 @@ package grpc
 import (
 	"context"
 	"math"
-	"path/filepath"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +13,9 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/BennettSchwartz/membrane/api/grpc/gen/membranev1"
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	membranepkg "github.com/BennettSchwartz/membrane/pkg/membrane"
+	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
@@ -21,7 +23,11 @@ func newHandlerTest(t *testing.T) *Handler {
 	t.Helper()
 
 	cfg := membranepkg.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for handler integration tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 	cfg.DecayInterval = time.Hour
 	cfg.ConsolidationInterval = time.Hour
 
@@ -183,10 +189,250 @@ func TestHandlerDelegatesCaptureRetrieveMutationsAndMetrics(t *testing.T) {
 	}
 }
 
+func TestHandlerAccessPolicyCapsClientTrust(t *testing.T) {
+	ctx := context.Background()
+	h := newHandlerTest(t)
+
+	alphaResp, _ := captureFactThroughHandler(t, ctx, h)
+
+	content, err := structpb.NewValue(map[string]any{"note": "beta private"})
+	if err != nil {
+		t.Fatalf("NewValue: %v", err)
+	}
+	betaResp, err := h.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "tester",
+		SourceKind:       "observation",
+		Content:          content,
+		ReasonToRemember: "Beta fact",
+		Summary:          "beta fact",
+		Scope:            "project:beta",
+		Sensitivity:      string(schema.SensitivityLow),
+		Timestamp:        time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory beta: %v", err)
+	}
+
+	highResp, err := h.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "tester",
+		SourceKind:       "observation",
+		Content:          content,
+		ReasonToRemember: "High fact",
+		Summary:          "high fact",
+		Scope:            "project:alpha",
+		Sensitivity:      string(schema.SensitivityHigh),
+		Timestamp:        time.Date(2026, 5, 1, 12, 1, 0, 0, time.UTC).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory high: %v", err)
+	}
+
+	h.access = &accessPolicy{
+		readMax:            schema.SensitivityLow,
+		readScopes:         []string{"project:alpha"},
+		writeMax:           schema.SensitivityLow,
+		writeScopes:        []string{"project:alpha"},
+		defaultSensitivity: schema.SensitivityLow,
+	}
+
+	_, betaErr := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: betaResp.PrimaryRecord.Id,
+		Trust: &pb.TrustContext{
+			MaxSensitivity: string(schema.SensitivityHyper),
+			Authenticated:  true,
+			ActorId:        "caller",
+			Scopes:         []string{"project:beta"},
+		},
+	})
+	_, missingErr := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: "missing-record",
+		Trust: &pb.TrustContext{
+			MaxSensitivity: string(schema.SensitivityHyper),
+			Authenticated:  true,
+			ActorId:        "caller",
+			Scopes:         []string{"project:beta"},
+		},
+	})
+	if status.Code(betaErr) != codes.PermissionDenied || status.Code(missingErr) != codes.PermissionDenied {
+		t.Fatalf("out-of-policy scope codes = beta:%v missing:%v, want both PermissionDenied", status.Code(betaErr), status.Code(missingErr))
+	}
+	if status.Convert(betaErr).Message() != status.Convert(missingErr).Message() {
+		t.Fatalf("out-of-policy scope leaked record existence: beta=%q missing=%q", status.Convert(betaErr).Message(), status.Convert(missingErr).Message())
+	}
+
+	if _, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: highResp.PrimaryRecord.Id,
+		Trust: &pb.TrustContext{
+			MaxSensitivity: string(schema.SensitivityHyper),
+			Authenticated:  true,
+			ActorId:        "caller",
+			Scopes:         []string{"project:alpha"},
+		},
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("RetrieveByID high code = %v, want NotFound without protected hydration; err=%v", status.Code(err), err)
+	}
+
+	if _, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id: alphaResp.PrimaryRecord.Id,
+		Trust: &pb.TrustContext{
+			MaxSensitivity: string(schema.SensitivityLow),
+			Authenticated:  true,
+			ActorId:        "caller",
+		},
+	}); err != nil {
+		t.Fatalf("RetrieveByID alpha with empty caller scopes should use server scope: %v", err)
+	}
+}
+
+func TestHandlerAccessPolicyAuthorizesWritesByResource(t *testing.T) {
+	ctx := context.Background()
+	h := newHandlerTest(t)
+
+	alphaResp, _ := captureFactThroughHandler(t, ctx, h)
+
+	content, err := structpb.NewValue(map[string]any{"note": "beta private"})
+	if err != nil {
+		t.Fatalf("NewValue: %v", err)
+	}
+	betaResp, err := h.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "tester",
+		SourceKind:       "observation",
+		Content:          content,
+		ReasonToRemember: "Beta fact",
+		Summary:          "beta fact",
+		Scope:            "project:beta",
+		Sensitivity:      string(schema.SensitivityLow),
+		Timestamp:        time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory beta: %v", err)
+	}
+
+	h.access = &accessPolicy{
+		readMax:            schema.SensitivityLow,
+		readScopes:         []string{"project:alpha"},
+		writeMax:           schema.SensitivityLow,
+		writeScopes:        []string{"project:alpha"},
+		defaultSensitivity: schema.SensitivityLow,
+	}
+
+	if _, err := h.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source:           "tester",
+		SourceKind:       "observation",
+		Content:          content,
+		ReasonToRemember: "Denied beta write",
+		Summary:          "denied beta",
+		Scope:            "project:beta",
+		Sensitivity:      string(schema.SensitivityLow),
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("CaptureMemory beta policy code = %v, want PermissionDenied; err=%v", status.Code(err), err)
+	}
+
+	if _, err := h.Retract(ctx, &pb.RetractRequest{
+		Id:        betaResp.PrimaryRecord.Id,
+		Actor:     "spoofed-client",
+		Rationale: "try to delete beta",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("Retract beta policy code = %v, want opaque NotFound; err=%v", status.Code(err), err)
+	}
+
+	_, hiddenContestErr := h.Contest(ctx, &pb.ContestRequest{
+		Id:            alphaResp.PrimaryRecord.Id,
+		ContestingRef: betaResp.PrimaryRecord.Id,
+		Actor:         "spoofed-client",
+		Rationale:     "try to mutate beta graph relation",
+	})
+	_, missingContestErr := h.Contest(ctx, &pb.ContestRequest{
+		Id:            alphaResp.PrimaryRecord.Id,
+		ContestingRef: "missing-contesting-reference",
+		Actor:         "spoofed-client",
+		Rationale:     "same opaque reference path",
+	})
+	if status.Code(hiddenContestErr) != codes.FailedPrecondition || status.Code(missingContestErr) != codes.FailedPrecondition {
+		t.Fatalf("episodic contest codes = hidden:%v missing:%v, want both FailedPrecondition", status.Code(hiddenContestErr), status.Code(missingContestErr))
+	}
+	if status.Convert(hiddenContestErr).Message() != status.Convert(missingContestErr).Message() {
+		t.Fatalf("contest reference leaked existence: hidden=%q missing=%q", status.Convert(hiddenContestErr).Message(), status.Convert(missingContestErr).Message())
+	}
+
+	if _, err := h.Reinforce(ctx, &pb.ReinforceRequest{
+		Id:        alphaResp.PrimaryRecord.Id,
+		Actor:     "spoofed-client",
+		Rationale: "alpha is allowed",
+	}); err != nil {
+		t.Fatalf("Reinforce alpha policy: %v", err)
+	}
+}
+
+func TestHandlerContestOpaqueSecondaryReferenceDoesNotCreateHiddenRelation(t *testing.T) {
+	ctx := context.Background()
+	h := newHandlerTest(t)
+	_, hiddenSourceID := captureSemanticFactThroughHandler(t, ctx, h, "hidden-contest-source", "is", "active")
+	_, missingSourceID := captureSemanticFactThroughHandler(t, ctx, h, "missing-contest-source", "is", "active")
+
+	content, err := structpb.NewValue(map[string]any{"note": "beta hidden target"})
+	if err != nil {
+		t.Fatalf("NewValue: %v", err)
+	}
+	hidden, err := h.CaptureMemory(ctx, &pb.CaptureMemoryRequest{
+		Source: "tester", SourceKind: "observation", Content: content,
+		Scope: "project:beta", Sensitivity: string(schema.SensitivityLow),
+	})
+	if err != nil {
+		t.Fatalf("CaptureMemory hidden target: %v", err)
+	}
+	hiddenID := hidden.PrimaryRecord.GetId()
+	h.access = &accessPolicy{
+		readMax: schema.SensitivityLow, readScopes: []string{"project:alpha"},
+		writeMax: schema.SensitivityLow, writeScopes: []string{"project:alpha"},
+		defaultSensitivity: schema.SensitivityLow,
+	}
+
+	if _, err := h.Contest(ctx, &pb.ContestRequest{Id: hiddenSourceID, ContestingRef: hiddenID}); err != nil {
+		t.Fatalf("Contest hidden secondary reference: %v", err)
+	}
+	if _, err := h.Contest(ctx, &pb.ContestRequest{Id: missingSourceID, ContestingRef: "missing-contesting-reference"}); err != nil {
+		t.Fatalf("Contest missing secondary reference: %v", err)
+	}
+
+	trust := retrieval.NewTrustContext(schema.SensitivityHyper, true, "integration-test", nil)
+	hiddenSource, err := h.membrane.RetrieveByID(ctx, hiddenSourceID, trust)
+	if err != nil {
+		t.Fatalf("RetrieveByID hidden contest source: %v", err)
+	}
+	missingSource, err := h.membrane.RetrieveByID(ctx, missingSourceID, trust)
+	if err != nil {
+		t.Fatalf("RetrieveByID missing contest source: %v", err)
+	}
+	hiddenTarget, err := h.membrane.RetrieveByID(ctx, hiddenID, trust)
+	if err != nil {
+		t.Fatalf("RetrieveByID hidden target: %v", err)
+	}
+	for _, relation := range hiddenSource.Relations {
+		if relation.Predicate == schema.GraphPredicateContestedBy && relation.TargetID == hiddenID {
+			t.Fatalf("hidden source gained unauthorized relation: %+v", relation)
+		}
+	}
+	for _, relation := range missingSource.Relations {
+		if relation.Predicate == schema.GraphPredicateContestedBy && relation.TargetID == "missing-contesting-reference" {
+			t.Fatalf("missing source gained external relation: %+v", relation)
+		}
+	}
+	for _, relation := range hiddenTarget.Relations {
+		if relation.Predicate == schema.GraphPredicateContests && relation.TargetID == hiddenSourceID {
+			t.Fatalf("hidden target gained unauthorized inverse relation: %+v", relation)
+		}
+	}
+}
+
 func TestHandlerGetMetricsPropagatesCollectorErrors(t *testing.T) {
 	ctx := context.Background()
 	cfg := membranepkg.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for handler integration tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 
 	m, err := membranepkg.New(cfg)
 	if err != nil {
@@ -232,7 +478,7 @@ func TestHandlerDelegatesRevisionMethods(t *testing.T) {
 	_, forkSourceID := captureSemanticFactThroughHandler(t, ctx, h, "database", "primary", "postgres")
 	forked, err := h.Fork(ctx, &pb.ForkRequest{
 		SourceId:     forkSourceID,
-		ForkedRecord: semanticRecordPBForHandler(t, "", "database", "primary", "sqlite"),
+		ForkedRecord: semanticRecordPBForHandler(t, "", "database", "primary", "redis"),
 		Actor:        "tester",
 		Rationale:    "local variant",
 	})
@@ -379,6 +625,7 @@ func TestHandlerRejectsInvalidRequestsBeforeDelegation(t *testing.T) {
 	}{
 		{name: "long source", req: &pb.CaptureMemoryRequest{Source: strings.Repeat("x", maxStringLength+1)}},
 		{name: "long source_kind", req: &pb.CaptureMemoryRequest{SourceKind: strings.Repeat("x", maxStringLength+1)}},
+		{name: "bad source_kind", req: &pb.CaptureMemoryRequest{SourceKind: "transcript"}},
 		{name: "long reason", req: &pb.CaptureMemoryRequest{ReasonToRemember: strings.Repeat("x", maxStringLength+1)}},
 		{name: "long summary", req: &pb.CaptureMemoryRequest{Summary: strings.Repeat("x", maxStringLength+1)}},
 		{name: "too many tags", req: &pb.CaptureMemoryRequest{Tags: make([]string, maxTags+1)}},
@@ -421,6 +668,12 @@ func TestHandlerRejectsInvalidRequestsBeforeDelegation(t *testing.T) {
 	}
 	if _, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
 		Id:    "missing",
+		Trust: &pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), Scopes: []string{" \t"}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RetrieveByID invalid trust scope code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{
+		Id:    "missing",
 		Trust: testTrustPB(),
 	}); status.Code(err) != codes.NotFound {
 		t.Fatalf("RetrieveByID missing record code = %v, want NotFound", status.Code(err))
@@ -447,10 +700,27 @@ func TestHandlerRejectsInvalidRequestsBeforeDelegation(t *testing.T) {
 		t.Fatalf("RetrieveGraph invalid trust sensitivity code = %v, want InvalidArgument", status.Code(err))
 	}
 	if _, err := h.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		Trust: &pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), ActorId: strings.Repeat("x", maxStringLength+1)},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RetrieveGraph invalid trust actor code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
 		Trust:       testTrustPB(),
 		MinSalience: math.Inf(1),
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("RetrieveGraph invalid min_salience code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		Trust:       testTrustPB(),
+		MinSalience: 1.1,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RetrieveGraph out-of-range min_salience code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
+		Trust:          testTrustPB(),
+		QueryEmbedding: []float32{0, 0},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RetrieveGraph zero query_embedding code = %v, want InvalidArgument", status.Code(err))
 	}
 
 	if _, err := h.RetrieveGraph(ctx, &pb.RetrieveGraphRequest{
@@ -556,7 +826,44 @@ func TestHandlerRejectsInvalidRequestsBeforeDelegation(t *testing.T) {
 	if _, err := h.Supersede(ctx, &pb.SupersedeRequest{OldId: "record-a"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("Supersede nil new_record code = %v, want InvalidArgument", status.Code(err))
 	}
+	invalidSemantic := semanticRecordPBForHandler(t, "invalid-semantic", "", "uses", "Postgres")
+	if _, err := h.Supersede(ctx, &pb.SupersedeRequest{
+		OldId:     "record-a",
+		NewRecord: invalidSemantic,
+		Actor:     "tester",
+		Rationale: "replace",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Supersede invalid semantic record code = %v, want InvalidArgument", status.Code(err))
+	}
 	if _, err := h.Fork(ctx, &pb.ForkRequest{SourceId: "record-a"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("Fork nil forked_record code = %v, want InvalidArgument", status.Code(err))
+	}
+	invalidEntity := &pb.MemoryRecord{
+		Id:          "invalid-entity",
+		Type:        string(schema.MemoryTypeEntity),
+		Sensitivity: string(schema.SensitivityLow),
+		Confidence:  1,
+		Salience:    1,
+		Payload: &pb.Payload{Kind: &pb.Payload_Entity{Entity: &pb.EntityPayload{
+			Kind:          "entity",
+			CanonicalName: "Orchid",
+			Identifiers:   []*pb.EntityIdentifier{{Namespace: " ", Value: "orchid"}},
+		}}},
+	}
+	if _, err := h.Fork(ctx, &pb.ForkRequest{
+		SourceId:     "record-a",
+		ForkedRecord: invalidEntity,
+		Actor:        "tester",
+		Rationale:    "variant",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Fork invalid entity record code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.Merge(ctx, &pb.MergeRequest{
+		Ids:          []string{"record-a"},
+		MergedRecord: invalidEntity,
+		Actor:        "tester",
+		Rationale:    "merge",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Merge invalid entity record code = %v, want InvalidArgument", status.Code(err))
 	}
 }

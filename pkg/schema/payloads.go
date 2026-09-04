@@ -6,7 +6,7 @@ import (
 )
 
 // Payload is the interface that all memory payload types must implement.
-// RFC 15A.2: Payload is a oneOf of the five payload types.
+// RFC 15A.2: Payload is a oneOf of the six payload types.
 type Payload interface {
 	// PayloadKind returns the kind identifier for this payload type.
 	// This corresponds to the "kind" field in each payload schema.
@@ -215,13 +215,20 @@ type SemanticPayload struct {
 func (SemanticPayload) PayloadKind() string { return "semantic" }
 func (SemanticPayload) isPayload()          {}
 
+// ============================================================================
+// Entity Payload (RFC 15A.9)
+// ============================================================================
+
 // EntityPayload stores canonical entity metadata used for graph-aware memory
 // resolution and retrieval.
+// RFC 15A.9: Entity payloads form the canonical graph spine for named things.
 type EntityPayload struct {
 	// Kind identifies this as an entity payload.
+	// RFC 15A.9: Required field with const value "entity".
 	Kind string `json:"kind"`
 
 	// CanonicalName is the preferred display/lookup name for the entity.
+	// RFC 15A.9: Required field.
 	CanonicalName string `json:"canonical_name"`
 
 	// PrimaryType is the preferred ontology type for the entity.
@@ -233,9 +240,11 @@ type EntityPayload struct {
 	Types []string `json:"types,omitempty"`
 
 	// Aliases contains alternate surface forms for the entity.
+	// RFC 15A.9: Indexed for graph root promotion.
 	Aliases []EntityAlias `json:"aliases,omitempty"`
 
 	// Identifiers contains stable external identifiers for the entity.
+	// RFC 15A.9: Indexed for explicit external ID lookup.
 	Identifiers []EntityIdentifier `json:"identifiers,omitempty"`
 
 	// Summary is a short description of the entity.
@@ -323,26 +332,26 @@ type RevisionState struct {
 }
 
 // ============================================================================
-// Competence Payload (RFC 15A.9, 15A.5)
+// Competence Payload (RFC 15A.10, 15A.5)
 // ============================================================================
 
 // CompetencePayload encodes procedural knowledge: how to achieve goals.
-// RFC 15A.9: Competence payloads represent "knowing how" rather than "knowing that".
+// RFC 15A.10: Competence payloads represent "knowing how" rather than "knowing that".
 type CompetencePayload struct {
 	// Kind identifies this as a competence payload.
-	// RFC 15A.9: Required field with const value "competence".
+	// RFC 15A.10: Required field with const value "competence".
 	Kind string `json:"kind"`
 
 	// SkillName is the name of the skill or procedure.
-	// RFC 15A.9: Required field.
+	// RFC 15A.10: Required field.
 	SkillName string `json:"skill_name"`
 
 	// Triggers define when this competence applies.
-	// RFC 15A.9: Required field.
+	// RFC 15A.10: Required field.
 	Triggers []Trigger `json:"triggers"`
 
 	// Recipe contains the ordered or conditional steps.
-	// RFC 15A.9: Required field.
+	// RFC 15A.10: Required field.
 	Recipe []RecipeStep `json:"recipe"`
 
 	// RequiredTools lists tools needed for this competence.
@@ -350,11 +359,11 @@ type CompetencePayload struct {
 	RequiredTools []string `json:"required_tools,omitempty"`
 
 	// FailureModes documents known failure cases.
-	// RFC 15A.9: Optional array of failure descriptions.
+	// RFC 15A.10: Optional array of failure descriptions.
 	FailureModes []string `json:"failure_modes,omitempty"`
 
 	// Fallbacks provides alternative steps when primary recipe fails.
-	// RFC 15A.9: Optional array of fallback strategies.
+	// RFC 15A.10: Optional array of fallback strategies.
 	Fallbacks []string `json:"fallbacks,omitempty"`
 
 	// Performance tracks success and failure statistics.
@@ -362,7 +371,7 @@ type CompetencePayload struct {
 	Performance *PerformanceStats `json:"performance,omitempty"`
 
 	// Version is the version identifier for this competence.
-	// RFC 15A.9: Optional version tracking.
+	// RFC 15A.10: Optional version tracking.
 	Version string `json:"version,omitempty"`
 }
 
@@ -370,34 +379,34 @@ func (CompetencePayload) PayloadKind() string { return "competence" }
 func (CompetencePayload) isPayload()          {}
 
 // Trigger defines when a competence should be activated.
-// RFC 15A.9: Triggers have a signal and optional conditions.
+// RFC 15A.10: Triggers have a signal and optional conditions.
 type Trigger struct {
 	// Signal is the trigger signal (e.g., error signature, intent label).
-	// RFC 15A.9: Required field.
+	// RFC 15A.10: Required field.
 	Signal string `json:"signal"`
 
 	// Conditions are additional matching conditions.
-	// RFC 15A.9: Optional field with implementation-defined keys.
+	// RFC 15A.10: Optional field with implementation-defined keys.
 	Conditions map[string]any `json:"conditions,omitempty"`
 }
 
 // RecipeStep represents a single step in a competence procedure.
-// RFC 15A.9: Steps have a description, optional tool, and validation.
+// RFC 15A.10: Steps have a description, optional tool, and validation.
 type RecipeStep struct {
 	// Step is the human-readable step description.
-	// RFC 15A.9: Required field.
+	// RFC 15A.10: Required field.
 	Step string `json:"step"`
 
 	// Tool is the tool to use for this step.
-	// RFC 15A.9: Optional field.
+	// RFC 15A.10: Optional field.
 	Tool string `json:"tool,omitempty"`
 
 	// ArgsSchema defines the expected arguments for the tool.
-	// RFC 15A.9: Optional schema definition.
+	// RFC 15A.10: Optional schema definition.
 	ArgsSchema map[string]any `json:"args_schema,omitempty"`
 
 	// Validation describes how to verify step success.
-	// RFC 15A.9: Optional validation criteria.
+	// RFC 15A.10: Optional validation criteria.
 	Validation string `json:"validation,omitempty"`
 }
 
@@ -422,50 +431,50 @@ type PerformanceStats struct {
 }
 
 // ============================================================================
-// Plan Graph Payload (RFC 15A.10, 15A.6)
+// Plan Graph Payload (RFC 15A.11, 15A.6)
 // ============================================================================
 
 // PlanGraphPayload stores reusable solution structures as directed graphs.
-// RFC 15A.10: Plan graphs MUST be reusable, versioned, and selectable by constraint matching.
+// RFC 15A.11: Plan graphs MUST be reusable, versioned, and selectable by constraint matching.
 type PlanGraphPayload struct {
 	// Kind identifies this as a plan_graph payload.
-	// RFC 15A.10: Required field with const value "plan_graph".
+	// RFC 15A.11: Required field with const value "plan_graph".
 	Kind string `json:"kind"`
 
 	// PlanID is the unique identifier for this plan.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	PlanID string `json:"plan_id"`
 
 	// Version is the version identifier for this plan.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	Version string `json:"version"`
 
 	// Intent is the high-level intent label (e.g., setup_project).
-	// RFC 15A.10: Optional field for intent matching.
+	// RFC 15A.11: Optional field for intent matching.
 	Intent string `json:"intent,omitempty"`
 
 	// Constraints define trust requirements, sensitivity limits, etc.
-	// RFC 15A.10: Optional constraint object.
+	// RFC 15A.11: Optional constraint object.
 	Constraints map[string]any `json:"constraints,omitempty"`
 
 	// InputsSchema defines the expected inputs for the plan.
-	// RFC 15A.10: Optional schema definition.
+	// RFC 15A.11: Optional schema definition.
 	InputsSchema map[string]any `json:"inputs_schema,omitempty"`
 
 	// OutputsSchema defines the expected outputs from the plan.
-	// RFC 15A.10: Optional schema definition.
+	// RFC 15A.11: Optional schema definition.
 	OutputsSchema map[string]any `json:"outputs_schema,omitempty"`
 
 	// Nodes are the action nodes in the plan graph.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	Nodes []PlanNode `json:"nodes"`
 
 	// Edges are the dependency edges in the plan graph.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	Edges []PlanEdge `json:"edges"`
 
 	// Metrics track plan execution statistics.
-	// RFC 15A.10: Optional performance metrics.
+	// RFC 15A.11: Optional performance metrics.
 	Metrics *PlanMetrics `json:"metrics,omitempty"`
 }
 
@@ -473,43 +482,43 @@ func (PlanGraphPayload) PayloadKind() string { return "plan_graph" }
 func (PlanGraphPayload) isPayload()          {}
 
 // PlanNode represents an action node in a plan graph.
-// RFC 15A.10: Nodes have ID, operation, params, and guards.
+// RFC 15A.11: Nodes have ID, operation, params, and guards.
 type PlanNode struct {
 	// ID is the unique identifier for this node within the plan.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	ID string `json:"id"`
 
 	// Op is the action or tool identifier.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	Op string `json:"op"`
 
 	// Params contains parameters for the operation.
-	// RFC 15A.10: Optional parameter object.
+	// RFC 15A.11: Optional parameter object.
 	Params map[string]any `json:"params,omitempty"`
 
 	// Guards define conditional execution criteria.
-	// RFC 15A.10: Optional guards for conditional execution.
+	// RFC 15A.11: Optional guards for conditional execution.
 	Guards map[string]any `json:"guards,omitempty"`
 }
 
 // PlanEdge represents a dependency edge in a plan graph.
-// RFC 15A.10: Edges connect nodes with data or control dependencies.
+// RFC 15A.11: Edges connect nodes with data or control dependencies.
 type PlanEdge struct {
 	// From is the source node ID.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	From string `json:"from"`
 
 	// To is the target node ID.
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	To string `json:"to"`
 
 	// Kind specifies the edge type (data or control).
-	// RFC 15A.10: Required field.
+	// RFC 15A.11: Required field.
 	Kind EdgeKind `json:"kind"`
 }
 
 // PlanMetrics tracks execution statistics for a plan.
-// RFC 15A.10: Includes latency and failure rate metrics.
+// RFC 15A.11: Includes latency and failure rate metrics.
 type PlanMetrics struct {
 	// AvgLatencyMs is the average execution time in milliseconds.
 	AvgLatencyMs float64 `json:"avg_latency_ms,omitempty"`

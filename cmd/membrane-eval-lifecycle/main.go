@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -161,12 +162,14 @@ func runLifecycleCLIWithDeps(ctx context.Context, args []string, getenv func(str
 	if apiKey == "" {
 		apiKey = getenv("MEMBRANE_EMBEDDING_API_KEY")
 	}
-	if *postgresDSN == "" || apiKey == "" {
+	if strings.TrimSpace(*postgresDSN) == "" || strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("config: --postgres-dsn and embedding API key required")
+	}
+	if err := validateLifecycleConfig(*embeddingEndpoint, *embeddingModel, *embeddingDims); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 
 	cfg := membrane.DefaultConfig()
-	cfg.Backend = "postgres"
 	cfg.PostgresDSN = *postgresDSN
 	cfg.EmbeddingEndpoint = *embeddingEndpoint
 	cfg.EmbeddingModel = *embeddingModel
@@ -195,10 +198,65 @@ func runLifecycleCLIWithDeps(ctx context.Context, args []string, getenv func(str
 	}
 	defer func() { _ = pgStore.Close() }()
 
-	embClient := deps.newEmbeddingClient(*embeddingEndpoint, *embeddingModel, apiKey, *embeddingDims)
+	embClient := validatingLifecycleEmbeddingClient{
+		inner:      deps.newEmbeddingClient(*embeddingEndpoint, *embeddingModel, apiKey, *embeddingDims),
+		dimensions: *embeddingDims,
+	}
 
 	if _, err := runLifecycleEval(ctx, m, embClient, pgStore, *embeddingModel); err != nil {
 		return fmt.Errorf("run lifecycle eval: %w", err)
+	}
+	return nil
+}
+
+type validatingLifecycleEmbeddingClient struct {
+	inner      embedding.Client
+	dimensions int
+}
+
+func (c validatingLifecycleEmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
+	vec, err := c.inner.Embed(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLifecycleEmbeddingVector(vec, c.dimensions); err != nil {
+		return nil, err
+	}
+	return vec, nil
+}
+
+func validateLifecycleConfig(embeddingEndpoint, embeddingModel string, embeddingDims int) error {
+	if strings.TrimSpace(embeddingEndpoint) == "" {
+		return errors.New("--embedding-endpoint is required")
+	}
+	if strings.TrimSpace(embeddingModel) == "" {
+		return errors.New("--embedding-model is required")
+	}
+	if embeddingDims <= 0 {
+		return fmt.Errorf("--embedding-dimensions must be positive, got %d", embeddingDims)
+	}
+	return nil
+}
+
+func validateLifecycleEmbeddingVector(values []float32, dimensions int) error {
+	if len(values) == 0 {
+		return errors.New("embedding vector is empty")
+	}
+	if dimensions > 0 && len(values) != dimensions {
+		return fmt.Errorf("embedding vector has %d dimensions, expected %d", len(values), dimensions)
+	}
+	hasSignal := false
+	for i, value := range values {
+		f := float64(value)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("embedding vector contains non-finite value at index %d", i)
+		}
+		if value != 0 {
+			hasSignal = true
+		}
+	}
+	if !hasSignal {
+		return errors.New("embedding vector is all zeros")
 	}
 	return nil
 }
@@ -652,5 +710,9 @@ func retrieveRootRecords(ctx context.Context, m lifecycleMembrane, req *retrieva
 			records = append(records, node.Record)
 		}
 	}
-	return &retrieval.RetrieveResponse{Records: records, Selection: graphResp.Selection}, nil
+	return &retrieval.RetrieveResponse{
+		Records:     records,
+		Selection:   graphResp.Selection,
+		Diagnostics: append([]retrieval.RetrievalDiagnostic(nil), graphResp.Diagnostics...),
+	}, nil
 }

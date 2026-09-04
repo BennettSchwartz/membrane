@@ -2,6 +2,9 @@ package schema
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
+	"strings"
 	"time"
 )
 
@@ -15,7 +18,7 @@ type MemoryRecord struct {
 	// RFC 15A.2: Required field, immutable once created.
 	ID string `json:"id"`
 
-	// Type declares the memory type (episodic, working, semantic, competence, plan_graph).
+	// Type declares the memory type (episodic, working, semantic, competence, plan_graph, entity).
 	// RFC 15A.2: Required field.
 	Type MemoryType `json:"type"`
 
@@ -61,7 +64,7 @@ type MemoryRecord struct {
 	Relations []Relation `json:"relations,omitempty"`
 
 	// Payload is the type-specific structured content.
-	// RFC 15A.2: Required field, one of the five payload types.
+	// RFC 15A.2: Required field, one of the memory payload types.
 	Payload Payload `json:"payload"`
 
 	// Interpretation stores ingest-side extracted metadata and candidate links.
@@ -207,17 +210,49 @@ func (mr *MemoryRecord) Validate() error {
 	if !IsValidSensitivity(mr.Sensitivity) {
 		return &ValidationError{Field: "sensitivity", Message: "sensitivity must be one of: public, low, medium, high, hyper"}
 	}
-	if mr.Confidence < 0 || mr.Confidence > 1 {
-		return &ValidationError{Field: "confidence", Message: "confidence must be in range [0, 1]"}
+	if math.IsNaN(mr.Confidence) || math.IsInf(mr.Confidence, 0) || mr.Confidence < 0 || mr.Confidence > 1 {
+		return &ValidationError{Field: "confidence", Message: "confidence must be finite and in range [0, 1]"}
 	}
-	if mr.Salience < 0 {
-		return &ValidationError{Field: "salience", Message: "salience must be >= 0"}
+	if math.IsNaN(mr.Salience) || math.IsInf(mr.Salience, 0) || mr.Salience < 0 {
+		return &ValidationError{Field: "salience", Message: "salience must be finite and >= 0"}
+	}
+	for i, rel := range mr.Relations {
+		if err := validateRelation(rel, relationField(i)); err != nil {
+			return err
+		}
 	}
 	if mr.Payload == nil {
 		return &ValidationError{Field: "payload", Message: "payload is required"}
 	}
 	if MemoryType(mr.Payload.PayloadKind()) != mr.Type {
 		return &ValidationError{Field: "payload", Message: "payload kind must match memory type"}
+	}
+	if semantic, ok := mr.Payload.(*SemanticPayload); ok {
+		if strings.TrimSpace(semantic.Subject) == "" {
+			return &ValidationError{Field: "payload.subject", Message: "subject is required for semantic records"}
+		}
+		if NormalizeSemanticPredicate(semantic.Predicate) == "" {
+			return &ValidationError{Field: "payload.predicate", Message: "predicate is required for semantic records"}
+		}
+		if semantic.Object == nil {
+			return &ValidationError{Field: "payload.object", Message: "object is required for semantic records"}
+		}
+		if !IsValidValidityMode(semantic.Validity.Mode) {
+			return &ValidationError{Field: "payload.validity.mode", Message: "validity mode must be one of: global, conditional, timeboxed"}
+		}
+	}
+	if entity, ok := mr.Payload.(*EntityPayload); ok {
+		if strings.TrimSpace(entity.CanonicalName) == "" {
+			return &ValidationError{Field: "payload.canonical_name", Message: "canonical_name is required for entity records"}
+		}
+		for i, identifier := range entity.Identifiers {
+			if strings.TrimSpace(identifier.Namespace) == "" {
+				return &ValidationError{Field: fmt.Sprintf("payload.identifiers[%d].namespace", i), Message: "namespace is required for entity identifiers"}
+			}
+			if strings.TrimSpace(identifier.Value) == "" {
+				return &ValidationError{Field: fmt.Sprintf("payload.identifiers[%d].value", i), Message: "value is required for entity identifiers"}
+			}
+		}
 	}
 	return nil
 }

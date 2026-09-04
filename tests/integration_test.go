@@ -2,62 +2,28 @@ package tests_test
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
-// truncatePostgres removes all rows from every application table so that each
-// test starts with a clean database when running against Postgres.
-func truncatePostgres(t *testing.T, dsn string) {
-	t.Helper()
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("truncatePostgres: open: %v", err)
-	}
-	defer db.Close()
-	// Create schema if it doesn't exist yet (first run on a fresh database).
-	// We open a throwaway membrane instance to bootstrap the tables.
-	tmpCfg := membrane.DefaultConfig()
-	tmpCfg.Backend = "postgres"
-	tmpCfg.PostgresDSN = dsn
-	tmpM, err := membrane.New(tmpCfg)
-	if err != nil {
-		t.Fatalf("truncatePostgres: bootstrap schema: %v", err)
-	}
-	_ = tmpM.Stop()
-
-	_, err = db.Exec(`TRUNCATE memory_records, decay_profiles, payloads, tags,
-		provenance_sources, relations, audit_log, competence_stats,
-		trigger_embeddings, episodic_extraction_log CASCADE`)
-	if err != nil {
-		t.Fatalf("truncatePostgres: truncate: %v", err)
-	}
-}
-
-// newTestMembrane creates a Membrane instance. When MEMBRANE_TEST_POSTGRES_DSN
-// is set it uses Postgres+pgvector; otherwise it falls back to in-memory SQLite.
+// newTestMembrane creates a Membrane instance backed by Postgres+pgvector.
 func newTestMembrane(t *testing.T) *membrane.Membrane {
 	t.Helper()
 	cfg := membrane.DefaultConfig()
 	cfg.SelectionConfidenceThreshold = 0.3
 
 	dsn := os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
-	if dsn != "" {
-		cfg.Backend = "postgres"
-		cfg.PostgresDSN = dsn
-		truncatePostgres(t, dsn)
-	} else {
-		cfg.DBPath = ":memory:"
+	if dsn == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for integration tests")
 	}
+	cfg.PostgresDSN = dsn
+	testutil.ResetPostgresDatabase(t, dsn)
 
 	m, err := membrane.New(cfg)
 	if err != nil {
@@ -90,7 +56,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Step 1: Ingest several events and tool outputs (episodic).
 	// -----------------------------------------------------------------------
 
-	event1, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	event1, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "test-user",
 		EventKind: "user_input",
 		Ref:       "ref-001",
@@ -104,7 +70,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("expected episodic, got %s", event1.Type)
 	}
 
-	event2, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	event2, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "test-user",
 		EventKind: "error",
 		Ref:       "ref-002",
@@ -115,7 +81,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("IngestEvent 2: %v", err)
 	}
 
-	tool1, err := captureToolOutputRecord(ctx, m, ingestion.IngestToolOutputRequest{
+	tool1, err := captureToolOutputRecord(ctx, m, toolCaptureFixture{
 		Source:   "agent",
 		ToolName: "bash",
 		Args:     map[string]any{"cmd": "go build ./..."},
@@ -133,7 +99,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Step 2: Ingest observations (semantic).
 	// -----------------------------------------------------------------------
 
-	obs1, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	obs1, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "agent",
 		Subject:   "user",
 		Predicate: "prefers",
@@ -147,11 +113,11 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("expected semantic, got %s", obs1.Type)
 	}
 
-	obs2, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	obs2, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "agent",
 		Subject:   "project",
 		Predicate: "uses",
-		Object:    "SQLite",
+		Object:    "Redis",
 		Tags:      []string{"tech"},
 	})
 	if err != nil {

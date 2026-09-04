@@ -111,7 +111,7 @@ func (tc *TrustContext) allowsScope(record *schema.MemoryRecord) bool {
 		return true
 	}
 	for _, s := range tc.Scopes {
-		if s == record.Scope {
+		if s == "*" || s == record.Scope {
 			return true
 		}
 	}

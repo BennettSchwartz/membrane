@@ -27,6 +27,22 @@ func (s *entityLookupStore) FindEntitiesByTerm(_ context.Context, term, _ string
 	return records, nil
 }
 
+func (s *entityLookupStore) GetAuthorizationMetadata(ctx context.Context, ids []string) ([]storage.RecordAuthorizationMetadata, error) {
+	var rows []storage.RecordAuthorizationMetadata
+	for _, id := range ids {
+		for _, matches := range s.matches {
+			for _, rec := range matches {
+				if rec != nil && rec.ID == id {
+					rows = append(rows, storage.RecordAuthorizationMetadata{ID: id, Scope: rec.Scope, Sensitivity: rec.Sensitivity})
+					goto next
+				}
+			}
+		}
+	next:
+	}
+	return rows, nil
+}
+
 func (s *entityLookupStore) FindEntityByIdentifier(context.Context, string, string, string) (*schema.MemoryRecord, error) {
 	return nil, storage.ErrNotFound
 }
@@ -116,7 +132,7 @@ func TestFindEntityByTermRejectsInvalidMatches(t *testing.T) {
 		{name: "non-entity", store: &entityLookupStore{fakeExtractionStore: newFakeExtractionStore(), matches: map[string][]*schema.MemoryRecord{"orchid": {semantic}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := findEntityByTerm(ctx, tc.store, "Orchid", "project")
+			got := findEntityByTerm(ctx, tc.store, "Orchid", "project", schema.SensitivityLow)
 			if got != tc.want {
 				t.Fatalf("findEntityByTerm = %+v, want %+v", got, tc.want)
 			}

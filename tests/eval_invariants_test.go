@@ -16,7 +16,7 @@ func TestEvalCaptureAndOutcomeValidation(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	event, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "event",
 		Ref:       "ref-1",
@@ -30,7 +30,7 @@ func TestEvalCaptureAndOutcomeValidation(t *testing.T) {
 	}
 
 	// Outcome must target an episodic record.
-	semantic, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	semantic, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses",
@@ -68,7 +68,7 @@ func TestEvalRevisionInvariants(t *testing.T) {
 	ctx := context.Background()
 	m := newTestMembrane(t)
 
-	event, err := captureEventRecord(ctx, m, ingestion.IngestEventRequest{
+	event, err := captureEventRecord(ctx, m, eventCaptureFixture{
 		Source:    "eval",
 		EventKind: "build",
 		Ref:       "evt-1",
@@ -102,11 +102,11 @@ func TestEvalRevisionInvariants(t *testing.T) {
 	}
 
 	// Evidence required for semantic revisions.
-	semantic, err := captureObservationRecord(ctx, m, ingestion.IngestObservationRequest{
+	semantic, err := captureObservationRecord(ctx, m, observationCaptureFixture{
 		Source:    "eval",
 		Subject:   "service",
 		Predicate: "uses",
-		Object:    "sqlite",
+		Object:    "postgres",
 	})
 	if err != nil {
 		t.Fatalf("IngestObservation: %v", err)

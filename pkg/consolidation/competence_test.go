@@ -117,6 +117,10 @@ func TestCompetenceConsolidatorReinforcesExistingSkill(t *testing.T) {
 		SkillName: "skill:test",
 		Triggers:  []schema.Trigger{{Signal: "test"}},
 		Recipe:    []schema.RecipeStep{{Step: "run tests", Tool: "test"}},
+		Performance: &schema.PerformanceStats{
+			SuccessCount: 4,
+			SuccessRate:  1.0,
+		},
 	})
 	existing.Salience = 0.95
 	if err := store.Create(ctx, existing); err != nil {
@@ -139,6 +143,82 @@ func TestCompetenceConsolidatorReinforcesExistingSkill(t *testing.T) {
 	}
 	if !auditLogContains(got.AuditLog, schema.AuditActionReinforce, "consolidation/competence") {
 		t.Fatalf("AuditLog = %+v, want competence reinforce audit entry", got.AuditLog)
+	}
+	payload := got.Payload.(*schema.CompetencePayload)
+	if payload.Performance == nil || payload.Performance.SuccessCount != 6 || payload.Performance.LastUsedAt == nil {
+		t.Fatalf("Performance = %+v, want two new source successes recorded", payload.Performance)
+	}
+	if len(got.Provenance.Sources) != 2 || got.Provenance.Sources[0].Ref != "reinforce-source-a" || got.Provenance.Sources[1].Ref != "reinforce-source-b" {
+		t.Fatalf("Provenance sources = %+v, want both source episodes", got.Provenance.Sources)
+	}
+	rels, err := store.GetRelations(ctx, existing.ID)
+	if err != nil {
+		t.Fatalf("GetRelations existing competence: %v", err)
+	}
+	if !hasRelation(rels, schema.GraphPredicateDerivedFrom, "reinforce-source-a") || !hasRelation(rels, schema.GraphPredicateDerivedFrom, "reinforce-source-b") {
+		t.Fatalf("relations = %+v, want derived_from links to both source episodes", rels)
+	}
+
+	created, reinforced, err = NewCompetenceConsolidator(store).Consolidate(ctx)
+	if err != nil {
+		t.Fatalf("second Consolidate: %v", err)
+	}
+	if created != 0 || reinforced != 0 {
+		t.Fatalf("second created/reinforced = %d/%d, want 0/0 after sources are recorded", created, reinforced)
+	}
+}
+
+func TestCompetenceConsolidatorDoesNotReinforceDifferentScopeSkill(t *testing.T) {
+	ctx := context.Background()
+	store := newConsolidationTestStore(t)
+	tools := []schema.ToolNode{{ID: "t1", Tool: "test"}}
+	for _, rec := range []*schema.MemoryRecord{
+		episodicToolRecord("beta-source-a", tools),
+		episodicToolRecord("beta-source-b", tools),
+	} {
+		rec.Scope = "project:beta"
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("Create %s: %v", rec.ID, err)
+		}
+	}
+	existing := schema.NewMemoryRecord("existing-alpha-skill", schema.MemoryTypeCompetence, schema.SensitivityLow, &schema.CompetencePayload{
+		Kind:      "competence",
+		SkillName: "skill:test",
+		Triggers:  []schema.Trigger{{Signal: "test"}},
+		Recipe:    []schema.RecipeStep{{Step: "run tests", Tool: "test"}},
+	})
+	existing.Scope = "project:alpha"
+	existing.Salience = 0.25
+	if err := store.Create(ctx, existing); err != nil {
+		t.Fatalf("Create existing competence: %v", err)
+	}
+
+	created, reinforced, err := NewCompetenceConsolidator(store).Consolidate(ctx)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if created != 1 || reinforced != 0 {
+		t.Fatalf("created/reinforced = %d/%d, want beta skill created and alpha skill untouched", created, reinforced)
+	}
+	gotExisting, err := store.Get(ctx, existing.ID)
+	if err != nil {
+		t.Fatalf("Get existing competence: %v", err)
+	}
+	if gotExisting.Salience != 0.25 {
+		t.Fatalf("existing salience = %v, want unchanged 0.25", gotExisting.Salience)
+	}
+	competences, err := store.ListByType(ctx, schema.MemoryTypeCompetence)
+	if err != nil {
+		t.Fatalf("ListByType competence: %v", err)
+	}
+	var betaFound bool
+	for _, rec := range competences {
+		if rec.ID != existing.ID && rec.Scope == "project:beta" {
+			betaFound = true
+		}
+	}
+	if !betaFound {
+		t.Fatalf("competences = %+v, want new project:beta competence", competences)
 	}
 }
 

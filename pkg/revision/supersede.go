@@ -13,7 +13,7 @@ import (
 
 // Supersede atomically replaces an old record with a new one.
 // The old record is retracted (salience set to 0, semantic status set to "retracted"),
-// and the new record is linked to the old via provenance and a "supersedes" relation.
+// and the new record is linked to the old via provenance and a supersedes relation.
 //
 // Episodic records cannot be superseded (RFC Section 5).
 // The entire operation is performed within a single transaction so that partial
@@ -36,6 +36,7 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 		if err := ensureEvidence(newRecord); err != nil {
 			return err
 		}
+		normalizeNewRecordMetadata(newRecord, actor, now, oldRec.Lifecycle)
 
 		// Assign a new ID before linking the old record to the replacement.
 		if newRecord.ID == "" {
@@ -72,9 +73,9 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 			sp.Revision.Status = schema.RevisionStatusActive
 		}
 
-		// 5. Add "supersedes" relation from new -> old.
+		// 5. Add supersedes relation from new -> old.
 		newRecord.Relations = append(newRecord.Relations, schema.Relation{
-			Predicate: "supersedes",
+			Predicate: schema.GraphPredicateSupersedes,
 			TargetID:  oldID,
 			Weight:    1.0,
 			CreatedAt: now,
@@ -93,16 +94,24 @@ func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema
 			return fmt.Errorf("add audit entry to old record %s: %w", oldID, err)
 		}
 
-		newRecord.AuditLog = append(newRecord.AuditLog, newAuditEntry(
+		newRecord.AuditLog = []schema.AuditEntry{newAuditEntry(
 			schema.AuditActionCreate,
 			actor,
 			fmt.Sprintf("supersedes %s: %s", oldID, rationale),
 			now,
-		))
+		)}
 
 		// 7. Store new record.
 		if err := tx.Create(ctx, newRecord); err != nil {
 			return fmt.Errorf("create new record %s: %w", newRecord.ID, err)
+		}
+		if err := tx.AddRelation(ctx, oldID, schema.Relation{
+			Predicate: schema.GraphPredicateSupersededBy,
+			TargetID:  newRecord.ID,
+			Weight:    1.0,
+			CreatedAt: now,
+		}); err != nil {
+			return fmt.Errorf("add superseded_by relation to old record %s: %w", oldID, err)
 		}
 
 		return nil

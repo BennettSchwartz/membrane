@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BennettSchwartz/membrane/internal/teststore"
 	"github.com/BennettSchwartz/membrane/pkg/retrieval"
 	"github.com/BennettSchwartz/membrane/pkg/schema"
-	"github.com/BennettSchwartz/membrane/pkg/storage/sqlite"
 )
 
 type stubEmbeddingService struct {
@@ -25,10 +25,7 @@ func (s stubEmbeddingService) Similarity(_ context.Context, recordID string, _ [
 }
 
 func TestRetrievePromotesSelectedRecordsWhenTaskDescriptorProvided(t *testing.T) {
-	store, err := sqlite.Open(":memory:", "")
-	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
-	}
+	store := teststore.NewMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 
 	now := time.Now().UTC()

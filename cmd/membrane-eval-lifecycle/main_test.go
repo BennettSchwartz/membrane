@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/BennettSchwartz/membrane/internal/testutil"
 	"github.com/BennettSchwartz/membrane/pkg/embedding"
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
@@ -56,38 +57,48 @@ func (f failingLifecycleVectorStore) SearchByEmbedding(context.Context, []float3
 	return nil, f.searchErr
 }
 
-type scriptedLifecycleEmbeddingClient struct{}
+type scriptedLifecycleEmbeddingClient struct {
+	dimensions int
+}
 
-func (scriptedLifecycleEmbeddingClient) Embed(_ context.Context, text string) ([]float32, error) {
+func (c scriptedLifecycleEmbeddingClient) Embed(_ context.Context, text string) ([]float32, error) {
 	lower := strings.ToLower(text)
+	var code float32
 	switch {
 	case strings.Contains(lower, "what database"):
-		return []float32{101}, nil
+		code = 101
 	case strings.Contains(lower, "mysql"):
-		return []float32{1}, nil
+		code = 1
 	case strings.Contains(lower, "postgresql"):
-		return []float32{2}, nil
+		code = 2
 	case strings.Contains(lower, "how do i debug"):
-		return []float32{102}, nil
+		code = 102
 	case strings.Contains(lower, "restarting pods"):
-		return []float32{3}, nil
+		code = 3
 	case strings.Contains(lower, "pprof heap"):
-		return []float32{4}, nil
+		code = 4
 	case strings.Contains(lower, "current api rate"):
-		return []float32{103}, nil
+		code = 103
 	case strings.Contains(lower, "50 requests"):
-		return []float32{5}, nil
+		code = 5
 	case strings.Contains(lower, "200 requests"):
-		return []float32{6}, nil
+		code = 6
 	case strings.Contains(lower, "where do we deploy"):
-		return []float32{104}, nil
+		code = 104
 	case strings.Contains(lower, "heroku"):
-		return []float32{7}, nil
+		code = 7
 	case strings.Contains(lower, "kubernetes"):
-		return []float32{8}, nil
+		code = 8
 	default:
-		return []float32{99}, nil
+		code = 99
 	}
+	dimensions := c.dimensions
+	if dimensions <= 0 {
+		dimensions = 1
+	}
+	vec := make([]float32, dimensions)
+	vec[0] = code
+	return vec, nil
 }
 
 type scriptedLifecycleVectorStore struct {
@@ -125,6 +136,7 @@ type fakeLifecycleMembrane struct {
 	reinforceCalls int
 	penalizeCalls  int
 	response       *ingestion.CaptureMemoryResponse
+	graphResponse  *retrieval.RetrieveGraphResponse
 }
 
 func (s *scriptedLifecycleVectorStore) StoreTriggerEmbedding(_ context.Context, recordID string, embedding []float32, _ string) error {
@@ -164,6 +176,9 @@ func (f *fakeLifecycleMembrane) CaptureMemory(context.Context, ingestion.Capture
 }
 
 func (f *fakeLifecycleMembrane) RetrieveGraph(context.Context, *retrieval.RetrieveGraphRequest) (*retrieval.RetrieveGraphResponse, error) {
+	if f.graphResponse != nil {
+		return f.graphResponse, nil
+	}
 	return &retrieval.RetrieveGraphResponse{}, nil
 }
 
@@ -421,6 +436,62 @@ func TestRunLifecycleCLIValidationErrors(t *testing.T) {
 	}
 }
 
+func TestRunLifecycleCLIRejectsInvalidEmbeddingConfig(t *testing.T) {
+	ctx := context.Background()
+	base := []string{
+		"-postgres-dsn", "postgres://fake/db",
+		"-embedding-api-key", "flag-key",
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "empty endpoint", args: []string{"-embedding-endpoint", " "}, want: "--embedding-endpoint is required"},
+		{name: "empty model", args: []string{"-embedding-model", " "}, want: "--embedding-model is required"},
+		{name: "zero dimensions", args: []string{"-embedding-dimensions", "0"}, want: "--embedding-dimensions must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(append([]string{}, base...), tc.args...)
+			err := runLifecycleCLIWithDeps(ctx, args, nil, lifecycleCLIDependencies{
+				newMembrane: func(*membrane.Config) (lifecycleMembrane, error) {
+					t.Fatal("newMembrane should not be called for invalid config")
+					return nil, nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runLifecycleCLIWithDeps error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLifecycleEmbeddingValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vector     []float32
+		dimensions int
+		want       string
+	}{
+		{name: "empty", vector: nil, dimensions: 3, want: "empty"},
+		{name: "wrong dimensions", vector: []float32{1, 2}, dimensions: 3, want: "expected 3"},
+		{name: "nan", vector: []float32{1, float32(math.NaN()), 3}, dimensions: 3, want: "non-finite"},
+		{name: "infinite", vector: []float32{1, float32(math.Inf(1)), 3}, dimensions: 3, want: "non-finite"},
+		{name: "all zero", vector: []float32{0, 0, 0}, dimensions: 3, want: "all zeros"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLifecycleEmbeddingVector(tc.vector, tc.dimensions)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateLifecycleEmbeddingVector error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := validateLifecycleEmbeddingVector([]float32{0, 1, 0}, 3); err != nil {
+		t.Fatalf("validateLifecycleEmbeddingVector valid = %v", err)
+	}
+}
+
 func TestLifecycleCLIDependenciesDefaults(t *testing.T) {
 	deps := lifecycleCLIDependencies{}.withDefaults()
 	if deps.newMembrane == nil || deps.openVectorStore == nil || deps.newEmbeddingClient == nil {
@@ -428,12 +499,14 @@ func TestLifecycleCLIDependenciesDefaults(t *testing.T) {
 	}
 
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-	m, err := deps.newMembrane(cfg)
-	if err != nil {
-		t.Fatalf("default newMembrane: %v", err)
+	cfg.PostgresDSN = ""
+	t.Setenv("MEMBRANE_POSTGRES_DSN", "")
+	if m, err := deps.newMembrane(cfg); err == nil || !strings.Contains(err.Error(), "postgres_dsn is required") {
+		if m != nil {
+			_ = m.Stop()
+		}
+		t.Fatalf("default newMembrane error = %v, want postgres_dsn is required", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
 
 	if client := deps.newEmbeddingClient("http://127.0.0.1:1/embeddings", "test-model", "key", 3); client == nil {
 		t.Fatalf("default newEmbeddingClient = nil")
@@ -453,9 +526,7 @@ func TestRunLifecycleCLIWithInjectedDependencies(t *testing.T) {
 	store := &scriptedLifecycleVectorStore{}
 	deps := lifecycleCLIDependencies{
 		newMembrane: func(_ *membrane.Config) (lifecycleMembrane, error) {
-			cfg := membrane.DefaultConfig()
-			cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-			return membrane.New(cfg)
+			return &fakeLifecycleMembrane{}, nil
 		},
 		openVectorStore: func(dsn string, cfg postgres.EmbeddingConfig) (lifecycleCLIVectorStore, error) {
 			if dsn != "postgres://fake/db" || cfg.Dimensions != 9 || cfg.Model != "life-model" {
@@ -467,7 +538,7 @@ func TestRunLifecycleCLIWithInjectedDependencies(t *testing.T) {
 			if endpoint != "http://embed.example" || model != "life-model" || apiKey != "env-key" || dimensions != 9 {
 				t.Fatalf("newEmbeddingClient args = %q/%q/%q/%d, want configured values", endpoint, model, apiKey, dimensions)
 			}
-			return scriptedLifecycleEmbeddingClient{}
+			return scriptedLifecycleEmbeddingClient{dimensions: dimensions}
 		},
 	}
 
@@ -490,6 +561,32 @@ func TestRunLifecycleCLIWithInjectedDependencies(t *testing.T) {
 	}
 }
 
+func TestRunLifecycleCLIRejectsInvalidProviderEmbeddings(t *testing.T) {
+	ctx := context.Background()
+	store := &scriptedLifecycleVectorStore{}
+	err := runLifecycleCLIWithDeps(ctx, []string{
+		"-postgres-dsn", "postgres://fake/db",
+		"-embedding-api-key", "flag-key",
+		"-embedding-dimensions", "3",
+	}, nil, lifecycleCLIDependencies{
+		newMembrane: func(_ *membrane.Config) (lifecycleMembrane, error) {
+			return &fakeLifecycleMembrane{}, nil
+		},
+		openVectorStore: func(string, postgres.EmbeddingConfig) (lifecycleCLIVectorStore, error) {
+			return store, nil
+		},
+		newEmbeddingClient: func(string, string, string, int) embedding.Client {
+			return &fakeLifecycleEmbeddingClient{vec: []float32{1}}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "run lifecycle eval") || !strings.Contains(err.Error(), "expected 3") {
+		t.Fatalf("runLifecycleCLIWithDeps embedding validation error = %v, want wrapped dimension error", err)
+	}
+	if !store.closed {
+		t.Fatalf("vector store was not closed after provider validation failure")
+	}
+}
+
 func TestRunLifecycleCLIInjectedOpenError(t *testing.T) {
 	ctx := context.Background()
 	openErr := errors.New("open failed")
@@ -498,9 +595,7 @@ func TestRunLifecycleCLIInjectedOpenError(t *testing.T) {
 		"-embedding-api-key", "flag-key",
 	}, nil, lifecycleCLIDependencies{
 		newMembrane: func(_ *membrane.Config) (lifecycleMembrane, error) {
-			cfg := membrane.DefaultConfig()
-			cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-			return membrane.New(cfg)
+			return &fakeLifecycleMembrane{}, nil
 		},
 		openVectorStore: func(string, postgres.EmbeddingConfig) (lifecycleCLIVectorStore, error) {
 			return nil, openErr
@@ -557,9 +652,7 @@ func TestRunLifecycleCLIWrapsEvalErrors(t *testing.T) {
 		"-embedding-api-key", "flag-key",
 	}, nil, lifecycleCLIDependencies{
 		newMembrane: func(_ *membrane.Config) (lifecycleMembrane, error) {
-			cfg := membrane.DefaultConfig()
-			cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
-			return membrane.New(cfg)
+			return &fakeLifecycleMembrane{}, nil
 		},
 		openVectorStore: func(string, postgres.EmbeddingConfig) (lifecycleCLIVectorStore, error) {
 			return store, nil
@@ -880,10 +973,43 @@ func TestLifecycleCaptureNoiseAndRetrieveRootRecords(t *testing.T) {
 	}
 }
 
+func TestLifecycleRetrieveRootRecordsPreservesDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	rec := schema.NewMemoryRecord("root", schema.MemoryTypeSemantic, schema.SensitivityLow, &schema.SemanticPayload{
+		Kind:      "semantic",
+		Subject:   "api",
+		Predicate: "rate_limit",
+		Object:    "200 requests per second",
+		Validity:  schema.Validity{Mode: schema.ValidityModeGlobal},
+	})
+	m := &fakeLifecycleMembrane{graphResponse: &retrieval.RetrieveGraphResponse{
+		Nodes: []retrieval.GraphNode{{Record: rec, Root: true}},
+		Diagnostics: []retrieval.RetrievalDiagnostic{{
+			Code:    retrieval.DiagnosticEmbeddingQueryFailed,
+			Message: "embedding query unavailable",
+		}},
+	}}
+
+	resp, err := retrieveRootRecords(ctx, m, &retrieval.RetrieveRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("retrieveRootRecords: %v", err)
+	}
+	if len(resp.Records) != 1 || resp.Records[0].ID != rec.ID {
+		t.Fatalf("records = %+v, want root record", resp.Records)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Code != retrieval.DiagnosticEmbeddingQueryFailed {
+		t.Fatalf("diagnostics = %+v, want embedding diagnostic", resp.Diagnostics)
+	}
+}
+
 func newLifecycleTestMembrane(t *testing.T) *membrane.Membrane {
 	t.Helper()
 	cfg := membrane.DefaultConfig()
-	cfg.DBPath = filepath.Join(t.TempDir(), "membrane.db")
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_TEST_POSTGRES_DSN")
+	if cfg.PostgresDSN == "" {
+		t.Skip("MEMBRANE_TEST_POSTGRES_DSN is required for lifecycle eval integration tests")
+	}
+	testutil.ResetPostgresDatabase(t, cfg.PostgresDSN)
 	m, err := membrane.New(cfg)
 	if err != nil {
 		t.Fatalf("membrane.New: %v", err)

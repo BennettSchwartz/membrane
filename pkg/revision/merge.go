@@ -3,6 +3,7 @@ package revision
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,14 +14,14 @@ import (
 
 // Merge atomically combines multiple source records into a single merged record.
 // All source records are retracted (salience set to 0, semantic status set to "retracted"),
-// and the merged record is linked to each source via "derived_from" relations.
+// and the merged record is linked to each source via derived_from relations.
 //
 // Episodic records cannot be merged (RFC Section 5).
 // The entire operation is performed within a single transaction so that partial
 // revisions are never externally visible (RFC 15.7).
 func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error) {
-	if len(recordIDs) == 0 {
-		return nil, fmt.Errorf("merge: no source record IDs provided")
+	if err := validateMergeSourceIDs(recordIDs); err != nil {
+		return nil, err
 	}
 
 	err := storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
@@ -44,6 +45,7 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 		if err := ensureEvidence(mergedRecord); err != nil {
 			return err
 		}
+		normalizeNewRecordMetadata(mergedRecord, actor, now, sourceRecords[0].Lifecycle)
 
 		// 2. Retract all source records.
 		for _, rec := range sourceRecords {
@@ -59,10 +61,10 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 			mergedRecord.ID = uuid.New().String()
 		}
 
-		// Create "derived_from" relations to all source records.
+		// Create derived_from relations to all source records.
 		for _, id := range recordIDs {
 			mergedRecord.Relations = append(mergedRecord.Relations, schema.Relation{
-				Predicate: "derived_from",
+				Predicate: schema.GraphPredicateDerivedFrom,
 				TargetID:  id,
 				Weight:    1.0,
 				CreatedAt: now,
@@ -84,18 +86,29 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 		// Set timestamps on merged record.
 		mergedRecord.CreatedAt = now
 		mergedRecord.UpdatedAt = now
+		markSemanticActive(mergedRecord)
 
 		// Add "create" audit entry to merged record.
-		mergedRecord.AuditLog = append(mergedRecord.AuditLog, newAuditEntry(
+		mergedRecord.AuditLog = []schema.AuditEntry{newAuditEntry(
 			schema.AuditActionCreate,
 			actor,
 			fmt.Sprintf("merged from %v: %s", recordIDs, rationale),
 			now,
-		))
+		)}
 
 		// 5. Store merged record.
 		if err := tx.Create(ctx, mergedRecord); err != nil {
 			return fmt.Errorf("create merged record %s: %w", mergedRecord.ID, err)
+		}
+		for _, id := range recordIDs {
+			if err := tx.AddRelation(ctx, id, schema.Relation{
+				Predicate: schema.GraphPredicateDerivedSemantic,
+				TargetID:  mergedRecord.ID,
+				Weight:    1.0,
+				CreatedAt: now,
+			}); err != nil {
+				return fmt.Errorf("add derived_semantic relation to source record %s: %w", id, err)
+			}
 		}
 
 		return nil
@@ -105,4 +118,22 @@ func (s *Service) Merge(ctx context.Context, recordIDs []string, mergedRecord *s
 	}
 	s.embedRecord(ctx, mergedRecord)
 	return mergedRecord, nil
+}
+
+func validateMergeSourceIDs(recordIDs []string) error {
+	if len(recordIDs) == 0 {
+		return fmt.Errorf("merge: no source record IDs provided")
+	}
+	seen := make(map[string]struct{}, len(recordIDs))
+	for i, id := range recordIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return fmt.Errorf("merge: source record ID at index %d is required", i)
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("merge: duplicate source record ID %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
 }

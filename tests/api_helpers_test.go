@@ -3,6 +3,7 @@ package tests_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
@@ -10,7 +11,62 @@ import (
 	"github.com/BennettSchwartz/membrane/pkg/schema"
 )
 
-func captureEventRecord(ctx context.Context, m *membrane.Membrane, req ingestion.IngestEventRequest) (*schema.MemoryRecord, error) {
+// Capture fixtures describe source content without depending on the deprecated
+// typed ingestion API. Both the library facade and ingestion service implement
+// the capture contract used by these test adapters.
+type memoryCapturer interface {
+	CaptureMemory(context.Context, ingestion.CaptureMemoryRequest) (*ingestion.CaptureMemoryResponse, error)
+}
+
+type eventCaptureFixture struct {
+	Source      string
+	EventKind   string
+	Ref         string
+	Summary     string
+	Timestamp   time.Time
+	Tags        []string
+	Scope       string
+	Sensitivity schema.Sensitivity
+}
+
+type toolCaptureFixture struct {
+	Source      string
+	ToolName    string
+	Args        map[string]any
+	Result      any
+	DependsOn   []string
+	Timestamp   time.Time
+	Tags        []string
+	Scope       string
+	Sensitivity schema.Sensitivity
+}
+
+type observationCaptureFixture struct {
+	Source      string
+	Subject     string
+	Predicate   string
+	Object      any
+	Timestamp   time.Time
+	Tags        []string
+	Scope       string
+	Sensitivity schema.Sensitivity
+}
+
+type workingCaptureFixture struct {
+	Source            string
+	ThreadID          string
+	State             schema.TaskState
+	NextActions       []string
+	OpenQuestions     []string
+	ContextSummary    string
+	ActiveConstraints []schema.Constraint
+	Timestamp         time.Time
+	Tags              []string
+	Scope             string
+	Sensitivity       schema.Sensitivity
+}
+
+func captureEventRecord(ctx context.Context, m memoryCapturer, req eventCaptureFixture) (*schema.MemoryRecord, error) {
 	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 		Source:           req.Source,
 		SourceKind:       "event",
@@ -28,7 +84,7 @@ func captureEventRecord(ctx context.Context, m *membrane.Membrane, req ingestion
 	return resp.PrimaryRecord, nil
 }
 
-func captureToolOutputRecord(ctx context.Context, m *membrane.Membrane, req ingestion.IngestToolOutputRequest) (*schema.MemoryRecord, error) {
+func captureToolOutputRecord(ctx context.Context, m memoryCapturer, req toolCaptureFixture) (*schema.MemoryRecord, error) {
 	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 		Source:     req.Source,
 		SourceKind: "tool_output",
@@ -50,7 +106,7 @@ func captureToolOutputRecord(ctx context.Context, m *membrane.Membrane, req inge
 	return resp.PrimaryRecord, nil
 }
 
-func captureObservationRecord(ctx context.Context, m *membrane.Membrane, req ingestion.IngestObservationRequest) (*schema.MemoryRecord, error) {
+func captureObservationRecord(ctx context.Context, m memoryCapturer, req observationCaptureFixture) (*schema.MemoryRecord, error) {
 	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 		Source:     req.Source,
 		SourceKind: "observation",
@@ -77,7 +133,7 @@ func captureObservationRecord(ctx context.Context, m *membrane.Membrane, req ing
 	return nil, fmt.Errorf("capture observation did not produce semantic record")
 }
 
-func captureWorkingStateRecord(ctx context.Context, m *membrane.Membrane, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error) {
+func captureWorkingStateRecord(ctx context.Context, m memoryCapturer, req workingCaptureFixture) (*schema.MemoryRecord, error) {
 	resp, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 		Source:     req.Source,
 		SourceKind: "working_state",

@@ -3,6 +3,7 @@ package embedding
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -61,35 +62,44 @@ func (s *Service) EmbedQuery(ctx context.Context, taskDescriptor string) ([]floa
 
 // Similarity returns the cosine similarity in [0, 1] between query and a stored embedding.
 func (s *Service) Similarity(ctx context.Context, recordID string, query []float32) (float64, bool) {
-	if s == nil || s.vectorStore == nil || len(query) == 0 {
+	if s == nil || s.vectorStore == nil || !usableEmbeddingVector(query) {
 		return 0.5, false
 	}
 	stored, err := s.vectorStore.GetTriggerEmbedding(ctx, recordID)
-	if err != nil || len(stored) == 0 || len(stored) != len(query) {
+	if err != nil || len(stored) != len(query) || !usableEmbeddingVector(stored) {
 		return 0.5, false
 	}
 	return cosineSimilarity(stored, query), true
 }
 
-// BackfillMissing computes embeddings for existing competence and plan graph records that do not have one.
+// BackfillMissing computes embeddings for existing embeddable records that do
+// not have an embedding for the configured model.
 func (s *Service) BackfillMissing(ctx context.Context) (int, error) {
 	if s == nil || s.store == nil || s.vectorStore == nil || s.client == nil {
 		return 0, nil
 	}
 
 	var total int
+	var embedErrs []error
 	for _, memType := range []schema.MemoryType{
 		schema.MemoryTypeEpisodic,
 		schema.MemoryTypeWorking,
+		schema.MemoryTypeEntity,
 		schema.MemoryTypeSemantic,
 		schema.MemoryTypeCompetence,
 		schema.MemoryTypePlanGraph,
 	} {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
 		records, err := s.store.ListByType(ctx, memType)
 		if err != nil {
 			return total, fmt.Errorf("list %s for embedding backfill: %w", memType, err)
 		}
 		for _, rec := range records {
+			if err := ctx.Err(); err != nil {
+				return total, err
+			}
 			existing, err := s.vectorStore.GetTriggerEmbedding(ctx, rec.ID)
 			if err != nil {
 				return total, fmt.Errorf("check embedding for %s: %w", rec.ID, err)
@@ -101,10 +111,17 @@ func (s *Service) BackfillMissing(ctx context.Context) (int, error) {
 				continue
 			}
 			if err := s.EmbedRecord(ctx, rec); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return total, ctxErr
+				}
+				embedErrs = append(embedErrs, fmt.Errorf("%s: %w", rec.ID, err))
 				continue
 			}
 			total++
 		}
+	}
+	if len(embedErrs) > 0 {
+		return total, fmt.Errorf("embedding backfill failed for %d record(s): %w", len(embedErrs), errors.Join(embedErrs...))
 	}
 	return total, nil
 }
@@ -138,6 +155,8 @@ func triggerText(rec *schema.MemoryRecord) string {
 		return strings.Join(parts, " ")
 	case *schema.SemanticPayload:
 		return strings.TrimSpace(payload.Subject + " " + payload.Predicate + " " + semanticObjectText(payload.Object))
+	case *schema.EntityPayload:
+		return entityText(payload)
 	case *schema.CompetencePayload:
 		signals := make([]string, 0, len(payload.Triggers))
 		for _, trig := range payload.Triggers {
@@ -165,6 +184,36 @@ func triggerText(rec *schema.MemoryRecord) string {
 	}
 }
 
+func entityText(payload *schema.EntityPayload) string {
+	if payload == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2+len(payload.Types)+len(payload.Aliases)+len(payload.Identifiers))
+	appendEntityTextPart := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
+		}
+	}
+	appendEntityTextPart(payload.CanonicalName)
+	appendEntityTextPart(payload.PrimaryType)
+	for _, entityType := range payload.Types {
+		appendEntityTextPart(entityType)
+	}
+	for _, alias := range payload.Aliases {
+		appendEntityTextPart(alias.Value)
+	}
+	for _, identifier := range payload.Identifiers {
+		namespace := schema.NormalizeEntityIdentifierNamespace(identifier.Namespace)
+		value := strings.TrimSpace(identifier.Value)
+		if namespace != "" && value != "" {
+			parts = append(parts, namespace+":"+value)
+		}
+	}
+	appendEntityTextPart(payload.Summary)
+	return strings.Join(parts, " ")
+}
+
 func semanticObjectText(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -183,6 +232,9 @@ func semanticObjectText(value any) string {
 }
 
 func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) || !usableEmbeddingVector(a) || !usableEmbeddingVector(b) {
+		return 0.5
+	}
 	var dot, normA, normB float64
 	for i := range a {
 		dot += float64(a[i]) * float64(b[i])
@@ -197,8 +249,25 @@ func cosineSimilarity(a, b []float32) float64 {
 	return clamp01(sim)
 }
 
+func usableEmbeddingVector(vec []float32) bool {
+	if len(vec) == 0 {
+		return false
+	}
+	var nonZero bool
+	for _, value := range vec {
+		v := float64(value)
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+		if value != 0 {
+			nonZero = true
+		}
+	}
+	return nonZero
+}
+
 func clamp01(value float64) float64 {
-	if math.IsNaN(value) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0.5
 	}
 	if value < 0 {

@@ -102,10 +102,13 @@ CREATE TABLE IF NOT EXISTS competence_stats (
 -- compatibility until a dedicated migration can rename it safely.
 CREATE TABLE IF NOT EXISTS trigger_embeddings (
     record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
-    embedding vector({{EMBEDDING_DIMENSIONS}}),
+    embedding vector({{EMBEDDING_DIMENSIONS}}) NOT NULL,
     model TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
+
+DELETE FROM trigger_embeddings WHERE embedding IS NULL;
+ALTER TABLE trigger_embeddings ALTER COLUMN embedding SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS embedding_metadata (
     key TEXT PRIMARY KEY,
@@ -121,6 +124,8 @@ CREATE INDEX IF NOT EXISTS idx_records_type_salience ON memory_records(type, sal
 CREATE INDEX IF NOT EXISTS idx_records_scope_sensitivity ON memory_records(scope, sensitivity);
 CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
+CREATE INDEX IF NOT EXISTS idx_relations_source_rank ON relations(source_id, weight DESC NULLS LAST, created_at DESC, predicate, target_id);
+CREATE INDEX IF NOT EXISTS idx_relations_target_rank ON relations(target_id, weight DESC NULLS LAST, created_at DESC, predicate, source_id);
 CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate);
 CREATE INDEX IF NOT EXISTS idx_entity_terms_lookup ON entity_terms(normalized_term, scope);
 CREATE INDEX IF NOT EXISTS idx_entity_types_type ON entity_types(entity_type);
@@ -129,12 +134,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_log(record_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 CREATE INDEX IF NOT EXISTS idx_provenance_record ON provenance_sources(record_id);
+CREATE INDEX IF NOT EXISTS idx_trigger_embeddings_model ON trigger_embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_trigger_embeddings_ann
     ON trigger_embeddings USING ivfflat (embedding vector_cosine_ops)
     WITH (lists = 100);
 
 -- episodic_extraction_log tracks extractor queue state for episodic records.
 -- triple_count = -1 means the record has been claimed and is in-flight.
+-- Completed rows store the number of unique LLM triples processed, including
+-- triples that reinforced existing facts instead of creating new records.
 CREATE TABLE IF NOT EXISTS episodic_extraction_log (
     record_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
     extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -49,6 +49,31 @@ func TestFilterBySalienceSensitivityTrustAndSort(t *testing.T) {
 	}
 }
 
+func TestSortBySalienceBreaksTiesByFreshnessThenID(t *testing.T) {
+	older := &schema.MemoryRecord{
+		ID:        "a-older",
+		Salience:  0.7,
+		UpdatedAt: time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}
+	fresherB := &schema.MemoryRecord{
+		ID:        "b-fresher",
+		Salience:  0.7,
+		UpdatedAt: time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC),
+	}
+	fresherA := &schema.MemoryRecord{
+		ID:        "a-fresher",
+		Salience:  0.7,
+		UpdatedAt: fresherB.UpdatedAt,
+	}
+
+	records := []*schema.MemoryRecord{older, fresherB, fresherA}
+	SortBySalience(records)
+
+	if got := idsOf(records); !reflect.DeepEqual(got, []string{"a-fresher", "b-fresher", "a-older"}) {
+		t.Fatalf("sorted IDs = %v, want freshness tie-breaker then ID", got)
+	}
+}
+
 func TestRedactCopiesMetadataWithoutSharingSlices(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	record := &schema.MemoryRecord{

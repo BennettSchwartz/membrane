@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,22 @@ func TestValidationHelpers(t *testing.T) {
 	if err := validateValuePayload("content", largeValue); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("validateValuePayload large code = %v, want InvalidArgument", status.Code(err))
 	}
+	nonFiniteValue := &structpb.Value{Kind: &structpb.Value_NumberValue{NumberValue: math.NaN()}}
+	if err := validateValuePayload("content", nonFiniteValue); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateValuePayload non-finite code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateFloat32Slice("query_embedding", []float32{0.1, 0.2}); err != nil {
+		t.Fatalf("validateFloat32Slice ok: %v", err)
+	}
+	if err := validateFloat32Slice("query_embedding", []float32{float32(math.Inf(1))}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateFloat32Slice inf code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateFloat32Slice("query_embedding", []float32{0, 0}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateFloat32Slice zero vector code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateFloat32Slice("query_embedding", nil); err != nil {
+		t.Fatalf("validateFloat32Slice empty: %v", err)
+	}
 
 	if err := validateSensitivity("sensitivity", "", true); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("validateSensitivity required code = %v, want InvalidArgument", status.Code(err))
@@ -65,6 +82,42 @@ func TestValidationHelpers(t *testing.T) {
 	}
 	if err := validateSensitivity("sensitivity", string(schema.SensitivityLow), true); err != nil {
 		t.Fatalf("validateSensitivity ok: %v", err)
+	}
+
+	if err := validateTrustContext(&pb.TrustContext{
+		MaxSensitivity: string(schema.SensitivityMedium),
+		ActorId:        "agent",
+		Scopes:         []string{"project:alpha"},
+	}); err != nil {
+		t.Fatalf("validateTrustContext ok: %v", err)
+	}
+	if err := validateTrustContext(nil); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext nil code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateTrustContext(&pb.TrustContext{MaxSensitivity: "private"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext invalid sensitivity code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateTrustContext(&pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), ActorId: strings.Repeat("x", maxStringLength+1)}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext long actor code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateTrustContext(&pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), Scopes: make([]string, maxTags+1)}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext too many scopes code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateTrustContext(&pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), Scopes: []string{" \t"}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext blank scope code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateTrustContext(&pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow), Scopes: []string{strings.Repeat("x", maxStringLength+1)}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateTrustContext long scope code = %v, want InvalidArgument", status.Code(err))
+	}
+
+	if err := validateSourceKind("source_kind", "transcript"); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validateSourceKind invalid code = %v, want InvalidArgument", status.Code(err))
+	}
+	if err := validateSourceKind("source_kind", ""); err != nil {
+		t.Fatalf("validateSourceKind empty: %v", err)
+	}
+	if err := validateSourceKind("source_kind", "agent_turn"); err != nil {
+		t.Fatalf("validateSourceKind ok: %v", err)
 	}
 
 	if err := validateMemoryType("type", "unknown"); status.Code(err) != codes.InvalidArgument {
@@ -96,6 +149,140 @@ func TestHandlerRejectsNilRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.call(); status.Code(err) != codes.InvalidArgument {
 				t.Fatalf("nil request code = %v, want InvalidArgument; err=%v", status.Code(err), err)
+			}
+		})
+	}
+}
+
+func TestValidatedRevisionNewRecordAllowsServerAssignedID(t *testing.T) {
+	for _, callerID := range []string{"", "caller-forged-id"} {
+		rec := semanticRecordPBForHandler(t, callerID, "subject", "is", "object")
+		got, err := validatedRevisionNewRecordFromPB(rec)
+		if err != nil {
+			t.Fatalf("validatedRevisionNewRecordFromPB(%q): %v", callerID, err)
+		}
+		if got.ID != "" {
+			t.Fatalf("validated revision ID = %q, want empty for server assignment", got.ID)
+		}
+	}
+
+	invalid := semanticRecordPBForHandler(t, "ignored", "subject", "is", "object")
+	invalid.Type = ""
+	if _, err := validatedRevisionNewRecordFromPB(invalid); err == nil {
+		t.Fatal("validatedRevisionNewRecordFromPB accepted missing non-ID field")
+	}
+}
+
+func TestHandlerValidatesMutationStringLimitsBeforeDelegating(t *testing.T) {
+	ctx := context.Background()
+	h := &Handler{}
+	long := strings.Repeat("x", maxStringLength+1)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "RetrieveByID id", call: func() error {
+			_, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{Id: long, Trust: &pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow)}})
+			return err
+		}},
+		{name: "Supersede old_id", call: func() error {
+			_, err := h.Supersede(ctx, &pb.SupersedeRequest{OldId: long, Actor: "tester", Rationale: "replace"})
+			return err
+		}},
+		{name: "Supersede actor", call: func() error {
+			_, err := h.Supersede(ctx, &pb.SupersedeRequest{OldId: "old", Actor: long, Rationale: "replace"})
+			return err
+		}},
+		{name: "Fork rationale", call: func() error {
+			_, err := h.Fork(ctx, &pb.ForkRequest{SourceId: "source", Actor: "tester", Rationale: long})
+			return err
+		}},
+		{name: "Retract id", call: func() error {
+			_, err := h.Retract(ctx, &pb.RetractRequest{Id: long, Actor: "tester", Rationale: "obsolete"})
+			return err
+		}},
+		{name: "Merge source id", call: func() error {
+			_, err := h.Merge(ctx, &pb.MergeRequest{Ids: []string{long}, Actor: "tester", Rationale: "merge"})
+			return err
+		}},
+		{name: "Merge actor", call: func() error {
+			_, err := h.Merge(ctx, &pb.MergeRequest{Ids: []string{"a"}, Actor: long, Rationale: "merge"})
+			return err
+		}},
+		{name: "Reinforce id", call: func() error {
+			_, err := h.Reinforce(ctx, &pb.ReinforceRequest{Id: long, Actor: "tester", Rationale: "useful"})
+			return err
+		}},
+		{name: "Penalize rationale", call: func() error {
+			_, err := h.Penalize(ctx, &pb.PenalizeRequest{Id: "rec", Amount: 0.1, Actor: "tester", Rationale: long})
+			return err
+		}},
+		{name: "Contest contesting_ref", call: func() error {
+			_, err := h.Contest(ctx, &pb.ContestRequest{Id: "rec", ContestingRef: long, Actor: "tester", Rationale: "conflict"})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("code = %v, want InvalidArgument; err=%v", status.Code(err), err)
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsEmptyRequiredIDsBeforeDelegating(t *testing.T) {
+	ctx := context.Background()
+	h := &Handler{}
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "RetrieveByID id", call: func() error {
+			_, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{Id: "", Trust: &pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow)}})
+			return err
+		}},
+		{name: "RetrieveByID blank id", call: func() error {
+			_, err := h.RetrieveByID(ctx, &pb.RetrieveByIDRequest{Id: " \t", Trust: &pb.TrustContext{MaxSensitivity: string(schema.SensitivityLow)}})
+			return err
+		}},
+		{name: "Supersede old_id", call: func() error {
+			_, err := h.Supersede(ctx, &pb.SupersedeRequest{OldId: "", Actor: "tester", Rationale: "replace"})
+			return err
+		}},
+		{name: "Fork source_id", call: func() error {
+			_, err := h.Fork(ctx, &pb.ForkRequest{SourceId: "", Actor: "tester", Rationale: "branch"})
+			return err
+		}},
+		{name: "Retract id", call: func() error {
+			_, err := h.Retract(ctx, &pb.RetractRequest{Id: "", Actor: "tester", Rationale: "obsolete"})
+			return err
+		}},
+		{name: "Merge source id", call: func() error {
+			_, err := h.Merge(ctx, &pb.MergeRequest{Ids: []string{""}, Actor: "tester", Rationale: "merge"})
+			return err
+		}},
+		{name: "Merge duplicate source id", call: func() error {
+			_, err := h.Merge(ctx, &pb.MergeRequest{Ids: []string{"source-1", "source-1"}, Actor: "tester", Rationale: "merge"})
+			return err
+		}},
+		{name: "Reinforce id", call: func() error {
+			_, err := h.Reinforce(ctx, &pb.ReinforceRequest{Id: "", Actor: "tester", Rationale: "useful"})
+			return err
+		}},
+		{name: "Penalize id", call: func() error {
+			_, err := h.Penalize(ctx, &pb.PenalizeRequest{Id: "", Amount: 0.1, Actor: "tester", Rationale: "stale"})
+			return err
+		}},
+		{name: "Contest id", call: func() error {
+			_, err := h.Contest(ctx, &pb.ContestRequest{Id: "", ContestingRef: "", Actor: "tester", Rationale: "conflict"})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("code = %v, want InvalidArgument; err=%v", status.Code(err), err)
 			}
 		})
 	}
@@ -189,6 +376,8 @@ func TestServiceErrMapping(t *testing.T) {
 		{err: retrieval.ErrNilTrust, code: codes.InvalidArgument},
 		{err: revision.ErrEpisodicImmutable, code: codes.FailedPrecondition},
 		{err: errors.New("ingestion policy: candidate kind is required"), code: codes.InvalidArgument},
+		{err: errors.New("ingestion: invalid source_kind \"transcript\""), code: codes.InvalidArgument},
+		{err: errors.New("ingestion: invalid proposed_type \"transcript\""), code: codes.InvalidArgument},
 		{err: errors.New("semantic revision requires evidence"), code: codes.InvalidArgument},
 		{err: errors.New("record is not episodic"), code: codes.InvalidArgument},
 		{err: errors.New("database failed"), code: codes.Internal},

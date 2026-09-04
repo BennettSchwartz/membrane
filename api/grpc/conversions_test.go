@@ -263,9 +263,24 @@ func TestMemoryRecordAndResponseConversions(t *testing.T) {
 			NeedsMore:  false,
 			Scores:     map[string]float64{rec.ID: 0.9},
 		},
+		Diagnostics: []retrieval.RetrievalDiagnostic{{
+			Code:    retrieval.DiagnosticVectorRankFailed,
+			Message: "vector index unavailable",
+		}},
+		Projection: retrieval.RecordProjection{
+			RelationsTruncated: true,
+			HistoryOmitted:     true,
+			RecordsTruncated:   true,
+		},
 	})
-	if err != nil || len(graph.Nodes) != 1 || len(graph.Edges) != 1 || graph.Selection == nil || len(graph.Selection.Selected) != 1 {
+	if err != nil || len(graph.Nodes) != 1 || len(graph.Edges) != 1 || graph.Selection == nil || len(graph.Selection.Selected) != 1 || len(graph.Diagnostics) != 1 || graph.Projection == nil {
 		t.Fatalf("marshalRetrieveGraphResponse = %+v, %v; want populated response", graph, err)
+	}
+	if graph.Diagnostics[0].Code != retrieval.DiagnosticVectorRankFailed {
+		t.Fatalf("graph diagnostic code = %q, want %q", graph.Diagnostics[0].Code, retrieval.DiagnosticVectorRankFailed)
+	}
+	if !graph.Projection.RelationsTruncated || !graph.Projection.HistoryOmitted || !graph.Projection.RecordsTruncated {
+		t.Fatalf("graph projection = %+v, want propagated projection metadata", graph.Projection)
 	}
 }
 
