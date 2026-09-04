@@ -30,7 +30,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "scripts": {
     "build": "tsup && node ./scripts/copy-dist-proto.mjs",
@@ -50,6 +50,6 @@
     "@types/node": "^20.17.19",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.5"
   }
 }

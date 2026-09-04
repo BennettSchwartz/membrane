@@ -4,18 +4,22 @@ import {
   EntityType,
   GraphPredicate,
   MemoryType,
+  inverseGraphPredicate,
   OutcomeStatus,
   RevisionStatus,
   Sensitivity,
   TaskState,
   ValidityMode,
   createDefaultTrustContext,
+  normalizeGraphPredicate,
+  normalizeSemanticPredicate,
   type CompetencePayload,
   type Constraint,
   type EntityAlias,
   type EntityIdentifier,
   type EntityPayload,
   type EpisodicPayload,
+  type MetricsSnapshot,
   type PlanEdge,
   type PlanGraphPayload,
   type PlanMetrics,
@@ -30,6 +34,7 @@ import {
   type Validity,
   type WorkingPayload
 } from "../src/index";
+import type { RetrieveGraphEnvelope } from "../src/internal/grpc";
 
 describe("types", () => {
   it("exports expected enum-like values", () => {
@@ -45,7 +50,7 @@ describe("types", () => {
       max_sensitivity: "low",
       authenticated: false,
       actor_id: "",
-      scopes: []
+      scopes: ["default"]
     });
   });
 
@@ -60,6 +65,14 @@ describe("types", () => {
     expect(EntityType.OTHER).toBe("Other");
     expect(BuiltinEntityTypes).toContain("Other");
     expect(GraphPredicate.SUBJECT_ENTITY).toBe("subject_entity");
+    expect(GraphPredicate.DEPENDS_ON).toBe("depends_on");
+    expect(GraphPredicate.DEPENDENCY_OF).toBe("dependency_of");
+    expect(GraphPredicate.SUPPORTS).toBe("supports");
+    expect(GraphPredicate.SUPPORTED_BY).toBe("supported_by");
+    expect(GraphPredicate.CONTRADICTS).toBe("contradicts");
+    expect(GraphPredicate.SUPERSEDED_BY).toBe("superseded_by");
+    expect(GraphPredicate.CONTESTED_BY).toBe("contested_by");
+    expect(GraphPredicate.CONTESTS).toBe("contests");
   });
 
   it("ValidityMode enum has all values", () => {
@@ -72,6 +85,53 @@ describe("types", () => {
     expect(RevisionStatus.ACTIVE).toBe("active");
     expect(RevisionStatus.CONTESTED).toBe("contested");
     expect(RevisionStatus.RETRACTED).toBe("retracted");
+  });
+
+  it("RetrieveGraphEnvelope types diagnostics returned by the daemon", () => {
+    const envelope = {
+      nodes: [],
+      edges: [],
+      root_ids: [],
+      diagnostics: [{ code: "vector_rank_failed", message: "vector ranker unavailable" }],
+      projection: {
+        relations_omitted: true,
+        relations_truncated: false,
+        history_omitted: true,
+        records_truncated: false
+      }
+    } satisfies RetrieveGraphEnvelope;
+
+    expect(envelope.diagnostics[0]?.code).toBe("vector_rank_failed");
+    expect(envelope.projection.history_omitted).toBe(true);
+  });
+
+  it("MetricsSnapshot exposes vector coverage fields", () => {
+    const snapshot: MetricsSnapshot = {
+      total_records: 10,
+      embedded_records: 8,
+      missing_embeddings: 2,
+      embedding_coverage: 0.8,
+      embedding_model: "text-embedding-current",
+      retrieval_usefulness: 0.5
+    };
+
+    expect(snapshot.embedding_coverage).toBe(0.8);
+  });
+
+  it("normalizes and inverts graph predicates like the Go schema package", () => {
+    expect(normalizeGraphPredicate(" Depends On ")).toBe(GraphPredicate.DEPENDS_ON);
+    expect(normalizeGraphPredicate("Depends-On")).toBe(GraphPredicate.DEPENDS_ON);
+    expect(normalizeGraphPredicate("dependsOn")).toBe(GraphPredicate.DEPENDS_ON);
+    expect(normalizeGraphPredicate("factSubjectOf")).toBe(GraphPredicate.FACT_SUBJECT_OF);
+    expect(normalizeGraphPredicate("HTTPServerUses")).toBe("http_server_uses");
+    expect(normalizeGraphPredicate("  Many---Separators__Here  ")).toBe("many_separators_here");
+    expect(normalizeGraphPredicate("Custom Predicate")).toBe("custom_predicate");
+    expect(normalizeSemanticPredicate("DeployTargetFor")).toBe("deploy_target_for");
+    expect(inverseGraphPredicate("Depends On")).toBe(GraphPredicate.DEPENDENCY_OF);
+    expect(inverseGraphPredicate("mentionsEntity")).toBe(GraphPredicate.MENTIONED_IN);
+    expect(inverseGraphPredicate(GraphPredicate.SUPERSEDES)).toBe(GraphPredicate.SUPERSEDED_BY);
+    expect(inverseGraphPredicate(GraphPredicate.CONTESTED_BY)).toBe(GraphPredicate.CONTESTS);
+    expect(inverseGraphPredicate("Custom Predicate")).toBe("inverse_of_custom_predicate");
   });
 });
 

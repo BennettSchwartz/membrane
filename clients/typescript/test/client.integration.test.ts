@@ -9,11 +9,14 @@ import { MembraneClient, MembraneError, Sensitivity } from "../src/index";
 const API_KEY = "ts-integration-secret";
 const BUILD_TIMEOUT_MS = 180_000;
 const READY_TIMEOUT_MS = 60_000;
+const postgresDSN = process.env.MEMBRANE_TEST_POSTGRES_DSN ?? "";
+const describeIntegration = postgresDSN ? describe : describe.skip;
 
 let daemon: ChildProcess | undefined;
 let daemonAddr = "";
 let daemonLogs = "";
 let tempDir = "";
+let integrationScope = "";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,71 +107,76 @@ async function waitForDaemonReady(addr: string, timeoutMs: number): Promise<void
   throw new Error(`membraned did not become ready at ${addr}: ${String(lastError)}\nLogs:\n${daemonLogs}`);
 }
 
-beforeAll(async () => {
-  const repoRoot = path.resolve(__dirname, "../../..");
-  const port = await getFreePort();
-  daemonAddr = `127.0.0.1:${port}`;
+describeIntegration("MembraneClient integration", () => {
+  beforeAll(async () => {
+    const repoRoot = path.resolve(__dirname, "../../..");
+    const port = await getFreePort();
+    daemonAddr = `127.0.0.1:${port}`;
 
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "membrane-ts-client-"));
-  const dbPath = path.join(tempDir, "membrane.db");
-  const daemonBinary = path.join(tempDir, process.platform === "win32" ? "membraned.exe" : "membraned");
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "membrane-ts-client-"));
+    integrationScope = `ts-integration:${path.basename(tempDir)}`;
+    const configPath = path.join(tempDir, "membrane.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      read_scopes: [integrationScope],
+      write_scopes: [integrationScope]
+    }));
+    const daemonBinary = path.join(tempDir, process.platform === "win32" ? "membraned.exe" : "membraned");
 
-  await runCommand("go", ["build", "-o", daemonBinary, "./cmd/membraned"], {
-    cwd: repoRoot,
-    env: process.env,
-    timeoutMs: BUILD_TIMEOUT_MS
-  });
+    await runCommand("go", ["build", "-o", daemonBinary, "./cmd/membraned"], {
+      cwd: repoRoot,
+      env: process.env,
+      timeoutMs: BUILD_TIMEOUT_MS
+    });
 
-  daemon = spawn(daemonBinary, ["-addr", daemonAddr, "-db", dbPath], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      MEMBRANE_API_KEY: API_KEY
-    },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+    daemon = spawn(daemonBinary, ["-config", configPath, "-addr", daemonAddr, "-postgres-dsn", postgresDSN], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        MEMBRANE_API_KEY: API_KEY
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
 
-  const processRef = daemon;
-  if (!processRef.stdout || !processRef.stderr) {
-    throw new Error("Failed to capture membraned process output streams");
-  }
+    const processRef = daemon;
+    if (!processRef.stdout || !processRef.stderr) {
+      throw new Error("Failed to capture membraned process output streams");
+    }
 
-  processRef.stdout.on("data", (chunk: Buffer) => {
-    daemonLogs += chunk.toString("utf8");
-  });
-  processRef.stderr.on("data", (chunk: Buffer) => {
-    daemonLogs += chunk.toString("utf8");
-  });
-  processRef.on("error", (err: Error) => {
-    daemonLogs += `${err.stack ?? err.message}\n`;
-  });
+    processRef.stdout.on("data", (chunk: Buffer) => {
+      daemonLogs += chunk.toString("utf8");
+    });
+    processRef.stderr.on("data", (chunk: Buffer) => {
+      daemonLogs += chunk.toString("utf8");
+    });
+    processRef.on("error", (err: Error) => {
+      daemonLogs += `${err.stack ?? err.message}\n`;
+    });
 
-  await waitForDaemonReady(daemonAddr, READY_TIMEOUT_MS);
-}, BUILD_TIMEOUT_MS + READY_TIMEOUT_MS);
+    await waitForDaemonReady(daemonAddr, READY_TIMEOUT_MS);
+  }, BUILD_TIMEOUT_MS + READY_TIMEOUT_MS);
 
-afterAll(async () => {
-  if (!daemon) {
+  afterAll(async () => {
+    if (!daemon) {
+      if (tempDir) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    if (daemon.exitCode === null) {
+      daemon.kill("SIGTERM");
+    }
+
+    await new Promise<void>((resolve) => {
+      daemon?.once("exit", () => resolve());
+      setTimeout(() => resolve(), 5_000);
+    });
+
     if (tempDir) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-    return;
-  }
+  }, 10_000);
 
-  if (daemon.exitCode === null) {
-    daemon.kill("SIGTERM");
-  }
-
-  await new Promise<void>((resolve) => {
-    daemon?.once("exit", () => resolve());
-    setTimeout(() => resolve(), 5_000);
-  });
-
-  if (tempDir) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}, 10_000);
-
-describe("MembraneClient integration", () => {
   it("returns unauthenticated without API key", async () => {
     const client = new MembraneClient(daemonAddr, { timeoutMs: 2_000 });
     try {
@@ -194,7 +202,7 @@ describe("MembraneClient integration", () => {
           reasonToRemember: "Deployment jargon should be recoverable later",
           summary: "Remember Orchid as the staging deploy target",
           tags: ["integration", "typescript", "orchid"],
-          scope: "ts-integration"
+          scope: integrationScope
         }
       );
 
@@ -211,7 +219,7 @@ describe("MembraneClient integration", () => {
         {
           reasonToRemember: "Repeated niche term should converge on the same entity",
           tags: ["integration", "orchid"],
-          scope: "ts-integration"
+          scope: integrationScope
         }
       );
 
@@ -229,7 +237,7 @@ describe("MembraneClient integration", () => {
           max_sensitivity: Sensitivity.MEDIUM,
           authenticated: true,
           actor_id: "ts-test",
-          scopes: []
+          scopes: [integrationScope]
         }
       });
       expect(byId.id).toBe(ingested.id);
@@ -239,7 +247,7 @@ describe("MembraneClient integration", () => {
           max_sensitivity: Sensitivity.MEDIUM,
           authenticated: true,
           actor_id: "ts-test",
-          scopes: []
+          scopes: [integrationScope]
         },
         rootLimit: 10,
         nodeLimit: 20,
@@ -258,6 +266,22 @@ describe("MembraneClient integration", () => {
       expect(typeof metrics.total_records).toBe("number");
 
       await expect(client.retract(ingested.id, "ts-test", "episodic should fail")).rejects.toBeDefined();
+    } finally {
+      client.close();
+    }
+  });
+
+  it("enforces scope and sensitivity policy for authenticated clients", async () => {
+    const client = new MembraneClient(daemonAddr, { apiKey: API_KEY, timeoutMs: 2_000 });
+    try {
+      for (const options of [
+        { scope: "outside-policy", sensitivity: Sensitivity.LOW },
+        { scope: "", sensitivity: Sensitivity.LOW },
+        { scope: integrationScope, sensitivity: Sensitivity.HIGH }
+      ]) {
+        await expect(client.captureMemory({ text: "This write must be rejected" }, options))
+          .rejects.toMatchObject({ codeName: "PERMISSION_DENIED" });
+      }
     } finally {
       client.close();
     }

@@ -155,10 +155,71 @@ export const GraphPredicate = {
   DERIVED_FROM: "derived_from",
   DERIVED_SEMANTIC: "derived_semantic",
   REFERENCES_RECORD: "references_record",
-  REFERENCED_BY: "referenced_by"
+  REFERENCED_BY: "referenced_by",
+  DEPENDS_ON: "depends_on",
+  DEPENDENCY_OF: "dependency_of",
+  USES: "uses",
+  USED_BY: "used_by",
+  CAUSED_BY: "caused_by",
+  CAUSES: "causes",
+  SUPPORTS: "supports",
+  SUPPORTED_BY: "supported_by",
+  CONTRADICTS: "contradicts",
+  CONTRADICTED_BY: "contradicted_by",
+  SUPERSEDES: "supersedes",
+  SUPERSEDED_BY: "superseded_by",
+  CONTESTED_BY: "contested_by",
+  CONTESTS: "contests"
 } as const;
 
 export type GraphPredicate = (typeof GraphPredicate)[keyof typeof GraphPredicate] | string;
+
+const INVERSE_GRAPH_PREDICATES: Record<string, string> = {
+  [GraphPredicate.MENTIONS_ENTITY]: GraphPredicate.MENTIONED_IN,
+  [GraphPredicate.MENTIONED_IN]: GraphPredicate.MENTIONS_ENTITY,
+  [GraphPredicate.SUBJECT_ENTITY]: GraphPredicate.FACT_SUBJECT_OF,
+  [GraphPredicate.FACT_SUBJECT_OF]: GraphPredicate.SUBJECT_ENTITY,
+  [GraphPredicate.OBJECT_ENTITY]: GraphPredicate.FACT_OBJECT_OF,
+  [GraphPredicate.FACT_OBJECT_OF]: GraphPredicate.OBJECT_ENTITY,
+  [GraphPredicate.DERIVED_FROM]: GraphPredicate.DERIVED_SEMANTIC,
+  [GraphPredicate.DERIVED_SEMANTIC]: GraphPredicate.DERIVED_FROM,
+  [GraphPredicate.REFERENCES_RECORD]: GraphPredicate.REFERENCED_BY,
+  [GraphPredicate.REFERENCED_BY]: GraphPredicate.REFERENCES_RECORD,
+  [GraphPredicate.DEPENDS_ON]: GraphPredicate.DEPENDENCY_OF,
+  [GraphPredicate.DEPENDENCY_OF]: GraphPredicate.DEPENDS_ON,
+  [GraphPredicate.USES]: GraphPredicate.USED_BY,
+  [GraphPredicate.USED_BY]: GraphPredicate.USES,
+  [GraphPredicate.CAUSED_BY]: GraphPredicate.CAUSES,
+  [GraphPredicate.CAUSES]: GraphPredicate.CAUSED_BY,
+  [GraphPredicate.SUPPORTS]: GraphPredicate.SUPPORTED_BY,
+  [GraphPredicate.SUPPORTED_BY]: GraphPredicate.SUPPORTS,
+  [GraphPredicate.CONTRADICTS]: GraphPredicate.CONTRADICTED_BY,
+  [GraphPredicate.CONTRADICTED_BY]: GraphPredicate.CONTRADICTS,
+  [GraphPredicate.SUPERSEDES]: GraphPredicate.SUPERSEDED_BY,
+  [GraphPredicate.SUPERSEDED_BY]: GraphPredicate.SUPERSEDES,
+  [GraphPredicate.CONTESTED_BY]: GraphPredicate.CONTESTS,
+  [GraphPredicate.CONTESTS]: GraphPredicate.CONTESTED_BY
+};
+
+export function normalizeGraphPredicate(predicate: string): string {
+  return predicate
+    .trim()
+    .replace(/([A-Z]+)([A-Z][a-z])/gu, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .join("_");
+}
+
+export function normalizeSemanticPredicate(predicate: string): string {
+  return normalizeGraphPredicate(predicate);
+}
+
+export function inverseGraphPredicate(predicate: string): string {
+  const normalized = normalizeGraphPredicate(predicate);
+  return INVERSE_GRAPH_PREDICATES[normalized] ?? `inverse_of_${normalized}`;
+}
 
 export const InterpretationStatus = {
   TENTATIVE: "tentative",
@@ -262,6 +323,18 @@ export interface SelectionResult {
   scores?: Record<string, number>;
 }
 
+export interface RetrievalDiagnostic {
+  code: string;
+  message: string;
+}
+
+export interface RecordProjection {
+  relations_omitted: boolean;
+  relations_truncated: boolean;
+  history_omitted: boolean;
+  records_truncated: boolean;
+}
+
 export interface RetrieveResult {
   records: MemoryRecord[];
   selection?: SelectionResult;
@@ -278,6 +351,29 @@ export interface RetrieveGraphResult {
   edges: GraphEdge[];
   root_ids: string[];
   selection?: SelectionResult;
+  diagnostics?: RetrievalDiagnostic[];
+  projection?: RecordProjection;
+}
+
+export interface MetricsSnapshot extends JsonObject {
+  collected_at?: string;
+  total_records?: number;
+  records_by_type?: Record<MemoryType, number>;
+  avg_salience?: number;
+  avg_confidence?: number;
+  salience_distribution?: Record<string, number>;
+  active_records?: number;
+  pinned_records?: number;
+  total_audit_entries?: number;
+  embedding_model?: string;
+  embedded_records?: number;
+  missing_embeddings?: number;
+  embedding_coverage?: number;
+  memory_growth_rate?: number;
+  retrieval_usefulness?: number;
+  competence_success_rate?: number;
+  plan_reuse_frequency?: number;
+  revision_rate?: number;
 }
 
 export interface CaptureMemoryResult {
@@ -291,7 +387,7 @@ export function createDefaultTrustContext(): TrustContext {
     max_sensitivity: Sensitivity.LOW,
     authenticated: false,
     actor_id: "",
-    scopes: []
+    scopes: ["default"]
   };
 }
 
@@ -397,7 +493,7 @@ export interface Interpretation {
 }
 
 // ---------------------------------------------------------------------------
-// Payload types (RFC 15A.2, 15A.6 – 15A.10)
+// Payload types (RFC 15A.2, 15A.6 – 15A.11)
 // ---------------------------------------------------------------------------
 
 export interface EpisodicPayload {

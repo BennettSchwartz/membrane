@@ -5,6 +5,7 @@ import * as protoLoader from "@grpc/proto-loader";
 
 export interface RecordEnvelope {
   record: unknown;
+  projection?: unknown;
 }
 
 export interface RetrieveEnvelope {
@@ -23,6 +24,8 @@ export interface RetrieveGraphEnvelope {
   edges: unknown[];
   root_ids: string[];
   selection?: unknown;
+  diagnostics?: unknown[];
+  projection?: unknown;
 }
 
 export interface MetricsEnvelope {
@@ -62,6 +65,7 @@ export interface RetrieveGraphRpcRequest {
   node_limit: number;
   edge_limit: number;
   max_hops: number;
+  query_embedding: number[];
 }
 
 export interface RetrieveByIdRpcRequest {
@@ -146,6 +150,7 @@ export interface GrpcTransportOptions {
   tls: boolean;
   tlsCaCertPath?: string | undefined;
   apiKey?: string | undefined;
+  allowInsecureCredentials?: boolean | undefined;
   timeoutMs?: number | undefined;
 }
 
@@ -190,7 +195,11 @@ type MethodTable = {
   [K in RpcMethodName]: GrpcUnaryMethod<K>;
 };
 
-type MembraneServiceClientConstructor = new (address: string, credentials: grpc.ChannelCredentials) => MembraneServiceClient;
+type MembraneServiceClientConstructor = new (
+  address: string,
+  credentials: grpc.ChannelCredentials,
+  options?: grpc.ChannelOptions,
+) => MembraneServiceClient;
 
 let cachedClientCtor: MembraneServiceClientConstructor | undefined;
 
@@ -248,6 +257,57 @@ function createCredentials(options: GrpcTransportOptions): grpc.ChannelCredentia
     return grpc.credentials.createSsl(rootCerts);
   }
   return grpc.credentials.createInsecure();
+}
+
+function hostFromGrpcAddress(addr: string): string {
+  const bracketed = addr.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (bracketed) {
+    return bracketed[1] ?? "";
+  }
+  const unixScheme = addr.match(/^(?:unix|unix-abstract):/);
+  if (unixScheme) {
+    return "localhost";
+  }
+  const colon = addr.lastIndexOf(":");
+  if (colon > -1 && addr.indexOf(":") === colon) {
+    return addr.slice(0, colon);
+  }
+  return addr;
+}
+
+function isLoopbackAddress(addr: string): boolean {
+  const host = hostFromGrpcAddress(addr).toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "";
+}
+
+function validateCredentialTransport(options: GrpcTransportOptions): void {
+  if (options.allowInsecureCredentials !== undefined && typeof options.allowInsecureCredentials !== "boolean") {
+    throw new TypeError("allowInsecureCredentials must be a boolean");
+  }
+  if (!options.apiKey || options.tls || options.tlsCaCertPath || options.allowInsecureCredentials) {
+    return;
+  }
+  if (!isLoopbackAddress(options.addr)) {
+    throw new MembraneError(
+      "Refusing to send apiKey over plaintext gRPC to a non-loopback address. Enable TLS or set allowInsecureCredentials for a trusted development network.",
+    );
+  }
+}
+
+function channelOptionsForCredentialTransport(options: GrpcTransportOptions): grpc.ChannelOptions | undefined {
+  if (
+    options.apiKey &&
+    !options.tls &&
+    !options.tlsCaCertPath &&
+    !options.allowInsecureCredentials &&
+    isLoopbackAddress(options.addr)
+  ) {
+    // The plaintext credential exception is safe only while the connection
+    // stays local. grpc-js otherwise honors proxy environment variables,
+    // which can route a localhost target through a remote CONNECT proxy.
+    return { "grpc.enable_http_proxy": 0 };
+  }
+  return undefined;
 }
 
 function grpcStatusName(code: grpc.status | undefined): string | undefined {
@@ -332,8 +392,13 @@ class GrpcTransport implements RpcTransport {
   private readonly timeoutMs: number | undefined;
 
   constructor(options: GrpcTransportOptions) {
+    validateCredentialTransport(options);
     const ClientCtor = loadClientConstructor();
-    this.client = new ClientCtor(options.addr, createCredentials(options));
+    this.client = new ClientCtor(
+      options.addr,
+      createCredentials(options),
+      channelOptionsForCredentialTransport(options),
+    );
     this.methods = bindMethodTable(this.client);
     this.apiKey = options.apiKey;
     this.timeoutMs = options.timeoutMs;

@@ -13,7 +13,7 @@ npm install @bennettschwartz/membrane
 ## Quick Start
 
 ```ts
-import { MembraneClient, Sensitivity, SourceKind } from "@bennettschwartz/membrane";
+import { MembraneClient, MemoryType, Sensitivity, SourceKind } from "@bennettschwartz/membrane";
 
 const client = new MembraneClient("localhost:9090", {
   apiKey: "your-api-key"
@@ -39,13 +39,19 @@ const graph = await client.retrieveGraph("debug auth", {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "agent-1",
-    scopes: []
+    scopes: ["project-openclaw"]
   },
+  memoryTypes: [MemoryType.ENTITY, MemoryType.SEMANTIC, MemoryType.COMPETENCE],
   rootLimit: 10,
   nodeLimit: 25,
   edgeLimit: 100,
+  rootOnly: false,
   maxHops: 1
 });
+
+if (graph.diagnostics?.length) {
+  console.warn("Retrieval used fallback ranking", graph.diagnostics);
+}
 
 console.log(capture.primary_record.id, graph.nodes.length);
 client.close();
@@ -64,7 +70,9 @@ The SDK mirrors the Python client behavior and defaults.
 - `retrieveGraph(...)` / `retrieve_graph(...)`
 - `retrieveById(...)` / `retrieve_by_id(...)`
 
-`retrieveGraph()` returns a rooted neighborhood of records plus graph edges and optional selector metadata.
+`retrieveGraph()` returns a rooted neighborhood of records plus graph edges, optional selector metadata, and optional non-fatal retrieval diagnostics. It accepts precomputed query vectors with `queryEmbedding` and roots-only retrieval with `rootOnly`. Supplied query vectors are validated before the RPC and must be finite with at least one non-zero value. Graph budgets, metadata shapes, and enum fields are also validated client-side: `minSalience` must be finite and between `0` and `1`, `rootLimit`/`nodeLimit`/`edgeLimit` must be integers from `0` to `10000`, `maxHops` must be an integer no lower than `-1`, `rootOnly` must be boolean, `memoryTypes` must use public API memory type values, `trust.max_sensitivity` must use a public API sensitivity value, `trust.authenticated` must be boolean, `trust.actor_id` must be a string, and `trust.scopes` must be an array of strings. `retrieveById()`, revision methods, `reinforce()`, and `penalize()` reject empty required record IDs before transport, while `contest()` still permits an empty `contestingRef` for external evidence. Revision replacement records also validate semantic, entity, and relation invariants before transport; outbound semantic and entity records may use either SDK snake_case fields or Go-style JSON fields such as `Subject`, `Predicate`, `Object`, `Validity`, `CanonicalName`, and `Identifiers`. `captureMemory()` validates `source`, `sourceKind`, `proposedType`, `sensitivity`, `reasonToRemember`, `summary`, `timestamp`, `scope`, and `tags` before sending the RPC.
+
+Option objects accept camelCase names and protobuf-style snake_case aliases. For example, `retrieve_graph("debug auth", { root_only: true, query_embedding: [...] })` is equivalent to the camelCase form.
 
 ### Revision
 
@@ -82,6 +90,8 @@ The SDK mirrors the Python client behavior and defaults.
 ### Metrics
 
 - `getMetrics()` / `get_metrics()`
+
+Returns a typed `MetricsSnapshot`, including pgvector coverage fields such as `embedded_records`, `missing_embeddings`, and `embedding_coverage`.
 
 ## Error Handling
 
@@ -102,6 +112,13 @@ const client = new MembraneClient("membrane.example.com:443", {
   timeoutMs: 10_000
 });
 ```
+
+The SDK refuses to attach `apiKey` metadata to plaintext gRPC connections
+unless the address is loopback. For trusted local-network development without
+TLS, set `allowInsecureCredentials: true` explicitly. When the loopback
+plaintext exception is used, the SDK disables gRPC HTTP proxying so proxy
+environment variables cannot move the credential-bearing connection off-host.
+TLS and the explicit insecure development override retain normal proxy behavior.
 
 ## LLM Integration Pattern
 
@@ -179,5 +196,5 @@ npm run check:proto-sync
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 20.19+
 - A running Membrane daemon (default: `localhost:9090`)
