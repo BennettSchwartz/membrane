@@ -184,13 +184,21 @@ func TestGeneratedMessageAccessorsAndReflection(t *testing.T) {
 		t.Fatalf("MemoryRecord getters returned unexpected values: %+v", record)
 	}
 	response := &RetrieveGraphResponse{
-		Nodes:     []*GraphNode{{Record: record, Root: true, Hop: 0}},
-		Edges:     []*GraphEdge{{SourceId: "rec-1", Predicate: "related_to", TargetId: "rec-2"}},
-		RootIds:   []string{"rec-1"},
-		Selection: &SelectionResult{Selected: []*MemoryRecord{record}, Confidence: 0.9},
+		Nodes:       []*GraphNode{{Record: record, Root: true, Hop: 0}},
+		Edges:       []*GraphEdge{{SourceId: "rec-1", Predicate: "related_to", TargetId: "rec-2"}},
+		RootIds:     []string{"rec-1"},
+		Selection:   &SelectionResult{Selected: []*MemoryRecord{record}, Confidence: 0.9},
+		Diagnostics: []*RetrievalDiagnostic{{Code: "vector_rank_failed", Message: "vector index unavailable"}},
 	}
-	if len(response.GetNodes()) != 1 || len(response.GetEdges()) != 1 || response.GetSelection().GetConfidence() != 0.9 {
+	if len(response.GetNodes()) != 1 || len(response.GetEdges()) != 1 || response.GetSelection().GetConfidence() != 0.9 || response.GetDiagnostics()[0].GetCode() != "vector_rank_failed" {
 		t.Fatalf("RetrieveGraphResponse getters returned unexpected values: %+v", response)
+	}
+	request := &RetrieveGraphRequest{
+		TaskDescriptor: "auth incident",
+		QueryEmbedding: []float32{0.25, 0.5, 0.75},
+	}
+	if got := request.GetQueryEmbedding(); len(got) != 3 || got[1] != 0.5 {
+		t.Fatalf("RetrieveGraphRequest query embedding = %v, want preserved float vector", got)
 	}
 }
 

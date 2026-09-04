@@ -64,6 +64,7 @@ message RetrieveGraphRequest {
     int32 node_limit = 6;
     int32 edge_limit = 7;
     int32 max_hops = 8;
+    repeated float query_embedding = 9;
 }
 
 message RetrieveGraphResponse {
@@ -71,6 +72,20 @@ message RetrieveGraphResponse {
     repeated GraphEdge edges = 2;
     repeated string root_ids = 3;
     SelectionResult selection = 4;
+    repeated RetrievalDiagnostic diagnostics = 5;
+    RecordProjection projection = 6;
+}
+
+message RetrievalDiagnostic {
+    string code = 1;
+    string message = 2;
+}
+
+message RecordProjection {
+    bool relations_omitted = 1;
+    bool relations_truncated = 2;
+    bool history_omitted = 3;
+    bool records_truncated = 4;
 }
 
 message RetrieveByIDRequest {
@@ -80,6 +95,7 @@ message RetrieveByIDRequest {
 
 message MemoryRecordResponse {
     MemoryRecord record = 1;
+    RecordProjection projection = 2;
 }
 
 // ---------------------------------------------------------------------------
