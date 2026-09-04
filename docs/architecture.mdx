@@ -1,6 +1,6 @@
 ---
 title: "Architecture"
-description: "How Membrane's three logical planes, subsystems, storage backends, and background jobs fit together."
+description: "How Membrane's three logical planes, subsystems, Postgres storage, and background jobs fit together."
 ---
 
 ## Overview
@@ -12,7 +12,7 @@ Membrane runs as a long-lived daemon (`membraned`) or as an embedded Go library.
 |  Ingestion Plane |---->|   Policy Plane   |---->| Storage & Retrieval  |
 +------------------+     +------------------+     +----------------------+
         |                        |                         |
-   CaptureMemory           Classification,            SQLCipher (encrypted),
+   CaptureMemory           Classification,            Postgres + pgvector,
    candidates              sensitivity,               audit trails,
                            decay profiles             trust-gated access
 ```
@@ -46,7 +46,7 @@ The storage and retrieval plane is where records live and where queries are answ
 working → entity → semantic → competence → plan_graph → episodic
 ```
 
-Each layer is filtered by the caller's `TrustContext` before results are merged. When a pgvector backend and query embedding are available, results are ranked using a hybrid score (70% vector similarity, 30% salience). Otherwise, results are ranked by salience descending. An optional `Limit` caps the returned set.
+Each layer is filtered by the caller's `TrustContext` before results are merged. When a query embedding is available, Postgres + pgvector ranking uses a hybrid score (70% vector similarity, 30% salience). Otherwise, results are ranked by salience descending. An optional `Limit` caps the returned set.
 
 ## Subsystems
 
@@ -55,7 +55,7 @@ Each layer is filtered by the caller's `TrustContext` before results are merged.
     Accepts graph-aware capture candidates for events, tool outputs, observations, working state, and agent turns. Classifies, validates, interprets, links, and persists records with full provenance and an initial audit entry.
   </Card>
   <Card title="Retrieval" icon="magnifying-glass">
-    Layered query across all memory types with trust-context filtering. Records are ranked by salience, or by a hybrid vector+salience score when Postgres + pgvector is configured (recommended). Competence and plan-graph records go through an additional multi-solution selector.
+    Layered query across all memory types with trust-context filtering. Records are ranked by salience, or by a hybrid vector+salience score when query embeddings are available. Competence and plan-graph records go through an additional multi-solution selector.
   </Card>
   <Card title="Decay" icon="clock">
     Applies exponential salience decay to all non-pinned records on a configurable schedule. Exposes `Reinforce` and `Penalize` to adjust salience explicitly in response to outcomes.
@@ -70,10 +70,10 @@ Each layer is filtered by the caller's `TrustContext` before results are merged.
     Point-in-time snapshot collector. Reports total records, salience distribution, retrieval usefulness, competence success rate, plan reuse frequency, and revision rate.
   </Card>
   <Card title="Embedding" icon="vector-square">
-    HTTP client for OpenAI-compatible embedding endpoints. Generates query embeddings at retrieval time and record embeddings after ingestion or revision when a Postgres backend is configured.
+    HTTP client for OpenAI-compatible embedding endpoints. Generates query embeddings at retrieval time and record embeddings after ingestion or revision.
   </Card>
   <Card title="Storage" icon="database">
-    Pluggable store interface backed by SQLite (default, with optional SQLCipher encryption) or Postgres + pgvector. Supports transactional updates, audit appends, and salience-only updates.
+    Postgres + pgvector store for typed records, graph edges, audit entries, salience updates, and embedding vectors.
   </Card>
 </CardGroup>
 
@@ -100,17 +100,13 @@ type Membrane struct {
 }
 ```
 
-Subsystems that depend on embeddings or LLM extraction are conditionally constructed: if `EmbeddingEndpoint` is set and the Postgres backend is selected, the embedding service is created and passed to retrieval, revision, and consolidation. If `LLMEndpoint` is set, consolidation is upgraded with the LLM-backed semantic extractor. If `IngestLLMEnabled`, `IngestLLMEndpoint`, and `IngestLLMModel` are set, capture is upgraded with ingest-side interpretation and candidate resolution.
+Subsystems that depend on embeddings or LLM extraction are conditionally constructed only from complete endpoint/model pairs supplied by config or environment fallback. `EmbeddingEndpoint` and `EmbeddingModel` must be set together; when both are set, the embedding service is created on top of Postgres + pgvector and passed to retrieval, revision, and consolidation. `LLMEndpoint` and `LLMModel` must also be set together; when both are set, consolidation is upgraded with the LLM-backed semantic extractor. If `IngestLLMEnabled` is true, `IngestLLMEndpoint` and `IngestLLMModel` are required before capture is upgraded with ingest-side interpretation and candidate resolution.
 
 ## Storage model
 
-### Backends
+### Store
 
-| Backend | When to use | Notes |
-|---------|-------------|-------|
-| **SQLite (default)** | Single-process deployments, local development, zero-infrastructure setups | Uses SQLCipher for encryption at rest when `MEMBRANE_ENCRYPTION_KEY` is set |
-| **Postgres** | Multi-writer deployments, concurrent agents | JSONB payload storage, same retrieval semantics as SQLite |
-| **Postgres + pgvector** | Embedding-backed retrieval and selection | Enables hybrid vector+salience ranking for all record types and embedding-backed multi-solution selection for competence and plan-graph records |
+Membrane's runtime backend is Postgres with the `pgvector` extension. The schema stores typed records and graph edges in relational tables, structured payloads in JSONB, and embeddings in a fixed-dimension, non-null pgvector column. The store rejects empty, non-finite, all-zero, or wrong-dimension vectors before insert or search, and startup schema application removes unusable null legacy embedding rows before enforcing the non-null constraint on existing stores. Ordinary list queries order by salience, creation time, then record ID. Retrieval can ask Postgres to rank only the already-filtered candidate record IDs, so unrelated records outside the requested memory types or trust scope do not consume the vector search window. Embedding dimensions are strict because they define the pgvector column shape; same-dimension model changes are allowed, and when an embedding model is configured, vector lookup and search use only rows for that model so startup backfill can refresh records after model changes. The schema keeps a model index next to the pgvector ANN index so model-scoped searches do not rely only on distance ordering. pgvector searches break equal-distance ties by `record_id`, and exact semantic duplicate lookups choose the freshest matching record before falling back to ID; together these rules keep retrieval and eval runs deterministic. Retrieval, revision history, trust filtering, and vector ranking stay in one database substrate.
 
 ### Record structure
 
@@ -128,26 +124,25 @@ Every `MemoryRecord` shares a common envelope regardless of type:
 
 ### Relationship graph
 
-Relations between records are stored alongside the records themselves. When a revision operation runs (e.g., `Supersede`), the new record gains a `supersedes` relation to the old one, and the old record's status is updated. This gives every record a queryable lineage without a separate graph store.
+Relations between records are stored alongside the records themselves. When a revision operation runs (e.g., `Supersede`), the new record gains a `supersedes` relation to the old one, and the old record's status is updated. Graph retrieval expands across both outgoing and incoming relation rows, so a root entity can discover facts, episodes, and revisions that point at it even if only one edge direction was written. This gives every record a queryable lineage without a separate graph store.
 
 ## Deployment tiers
 
-Membrane scales from a zero-infrastructure default to a full pipeline with embedding similarity search and LLM-backed knowledge extraction.
+Membrane scales from the required Postgres + pgvector core to a full pipeline with embedding similarity search and LLM-backed knowledge extraction.
 
-| Tier | Backend | Embedding | LLM | Behavior |
-|------|---------|-----------|-----|----------|
-| **1** | SQLite | — | — | Zero-infra default; confidence-based applicability fallback for competence and plan-graph selection |
-| **2** | Postgres | — | — | Concurrent writers; JSONB storage; same retrieval semantics as tier 1 |
-| **3** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types; embedding-backed multi-solution selection for competence and plan_graph |
-| **4** | Postgres + pgvector | Yes | Yes | Full system: LLM-backed episodic-to-semantic extraction runs asynchronously during consolidation |
+| Tier | Store | Embedding | LLM | Behavior |
+|------|-------|-----------|-----|----------|
+| **1** | Postgres + pgvector | — | — | Typed records, graph edges, trust gating, decay, revision history |
+| **2** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types; embedding-backed multi-solution selection for competence and plan_graph |
+| **3** | Postgres + pgvector | Yes | Yes | Full system: LLM-backed episodic-to-semantic extraction runs asynchronously during consolidation |
 
 <Note>
-  Tiers 3 and 4 require a Postgres database with the `pgvector` extension enabled. The provided `docker-compose.yml` starts a `pgvector/pgvector:pg16` image with the correct user and database for local development.
+  All tiers require a Postgres database with the `pgvector` extension enabled. The provided `docker-compose.yml` starts a `pgvector/pgvector:pg16` image with the correct user and database for local development.
 </Note>
 
 ## Background jobs
 
-Two schedulers run as goroutines when `m.Start(ctx)` is called. Both stop cleanly when the context is cancelled.
+Decay and consolidation schedulers run as goroutines when `m.Start(ctx)` is called. When embeddings are configured, `Start` also launches one startup backfill for records that are missing vectors for the configured model. Backfill continues past individual record failures and reports an aggregate error, while `GetMetrics` exposes embedding coverage so operators can see any remaining gap. `Start` is idempotent, and `m.Stop()` cancels Membrane's background context, waits for those jobs, and only then closes Postgres.
 
 | Job | Default interval | Purpose |
 |-----|-----------------|---------|
@@ -197,11 +192,11 @@ The `consolidation.Service.RunAll` method runs these sub-consolidators in sequen
 
 ### Encryption at rest
 
-When `MEMBRANE_ENCRYPTION_KEY` (or `encryption_key` in the config) is set, Membrane opens the SQLite database with `PRAGMA key` via SQLCipher. The database file is unreadable without the key. This setting has no effect on the Postgres backend.
+At-rest encryption is provided by Postgres or the underlying database volume. Membrane does not manage an application-level database-file encryption key.
 
 ### Transport security
 
-TLS is optional. Set `tls_cert_file` and `tls_key_file` in the config to enable it. Without TLS the gRPC server runs in plaintext — acceptable for loopback connections but not for networked deployments.
+TLS is optional for loopback listeners. Set `tls_cert_file` and `tls_key_file` in the config to enable it. The server rejects API-key authentication over plaintext on non-loopback listeners unless `allow_insecure_credentials` is explicitly enabled for a trusted development network.
 
 ### Authentication
 
@@ -209,7 +204,7 @@ The daemon enforces a bearer token check on every gRPC call when `MEMBRANE_API_K
 
 ### Rate limiting
 
-A token-bucket rate limiter is applied per connection. The default is 100 requests per second, configurable via `rate_limit_per_second`. Set to `0` to disable.
+A token-bucket rate limiter is applied per authenticated API-key principal using a non-secret SHA-256 fingerprint, so reconnecting or changing peer IP does not reset the quota. With API-key authentication disabled, the limiter uses normalized source IP and ignores the source port. The default is 100 requests per second, configurable via `rate_limit_per_second`. Set to `0` to disable.
 
 ### Trust-aware retrieval
 

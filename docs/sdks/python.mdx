@@ -84,12 +84,24 @@ client = MembraneClient(
 </ParamField>
 
 <ParamField path="api_key" type="str">
-  Bearer token sent in gRPC metadata.
+  Bearer token sent in gRPC metadata. The SDK refuses to send it over
+  plaintext gRPC to non-loopback addresses unless explicitly allowed.
+</ParamField>
+
+<ParamField path="allow_insecure_credentials" type="bool" default="false">
+  Permit sending `api_key` over plaintext gRPC to a non-loopback address. Use
+  only for trusted development networks, and enable the corresponding server
+  setting as well. Production deployments should use TLS.
 </ParamField>
 
 <ParamField path="timeout" type="float">
   Default timeout in seconds for RPC calls.
 </ParamField>
+
+For a credential-bearing plaintext connection allowed only because its address
+is loopback, the SDK disables gRPC HTTP proxying so proxy environment variables
+cannot route the connection off-host. TLS and the explicit insecure development
+override retain normal proxy behavior.
 
 The client also supports the context-manager protocol:
 
@@ -106,7 +118,7 @@ with MembraneClient("localhost:9090") as client:
 def capture_memory(
     content: Any,
     *,
-    source_kind: SourceKind | str = SourceKind.AGENT_TURN,
+    source_kind: SourceKind | str = SourceKind.EVENT,
     context: Any = None,
     reason_to_remember: str = "",
     proposed_type: MemoryType | str | None = None,
@@ -119,7 +131,7 @@ def capture_memory(
 ) -> CaptureMemoryResult
 ```
 
-Captures a rich memory candidate. `content` must be JSON-compatible.
+Captures a rich memory candidate. `content` must be JSON-compatible. The SDK validates `source`, `source_kind`, `proposed_type`, `sensitivity`, `reason_to_remember`, `summary`, `timestamp`, `scope`, and `tags` before sending the RPC. A plain string is rejected for `tags` so `tags="auth"` cannot accidentally become `["a", "u", "t", "h"]`.
 
 ```python
 capture = client.capture_memory(
@@ -150,6 +162,8 @@ print(len(capture.edges))
 | `created_records` | `list[MemoryRecord]` |
 | `edges` | `list[GraphEdge]` |
 
+Use `CaptureMemoryResult.from_dict(...)` when adapting JSON fixtures or non-gRPC envelopes. It accepts Python snake_case fields, Go struct field names such as `PrimaryRecord` and `CreatedRecords`, and protobuf JSON lower-camel fields such as `primaryRecord` and `createdRecords`.
+
 ---
 
 ## Retrieve Graph
@@ -160,6 +174,8 @@ def retrieve_graph(
     *,
     trust: TrustContext | None = None,
     memory_types: Sequence[MemoryType | str] | None = None,
+    query_embedding: Sequence[float] | None = None,
+    root_only: bool = False,
     min_salience: float = 0.0,
     root_limit: int = 10,
     node_limit: int = 25,
@@ -168,7 +184,9 @@ def retrieve_graph(
 ) -> RetrieveGraphResult
 ```
 
-Retrieves ranked root memories and a bounded graph neighborhood.
+Retrieves ranked root memories and a bounded graph neighborhood. The daemon can seed entity roots from both natural-language descriptors and explicit identifier tokens such as `github:BennettSchwartz/orchid` or `repo_path:pkg/auth`. When `trust.scopes` is empty, entity root seeding searches across all indexed scopes before trust filtering; when scopes are supplied, it searches those scopes plus unscoped global entities.
+
+The SDK validates that `task_descriptor` is a string before sending the RPC. Pass an empty string only when you intentionally want salience-only root ranking.
 
 ```python
 graph = client.retrieve_graph(
@@ -179,6 +197,8 @@ graph = client.retrieve_graph(
         actor_id="auth-agent",
         scopes=["project-auth"],
     ),
+    query_embedding=[0.25, 0.5, 0.75],
+    root_only=False,
     memory_types=["entity", "semantic", "competence", "episodic"],
     root_limit=8,
     node_limit=20,
@@ -189,6 +209,12 @@ graph = client.retrieve_graph(
 root_records = [node.record for node in graph.nodes if node.root]
 ```
 
+Set `root_only=True` to skip neighbor expansion and return ranked roots only. This maps to the daemon's `max_hops=-1` sentinel and takes precedence over `max_hops`. The SDK rejects non-boolean `root_only`, non-integer `max_hops`, and `max_hops` values below `-1` before sending the RPC.
+
+When `query_embedding` is supplied, the daemon uses it directly for graph root ranking. Non-empty vectors must be a sequence of numbers, contain only finite values, and include at least one non-zero value; the SDK validates this before sending the RPC. Strings, booleans, `NaN`, and infinities are rejected before protobuf conversion.
+
+Graph budgets, metadata, and enum fields are validated client-side before protobuf conversion: `min_salience` must be finite and between `0` and `1`; `root_limit`, `node_limit`, and `edge_limit` must be integers from `0` to `10000`; `memory_types` must contain public API memory type values and is de-duplicated into canonical layer order; `trust.max_sensitivity` must be a public API sensitivity value; `trust.authenticated` must be boolean; `trust.actor_id` must be a string; and `trust.scopes` must be a sequence of non-empty strings. A plain string scope sequence is rejected so `scopes="prod"` cannot split into per-character scopes.
+
 `RetrieveGraphResult` contains:
 
 | Field | Type |
@@ -197,6 +223,9 @@ root_records = [node.record for node in graph.nodes if node.root]
 | `edges` | `list[GraphEdge]` |
 | `root_ids` | `list[str]` |
 | `selection` | `SelectionResult | None` |
+| `diagnostics` | `list[RetrievalDiagnostic]` |
+
+Use `RetrieveGraphResult.from_dict(...)` for JSON fixtures or non-gRPC envelopes. It accepts snake_case fields such as `root_ids` and `diagnostics`, Go-style fields such as `RootIDs`, `Selection`, `Scores`, `SourceID`, `TargetID`, and `Diagnostics`, and protobuf JSON lower-camel fields such as `rootIds`, `sourceId`, `targetId`, and `needsMore`. Nested memory records accept the same fixture casing, including Go-style fields such as `ID`, `CreatedAt`, `Relations`, and `AuditLog`, plus lower-camel fields such as `createdAt`, `updatedAt`, and `auditLog`. Nested interpretation metadata accepts fields such as `proposedType`, `canonicalEntityId`, `relationCandidates`, `referenceCandidates`, and `extractionConfidence`; payload oneofs such as `planGraph` are unwrapped for direct dataclass access. Semantic payloads normalize fields such as `revisionPolicy` and `supersededBy` while decoding `object` and validity condition `google.protobuf.Value` maps. Plan graph payloads normalize protobuf lower-camel fields such as `planId`, `inputsSchema`, `outputsSchema`, and `avgLatencyMs` into the SDK's snake_case keys while decoding nested `google.protobuf.Value` maps.
 
 ---
 
@@ -222,6 +251,8 @@ record = client.retrieve_by_id(
 )
 ```
 
+`record_id` must be a non-empty string after trimming whitespace. The SDK rejects empty IDs before sending the RPC, matching daemon-side lookup validation.
+
 ---
 
 ## Revision
@@ -236,6 +267,8 @@ client.contest(record_id, conflicting_ref, "agent", "conflicting evidence")
 
 `new_record`, `forked_record`, and `merged_record` may be dictionaries matching the `MemoryRecord` wire shape or `MemoryRecord` dataclasses.
 
+Revision methods reject empty required record IDs before transport. `merge` also requires at least one source ID, validates each source ID, and rejects duplicate source IDs; `contest` keeps `contesting_ref` optional so external evidence references can still be recorded without a graph relation. Replacement records are checked against the daemon's semantic, entity, and relation invariants before transport: semantic payloads need subject, predicate, object, and a `validity.mode`; entity payloads need `canonical_name`, and any entity identifiers need non-empty `namespace` and `value` fields; relations need a non-empty normalized predicate, non-empty `target_id`, and a finite weight in `[0, 1]` when supplied. Outbound semantic and entity payloads accept both SDK snake_case fields and Go-style JSON fields such as `Kind`, `Subject`, `Predicate`, `Object`, `Validity`, `CanonicalName`, `PrimaryType`, and `Identifiers`; the SDK normalizes them into the protobuf oneof before sending the RPC.
+
 ## Reinforcement
 
 ```python
@@ -243,12 +276,17 @@ client.reinforce(record_id, "agent", "used successfully")
 client.penalize(record_id, 0.2, "agent", "not useful for this task")
 ```
 
+`reinforce` and `penalize` reject empty record IDs before transport. `penalize` also rejects negative, `NaN`, infinite, boolean, and non-numeric amounts before sending the RPC, matching daemon-side validation.
+
 ## Metrics
 
 ```python
 metrics = client.get_metrics()
 print(metrics["total_records"])
+print(metrics["embedding_coverage"])
 ```
+
+`get_metrics()` is typed as `MetricsSnapshot`, including pgvector coverage fields such as `embedded_records`, `missing_embeddings`, and `embedding_coverage`.
 
 ---
 
@@ -279,13 +317,38 @@ MemoryType.PLAN_GRAPH
 MemoryType.ENTITY
 ```
 
+Entity payload helpers accept the documented snake_case shape plus protobuf lower-camel and Go-style field names. Returned record payload dictionaries are normalized to snake_case for `canonical_name`, `primary_type`, `aliases`, and `identifiers`.
+
 Built-in entity ontology values are open-ended. Use `EntityType.OTHER` or any project-specific string when none of the built-ins fit.
+
+Graph predicate constants cover Membrane-generated structural edges and common relation candidates:
+
+```python
+GraphPredicate.MENTIONS_ENTITY
+GraphPredicate.DERIVED_SEMANTIC
+GraphPredicate.DEPENDS_ON
+GraphPredicate.DEPENDENCY_OF
+GraphPredicate.SUPPORTS
+GraphPredicate.SUPPORTED_BY
+GraphPredicate.SUPERSEDES
+GraphPredicate.SUPERSEDED_BY
+GraphPredicate.CONTESTED_BY
+GraphPredicate.CONTESTS
+```
+
+`normalize_graph_predicate(value)` lowercases model- or user-provided predicate
+names, splits camelCase/acronym boundaries, and treats punctuation as separators.
+`normalize_semantic_predicate(value)` applies the same canonical spelling for
+semantic subject-predicate-object facts before capture or direct record writes.
+`inverse_graph_predicate(value)` returns the reverse-edge predicate for Membrane's built-ins and
+`inverse_of_<normalized_predicate>` for custom predicates.
 
 ## Development
 
 ```bash
 cd clients/python
 pip install -e .[dev]
+python scripts/check_package.py
 pytest
 ```
 
@@ -295,3 +358,4 @@ pytest
 - `grpcio >= 1.80.0`
 - `protobuf >= 6.31.1`
 - A running Membrane daemon, default `localhost:9090`
+- Inline type metadata via `py.typed` for type checkers

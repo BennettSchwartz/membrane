@@ -138,19 +138,20 @@ The system exposes metrics such as retrieval usefulness, competence success rate
 
 ## 15. Reference Implementation Architecture
 
-This section defines a concrete, normative reference architecture for implementing the learning and memory substrate described in this RFC. The intent is not to mandate a single technology stack, but to constrain implementations such that the semantic guarantees of selective memory, revisability, decay, and auditability are preserved.
+This section defines a concrete, normative reference architecture for implementing the learning and memory substrate described in this RFC. The intent is to constrain implementations such that the semantic guarantees of selective memory, revisability, decay, auditability, and vector retrieval are preserved on one transactional database substrate.
 
 ### 15.0 Storage Philosophy (Normative)
 
 This specification explicitly distinguishes between *storage engines* and the *memory system*. Implementers MUST NOT attempt to encode learning semantics directly into a database alone, nor SHOULD they invent a custom database engine. Instead, learning semantics MUST be implemented in application logic layered atop proven storage systems.
 
-The memory system defined in this RFC relies on strong invariants, atomic revision operations, and auditable state transitions. These requirements are most naturally satisfied by relational storage for authoritative metadata, supplemented by optional secondary stores for payloads and retrieval acceleration.
+The memory system defined in this RFC relies on strong invariants, atomic revision operations, auditable state transitions, graph traversal, and vector retrieval. These requirements are satisfied by PostgreSQL with pgvector as the required runtime store. Structured payloads, graph edges, lifecycle metadata, audit history, and embeddings live in the same database so retrieval and revision semantics do not depend on cross-store reconciliation.
 
 ### 15.1 Authoritative Store (Source of Truth)
 
 A conforming implementation MUST designate a single authoritative store for MemoryRecord metadata, lifecycle state, revision chains, salience, confidence, relations, and audit history.
 
-A relational database (e.g., PostgreSQL or SQLite) is RECOMMENDED for this role.
+PostgreSQL with pgvector is REQUIRED for this role so structured memory,
+graph metadata, and vector retrieval share one transactional backing store.
 
 The authoritative store MUST provide:
 
@@ -161,67 +162,37 @@ The authoritative store MUST provide:
 
 Implementations MUST NOT rely on document databases as the sole authoritative store, as such systems cannot reliably enforce the required invariants.
 
-### 15.2 Payload Stores (Non-Authoritative)
+### 15.2 Structured Payloads
 
-Structured payloads (e.g., episodic timelines, competence recipes, plan graphs) MAY be stored outside the authoritative store to improve flexibility or performance.
+Structured payloads (e.g., episodic timelines, competence recipes, plan graphs) MUST be stored inside PostgreSQL as typed JSONB payload rows associated with their authoritative MemoryRecord. Large external artifacts may be content-addressed outside the database, but the memory payload, artifact reference, provenance, and lifecycle metadata remain transactionally anchored in PostgreSQL.
 
-Document-oriented databases (e.g., MongoDB) MAY be used as payload stores, provided that:
+External artifact blobs MUST NOT be treated as memory records, payload stores, lifecycle stores, or retrieval indexes. Loss of an external artifact can make a provenance reference unavailable, but it MUST NOT invalidate revision correctness or create an alternate source of memory truth.
 
-* They are not treated as the source of truth
-* All payload records are referenced by immutable identifiers stored in the authoritative store
-* Loss or corruption of payload data does not invalidate revision correctness
+### 15.3 Vector Index
 
-Payload stores MUST be considered replaceable caches from the perspective of the memory system.
+Vector similarity search MUST use pgvector inside the required PostgreSQL store. Embeddings are retrieval signals associated with MemoryRecords, not a separate source of memory truth.
 
-### 15.3 Vector Indexes (Acceleration Only)
-
-Vector similarity indexes MAY be used to accelerate retrieval. Such indexes MUST be treated as advisory and MUST NOT contain authoritative memory state.
-
-Deletion, revision, or decay of memory records MUST be driven exclusively by the authoritative store, with vector indexes updated asynchronously.
+Deletion, revision, or decay of memory records MUST be driven exclusively by the PostgreSQL MemoryRecord state, with pgvector embedding rows updated transactionally or by repairable background jobs.
 
 ### 15.4 Graph Representation
 
-Relationships between MemoryRecords (e.g., derived_from, supersedes, contradicts) MUST be represented in the authoritative store. Graph databases MAY be introduced as secondary traversal accelerators but MUST NOT be the sole representation of relational state.
+Relationships between MemoryRecords (e.g., derived_from, supersedes, contradicts) MUST be represented in PostgreSQL relation rows. Graph traversal may be accelerated by indexes, but a separate graph database MUST NOT be required for runtime correctness or treated as the authoritative relationship store.
 
-### 15.5 Process Model
+### 15.5 Storage Layout
 
-The learning substrate SHALL run as a long-lived service or library embedded within an agent runtime. It MUST expose synchronous ingestion APIs and asynchronous consolidation jobs. Consolidation and decay processing SHOULD be performed periodically and MUST be interruptible.
+A reference implementation MUST keep the following physical layouts inside PostgreSQL with pgvector:
 
-The system is logically divided into three planes:
+MemoryRecord metadata and lifecycle rows for creation time, reinforcement state, decay policy, sensitivity, salience, confidence, and scope.
 
-The ingestion plane receives events, tool outputs, and observations and converts them into candidate memory records.
+Typed JSONB payload rows for structured episodic timelines, working state, semantic facts, competence recipes, plan graphs, and entity payloads.
 
-The policy plane classifies candidates, assigns lifecycle metadata, and determines storage placement.
+Pgvector embedding rows for semantic similarity search. Embeddings must be scoped by configured model when a model is configured.
 
-The storage and retrieval plane persists memory records, enforces decay, revision, and deletion, and serves context-aware retrieval queries.
+Content-addressed references to large external artifacts. The reference metadata is stored in PostgreSQL even when the artifact bytes live elsewhere.
 
-These planes MAY be co-located in a single process or separated into services.
+Relation rows representing graph edges between MemoryRecords, including revision lineage and entity/fact links.
 
-### 15.6 Canonical Data Structures
-
-All implementations MUST support the canonical structures defined in the Schema Appendix. Memory types MUST be represented as distinct schemas. Implementations MUST NOT collapse all memory into free-form text.
-
-### 15.7 Consolidation and Revision Guarantees
-
-Revision operations (supersede, fork, retract, merge, delete) MUST be executed atomically against the authoritative store. Implementations MUST guarantee that partial revisions are not externally visible.
-
-### 15.8 Retrieval Interface
-
-The retrieval interface MUST accept a task descriptor and a trust context. Retrieval MUST proceed in layers (working, semantic, competence, plan, episodic as needed) and MUST return structured results with enforced redaction or summarization.
-
-### 15.9 Security Model
-
-Implementations MUST support encryption at rest and trust-aware retrieval gating. Sensitive payloads MAY be encrypted separately from metadata. Retrieval MUST NOT expose records exceeding the allowed sensitivity for the current trust context.
-
-### 15.10 Metrics and Observability
-
-A conforming implementation MUST expose metrics including memory growth rate, salience distribution, retrieval usefulness, competence success rates, plan reuse frequency, and contradiction/revision rates.
-
-A conforming implementation SHALL include ingestion APIs, a policy engine, structured storage, consolidation jobs, and a retrieval interface. Memory types must be represented as distinct schemas. Decay, revision, and deletion must be supported.
-
-The remainder of this section describes the required runtime components and the contract between them at the interface level.
-
-### 15.1 Process Model
+### 15.6 Process Model
 
 The learning substrate SHALL run as a long-lived service or library embedded within an agent runtime. It MUST expose synchronous ingestion APIs and asynchronous consolidation jobs. Consolidation and decay processing SHOULD be performed periodically and MUST be interruptible.
 
@@ -231,13 +202,13 @@ The ingestion plane receives events, tool outputs, and observations and converts
 
 The policy plane classifies candidates, assigns lifecycle metadata, and determines storage placement.
 
-The storage and retrieval plane persists memory records, enforces decay, and serves context-aware retrieval queries.
+The storage and retrieval plane persists memory records in PostgreSQL, enforces decay, revision, and deletion, and serves context-aware retrieval queries.
 
 These planes MAY be co-located in a single process or separated into services.
 
-### 15.2 Canonical Data Structures
+### 15.7 Canonical Data Structures
 
-All implementations MUST support the following canonical structures.
+All implementations MUST support the canonical structures defined in the Schema Appendix.
 
 A MemoryRecord is the atomic unit of storage and MUST include:
 
@@ -252,45 +223,35 @@ A MemoryRecord is the atomic unit of storage and MUST include:
 
 Memory types MUST be represented as distinct schemas. Implementations MUST NOT collapse all memory into free-form text.
 
-### 15.3 Storage Layout
-
-A reference implementation SHOULD include the following physical stores:
-
-A metadata store for MemoryRecords and their lifecycle fields. A relational schema is RECOMMENDED.
-
-A content store for structured payloads. JSON or binary-encoded structured formats are RECOMMENDED.
-
-An optional vector index for semantic similarity search. The vector index MUST NOT be the source of truth.
-
-An artifact store for large binary objects referenced by episodic memory. Artifacts MUST be content-addressed.
-
-A relationship store representing graph edges between MemoryRecords.
-
-### 15.4 Ingestion API
+### 15.8 Ingestion API
 
 The system MUST expose ingestion functions for user inputs, tool outputs, observations, and outcomes. Each ingestion call MUST produce one or more MemoryCandidates placed into a staging area.
 
-### 15.5 Classification and Policy Application
+### 15.9 Classification and Policy Application
 
 MemoryCandidates MUST be classified before persistence. Classification includes determining memory type, sensitivity, initial confidence, decay curve, scope, and visibility. Classification MAY use heuristic rules or models, but policy rules MUST be able to override classifier output.
 
-### 15.6 Decay and Salience Mechanics
+### 15.10 Decay and Salience Mechanics
 
 Each MemoryRecord SHALL maintain a salience score that decays over time according to its decay curve. Salience MUST be reinforced when a record is retrieved and contributes to a successful outcome, and penalized when it is retrieved but unused or associated with failure.
 
-### 15.7 Consolidation Pipeline
+### 15.11 Consolidation Pipeline
 
 Consolidation MUST support episodic compression, semantic update, competence extraction, plan graph extraction, and duplicate resolution.
 
-### 15.8 Retrieval Interface
+### 15.12 Revision Guarantees
 
-The retrieval interface MUST accept a task descriptor and a trust context and MUST return structured results, enforcing redaction/summarization decisions.
+Revision operations (supersede, fork, retract, merge, delete) MUST be executed atomically against PostgreSQL. Implementations MUST guarantee that partial revisions are not externally visible.
 
-### 15.9 Security Model
+### 15.13 Retrieval Interface
 
-Implementations MUST support encryption at rest and trust-aware retrieval gating. Retrieval MUST NOT expose records exceeding the allowed sensitivity for the current trust context.
+The retrieval interface MUST accept a task descriptor and a trust context. Retrieval MUST proceed in layers (working, entity, semantic, competence, plan_graph, episodic as needed), apply pgvector ranking when embeddings are available, expand graph neighborhoods through stored relations, and return structured results with enforced redaction or summarization.
 
-### 15.10 Metrics and Observability
+### 15.14 Security Model
+
+Implementations MUST support encryption at rest and trust-aware retrieval gating. Sensitive payloads MAY be encrypted separately from metadata. Retrieval MUST NOT expose records exceeding the allowed sensitivity for the current trust context.
+
+### 15.15 Metrics and Observability
 
 A conforming implementation MUST expose metrics including memory growth rate, salience distribution, retrieval usefulness, competence success rates, plan reuse frequency, and contradiction/revision rates.
 
@@ -304,6 +265,7 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
 
 * `episodic`
 * `working`
+* `entity`
 * `semantic`
 * `competence`
 * `plan_graph`
@@ -329,7 +291,7 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
   ],
   "properties": {
     "id": {"type": "string", "description": "Globally unique identifier (UUID recommended)."},
-    "type": {"type": "string", "enum": ["episodic","working","semantic","competence","plan_graph"]},
+    "type": {"type": "string", "enum": ["episodic","working","entity","semantic","competence","plan_graph"]},
     "sensitivity": {"type": "string", "enum": ["public","low","medium","high","hyper"]},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
     "salience": {"type": "number", "minimum": 0, "maximum": 1},
@@ -344,6 +306,7 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
       "oneOf": [
         {"$ref": "mem://schemas/EpisodicPayload"},
         {"$ref": "mem://schemas/WorkingPayload"},
+        {"$ref": "mem://schemas/EntityPayload"},
         {"$ref": "mem://schemas/SemanticPayload"},
         {"$ref": "mem://schemas/CompetencePayload"},
         {"$ref": "mem://schemas/PlanGraphPayload"}
@@ -498,7 +461,49 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
 }
 ```
 
-### 15A.9 CompetencePayload Schema (Procedures)
+### 15A.9 EntityPayload Schema
+
+```json
+{
+  "$id": "mem://schemas/EntityPayload",
+  "type": "object",
+  "required": ["kind", "canonical_name"],
+  "properties": {
+    "kind": {"const": "entity"},
+    "canonical_name": {"type": "string"},
+    "primary_type": {"type": "string"},
+    "types": {"type": "array", "items": {"type": "string"}},
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {"type": "string"},
+          "kind": {"type": "string"},
+          "locale": {"type": "string"}
+        }
+      }
+    },
+    "identifiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["namespace", "value"],
+        "properties": {
+          "namespace": {"type": "string"},
+          "value": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}
+```
+
+Entity payloads form the canonical graph spine for projects, files, services, people, tools, repositories, and other named things. Entity aliases and identifiers are indexed in PostgreSQL so `RetrieveGraph` can promote entity roots from task descriptors and external IDs.
+
+### 15A.10 CompetencePayload Schema (Procedures)
 
 ```json
 {
@@ -539,7 +544,7 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
 }
 ```
 
-### 15A.10 PlanGraphPayload Schema (Reusable Solution Graph)
+### 15A.11 PlanGraphPayload Schema (Reusable Solution Graph)
 
 ```json
 {
@@ -590,11 +595,11 @@ This appendix defines the canonical record “shapes” (schemas). The shapes ar
 }
 ```
 
-### 15A.11 Selection of Multiple Solutions (Normative)
+### 15A.12 Selection of Multiple Solutions (Normative)
 
 When multiple competence records or plan graphs match a task, an implementation MUST perform selection using at least the following signals: applicability conditions, observed success rate, and recency of reinforcement. If selection confidence is below an implementation-defined threshold, the system MUST either (a) return multiple candidates ranked, or (b) request additional disambiguating context from the host agent.
 
-### 15A.12 Example Records (Non-Normative)
+### 15A.13 Example Records (Non-Normative)
 
 The following examples illustrate compliant shapes.
 
@@ -650,174 +655,6 @@ The following examples illustrate compliant shapes.
 }
 ```
 
-## 15A. Canonical Schemas (Normative)
-
-This section defines the REQUIRED structural schemas ("shapes") for all conforming implementations. These schemas are normative. An implementation that does not preserve these shapes, semantics, and field meanings is non-compliant, even if functionally similar.
-
-All schemas are presented in a JSON-like notation for clarity. Implementations MAY use other encodings (Protobuf, SQL, structs) provided the logical shape is preserved.
-
-### 15A.1 MemoryRecord (Base Type)
-
-Every stored memory item MUST conform to the MemoryRecord shape.
-
-```
-MemoryRecord {
-  id: UUID,                         // globally unique, immutable
-  type: MemoryType,                 // episodic | working | semantic | competence | plan
-  sensitivity: SensitivityClass,    // public | low | medium | high | hyper
-  confidence: Float [0,1],          // epistemic confidence
-  salience: Float [0,∞),            // decay-weighted importance
-
-  created_at: Timestamp,
-  last_reinforced_at: Timestamp,
-
-  decay_profile: DecayProfile,      // defines salience decay
-  scope: Scope,                     // user | project | workspace | global
-
-  provenance: ProvenanceRef[],      // evidence links
-  relationships: RelationRef[],     // graph edges
-
-  payload: StructuredObject,        // type-specific schema
-  audit_log: AuditEntry[]           // revisions, merges, deletions
-}
-```
-
-This base record MUST NOT be bypassed by any memory type.
-
----
-
-### 15A.2 EpisodicRecord Payload
-
-```
-EpisodicPayload {
-  timeline: EventRef[],             // ordered events
-  tool_graph: ToolNode[],           // tool calls + data flow
-  environment: EnvironmentSnapshot, // OS, versions, context
-  outcome: OutcomeStatus,           // success | failure | partial
-  artifact_refs: ArtifactRef[]      // logs, screenshots, files
-}
-```
-
-Episodic payloads MUST be append-only. Semantic correction is forbidden at this layer.
-
----
-
-### 15A.3 WorkingMemory Payload
-
-```
-WorkingPayload {
-  task_id: Identifier,
-  state: TaskState,                 // planning | executing | blocked | waiting
-  active_constraints: Constraint[],
-  next_actions: ActionHint[],
-  open_questions: Question[],
-  last_updated: Timestamp
-}
-```
-
-Working memory MAY be freely edited and discarded when the task ends.
-
----
-
-### 15A.4 SemanticMemory Payload
-
-```
-SemanticPayload {
-  subject: EntityRef,
-  predicate: NormalizedRelation,
-  object: Value | EntityRef,
-
-  validity: ValidityWindow,         // optional conditionality
-  evidence: ProvenanceRef[],
-
-  revision_policy: RevisionPolicy   // replace | fork | contest
-}
-```
-
-Semantic payloads MUST support coexistence of multiple conditional truths.
-
----
-
-### 15A.5 CompetenceMemory Payload
-
-```
-CompetencePayload {
-  skill_name: String,
-
-  triggers: Condition[],            // when this applies
-  procedure: Step[],                // ordered or conditional
-
-  required_tools: ToolRef[],
-  failure_modes: FailureCase[],
-  fallbacks: Step[],
-
-  performance: PerformanceStats     // success / failure history
-}
-```
-
-Competence payloads represent "knowing how" rather than "knowing that".
-
----
-
-### 15A.6 PlanGraph Payload
-
-```
-PlanGraphPayload {
-  intent: IntentLabel,
-
-  nodes: PlanNode[],
-  edges: PlanEdge[],
-
-  input_schema: SchemaRef,
-  output_schema: SchemaRef,
-
-  constraints: Constraint[],        // trust, sensitivity, environment
-  metrics: PerformanceStats,
-
-  version: VersionTag
-}
-```
-
-Plan graphs MUST be reusable, versioned, and selectable by constraint matching.
-
----
-
-### 15A.7 DecayProfile
-
-```
-DecayProfile {
-  function: DecayFunction,          // exponential
-  half_life: Duration,
-  floor: Float,
-  reinforcement_gain: Float
-}
-```
-
-Decay profiles MUST be monotonic and reversible via reinforcement.
-
----
-
-### 15A.8 Provenance and Revision
-
-```
-ProvenanceRef {
-  source_type: SourceType,           // event | tool | observation | human
-  source_id: Identifier,
-  timestamp: Timestamp
-}
-
-AuditEntry {
-  action: AuditAction,               // create | revise | fork | merge | delete
-  actor: ActorRef,
-  timestamp: Timestamp,
-  rationale: String
-}
-```
-
-Every revision MUST be auditable and traceable to evidence.
-
----
-
 ## 15B. Behavioral Guarantees
 
 An implementation conforming to this RFC MUST guarantee:
@@ -833,12 +670,6 @@ An implementation conforming to this RFC MUST guarantee:
 ## 15C. Relationship to Reasoning Systems
 
 This specification intentionally does not mandate how reasoning systems (LLMs or otherwise) infer which memories to create or retrieve. It defines only the *storage, revision, and selection substrate*. Reasoning systems supply hypotheses; this system supplies structured, revisable knowledge.
-
----
-
-## 15. Reference Implementation Architecture (continued)
-
-A conforming implementation SHALL include ingestion APIs, a policy engine, structured storage, consolidation jobs, and a retrieval interface. Memory types must be represented as distinct schemas. Decay, revision, and deletion must be supported.
 
 ## 16. Compliance
 

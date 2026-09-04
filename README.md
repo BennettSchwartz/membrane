@@ -18,7 +18,8 @@ answer.
 - **Five memory layers plus entities**: episodic, working, semantic,
   competence, plan graph, and canonical entity nodes that connect them.
 - **Entity-connected retrieval**: `RetrieveGraph` returns ranked records plus
-  bounded graph neighborhoods, not only top-k chunks.
+  bounded graph neighborhoods, with descriptor and identifier-based entity
+  root seeding across every allowed scope.
 - **Capture-first ingestion**: `CaptureMemory` accepts events, observations,
   tool outputs, working state, and facts, then creates linked records and edges.
 - **Revision operations**: supersede, fork, retract, merge, and contest records
@@ -51,11 +52,11 @@ retrieve together.
 
 ### Requirements
 
-- Go 1.22+
+- Go 1.24+
 - Make
-- Node.js 20+ for the TypeScript SDK, docs, and examples
+- Node.js 20.19+ for the TypeScript SDK and examples; Node.js 22+ for docs tooling
 - Python 3.10+ for the Python SDK
-- `protoc` only when regenerating protobuf code
+- `protoc` for protobuf sync checks and regeneration
 
 ### Build And Run
 
@@ -64,15 +65,15 @@ git clone https://github.com/BennettSchwartz/membrane.git
 cd membrane
 
 make build
-./bin/membraned
+export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
+docker compose up -d
+./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
 ```
 
-By default, `membraned` uses local SQLite storage. To use Postgres:
-
-```bash
-./bin/membraned \
-  --postgres-dsn "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
-```
+Membrane requires Postgres with the `pgvector` extension. The repository's
+`docker-compose.yml` uses the `pgvector/pgvector:pg16` image and the daemon
+applies the schema on startup.
 
 Useful commands:
 
@@ -80,6 +81,7 @@ Useful commands:
 make test                 # Go test suite
 make proto                # Regenerate Go protobuf bindings
 make ts-build             # Build the TypeScript SDK
+make openclaw-test        # Test the OpenClaw plugin bridge
 make eval-all             # Targeted evaluation suite
 ```
 
@@ -136,14 +138,19 @@ const graph = await client.retrieveGraph("debug auth-service latency", {
   rootLimit: 12,
   nodeLimit: 64,
   edgeLimit: 160,
+  rootOnly: false,
   maxHops: 2,
 });
+
+if (graph.diagnostics?.length) {
+  console.warn("Retrieval used fallback ranking", graph.diagnostics);
+}
 
 console.log(capture.primary_record.id, graph.nodes.length);
 client.close();
 ```
 
-See [clients/typescript](clients/typescript) for the full SDK.
+See [clients/typescript](clients/typescript) for the full SDK. TypeScript option objects accept both camelCase names and protobuf-style snake_case aliases, which keeps `retrieve_graph(...)` and `capture_memory(...)` ergonomic for callers using wire-shaped objects.
 
 ## Python SDK
 
@@ -197,6 +204,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/BennettSchwartz/membrane/pkg/ingestion"
 	"github.com/BennettSchwartz/membrane/pkg/membrane"
@@ -205,7 +213,10 @@ import (
 )
 
 func main() {
-	m, err := membrane.New(membrane.DefaultConfig())
+	cfg := membrane.DefaultConfig()
+	cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
+
+	m, err := membrane.New(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -293,22 +304,35 @@ Core RPCs include:
 - `GetMetrics`
 
 Generated Go, TypeScript, and Python bindings are committed so consumers do not
-need protobuf tooling for normal development.
+need protobuf tooling as library users. The local Go generation path
+bootstraps the Go protobuf plugins with `go run`, so contributors need
+`protoc` but do not need preinstalled `protoc-gen-go` binaries. When editing
+`api/proto/membrane/v1/membrane.proto`, run `make proto`,
+`make check-go-proto-sync`, `npm --prefix clients/typescript run sync:proto`,
+`npm --prefix clients/typescript run check:proto-sync`, and
+`make check-python-proto-sync` before sending the change.
 
 ## Storage And Configuration
 
-Membrane supports SQLite for local and embedded use, and Postgres for concurrent
-deployments. Postgres can optionally use pgvector for embedding-backed ranking.
+Membrane runs on Postgres with pgvector. The daemon requires a Postgres DSN
+from `--postgres-dsn`, `postgres_dsn`, or `MEMBRANE_POSTGRES_DSN`; the schema
+creates the `vector` extension and stores embeddings in Postgres.
 
 Common environment variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `MEMBRANE_API_KEY` | Bearer token for gRPC requests |
-| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key |
 | `MEMBRANE_POSTGRES_DSN` | Postgres connection string |
+| `MEMBRANE_EMBEDDING_ENDPOINT` | Embedding endpoint when `embedding_endpoint` is not set |
+| `MEMBRANE_EMBEDDING_MODEL` | Embedding model when `embedding_model` is not set |
+| `MEMBRANE_EMBEDDING_DIMENSIONS` | Embedding dimensions when using the default `embedding_dimensions` |
 | `MEMBRANE_EMBEDDING_API_KEY` | API key for embedding-backed retrieval |
+| `MEMBRANE_LLM_ENDPOINT` | Chat completions endpoint when `llm_endpoint` is not set |
+| `MEMBRANE_LLM_MODEL` | LLM model when `llm_model` is not set |
 | `MEMBRANE_LLM_API_KEY` | API key for background semantic extraction |
+| `MEMBRANE_INGEST_LLM_ENDPOINT` | Ingest interpreter endpoint when `ingest_llm_endpoint` is not set |
+| `MEMBRANE_INGEST_LLM_MODEL` | Ingest interpreter model when `ingest_llm_model` is not set |
 | `MEMBRANE_INGEST_LLM_API_KEY` | API key for ingest-time interpretation |
 
 See [docs/guides/configuration.mdx](docs/guides/configuration.mdx) for full
@@ -320,6 +344,7 @@ configuration details.
 api/                  Protobuf definitions and generated Go gRPC bindings
 clients/typescript/   TypeScript SDK
 clients/python/       Python SDK
+clients/openclaw/     OpenClaw plugin bridge
 cmd/membraned/        Daemon entrypoint
 docs/                 Docusaurus docs content
 examples/             Reference examples and experiments
@@ -334,9 +359,15 @@ Run the checks most often used before committing:
 ```bash
 make build
 make test
+make verify
 npm --prefix clients/typescript run build
+make openclaw-test
 npm run docs:build
 ```
+
+`make verify` runs the Postgres-only guard and its self-test, protobuf/package
+sync checks, Go tests, SDK checks, OpenClaw checks, agent harness checks, and
+the docs build.
 
 ## Contributing
 

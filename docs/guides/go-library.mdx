@@ -15,7 +15,7 @@ go get github.com/BennettSchwartz/membrane
 
 ```go
 cfg := membrane.DefaultConfig()
-cfg.DBPath = "my-agent.db"
+cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
 
 m, err := membrane.New(cfg)
 if err != nil {
@@ -30,7 +30,7 @@ defer m.Stop()
 ```
 
 <Note>
-Always call `m.Stop()` to shut down schedulers and close the database.
+Always call `m.Stop()` to cancel background schedulers and embedding backfill before closing the Postgres connection pool.
 </Note>
 
 ---
@@ -208,6 +208,7 @@ if err != nil {
 }
 fmt.Printf("Total records: %d\n", snap.TotalRecords)
 fmt.Printf("Retrieval usefulness: %.2f\n", snap.RetrievalUsefulness)
+fmt.Printf("Embedding coverage: %.2f\n", snap.EmbeddingCoverage)
 ```
 
 ---
@@ -230,7 +231,7 @@ import (
 
 func main() {
     cfg := membrane.DefaultConfig()
-    cfg.DBPath = "my-agent.db"
+    cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
 
     m, err := membrane.New(cfg)
     if err != nil {

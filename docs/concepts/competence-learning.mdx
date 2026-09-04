@@ -60,7 +60,7 @@ Competence records are created automatically by the consolidation pipeline (`pkg
     A competence record is only created when a pattern appears in at least **2** successful episodes (`minPatternOccurrences = 2`). Single occurrences are ignored.
   </Step>
   <Step title="Create or reinforce">
-    If no competence record exists for this skill name, a new one is created with `SuccessCount` set to the number of matching episodes and `SuccessRate = 1.0`. If a record already exists, its salience is reinforced by `+0.1` instead of creating a duplicate.
+    If no competence record exists for this skill name in the derived scope, a new one is created with `SuccessCount` set to the number of matching episodes and `SuccessRate = 1.0`. If a record already exists in that same scope, only newly observed source episodes reinforce it, append provenance, add `derived_from` links, and increment `SuccessCount`. Matching by both skill name and scope keeps project-specific procedures from reinforcing unrelated projects that happen to use the same tool sequence.
   </Step>
 </Steps>
 
@@ -79,7 +79,7 @@ Performance: &schema.PerformanceStats{
 },
 ```
 
-The extracted competence record inherits the maximum sensitivity of its source episodes and a consolidated provenance linking back to each contributing episode via `derived_from` relations.
+The extracted competence record inherits the maximum sensitivity of its source episodes. Patterns are grouped separately within each scope, and each scope must independently meet the occurrence threshold. Source and destination policy are rechecked inside the write transaction; a source that moved scopes is deferred to a later run. Consolidated provenance links back to each contributing episode via `derived_from` relations. Reinforcement is source-idempotent: already-recorded episodes do not increase salience or performance counts. If their sensitivity has increased, the derived record is promoted and the policy change is audited.
 
 ---
 
@@ -118,7 +118,7 @@ The `success_rate` field is intended to be updated by the application layer when
 
 When a retrieval query includes competence records as candidates, the `Selector` ranks them using three equally weighted signals:
 
-1. **Applicability** — the record's `Confidence` field, or a vector similarity score if pgvector is enabled.
+1. **Applicability** — the record's `Confidence` field, or a vector similarity score when embeddings are configured.
 2. **Observed success rate** — from `PerformanceStats.SuccessRate`.
 3. **Recency of reinforcement** — exponential decay on the time since `last_reinforced_at` (30-day half-life).
 
@@ -148,7 +148,7 @@ selection_confidence_threshold: 0.7
 
 ## Vector-based applicability scoring
 
-On the Postgres + pgvector tier (Tier 3 and above), the selector can replace the `record.Confidence` proxy with actual embedding similarity:
+When an embedding endpoint is configured, the selector can replace the `record.Confidence` proxy with actual embedding similarity stored in Postgres + pgvector:
 
 ```go
 // From pkg/retrieval/selector.go
@@ -159,7 +159,9 @@ if s.embedding != nil && len(queryEmbedding) > 0 {
 }
 ```
 
-Embeddings are stored for competence and plan graph records when `embedding_endpoint` is configured. Configure it in `config.yaml`:
+Embeddings are stored for all embeddable memory records, including entity, semantic, competence, and plan graph records, when `embedding_endpoint` and `embedding_model` are configured. Configure them together in `config.yaml`:
+
+Selector similarity only replaces confidence when both the query vector and the stored record vector are usable: same dimension, finite values, and at least one non-zero component. Empty, all-zero, non-finite, missing, or mismatched vectors are treated as unavailable so a corrupt embedding cannot become a high-confidence applicability signal.
 
 ```yaml
 embedding_endpoint: "https://api.openai.com/v1/embeddings"

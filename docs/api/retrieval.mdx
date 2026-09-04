@@ -7,6 +7,8 @@ Retrieval returns memory records the caller is allowed to see, ranked for the cu
 
 Every retrieval call requires a `TrustContext`. The trust context controls sensitivity access and scoped visibility.
 
+Flat record ranking uses hybrid vector score when embeddings and pgvector are available, selector score for competence and plan graph candidates, and salience as the fallback signal. After memory type, trust, and salience filters run, Postgres ranks only those candidate record IDs when the store supports candidate-restricted pgvector search, so unrelated embeddings cannot consume the vector search window. Legacy global rankers are intersected with the filtered candidate set before hybrid scores are assigned, so outside records do not dilute the vector rank of accessible candidates. When an embedding model is configured, pgvector search is restricted to embeddings stored for that model and backed by a model index. Startup schema application removes unusable null legacy embedding rows and normal store writes reject empty, non-finite, all-zero, or wrong-dimension embeddings before they reach Postgres. Equal scores are ordered by fresher `updated_at` values and then by record ID so repeated prompt context is stable.
+
 ---
 
 ## Trust Rules
@@ -37,10 +39,31 @@ rpc RetrieveGraph(RetrieveGraphRequest) returns (RetrieveGraphResponse);
 
 Retrieves ranked root memories for a task descriptor, then expands a bounded graph neighborhood around those roots. This is the preferred retrieval method for prompts because it returns both task-relevant roots and the entity, semantic, or provenance records connected to them.
 
+The daemon hard-caps every effective count limit at 10,000 and applies a 16 MiB aggregate projected-response budget. Postgres limits the candidate prefix before JSON size preflight and hydrates only records and relation rows in the deterministic prefix that fits. Selector record copies spend the same response budget. Stores without the required bounded graph contracts are not invoked through legacy unbounded fallbacks.
+
+When `node_limit` or `edge_limit` is tight, expansion visits higher-weight outgoing and incoming stored relations before weaker ones. Incoming traversal lets an entity root pull in facts, episodes, and revisions that point at it even when a writer did not materialize the reverse edge. If incoming relation lookup fails for a root, Membrane reports a `graph_expand_failed` diagnostic and still returns any outgoing edges it already loaded for that root. If the root already has the inverse outgoing relation to the same neighbor, the inbound reverse pair is skipped so bidirectional writes do not double-spend the edge budget. Equal-weight relations are ordered by recency, predicate, source ID, then target ID. Returned nodes are ordered by root status, hop, salience, then record ID so repeated calls produce stable prompt context. This lets callers lower prompt budgets without accidentally spending the whole graph neighborhood on weak links that happened to be stored first.
+
+Entity lookup and graph root reranking use the natural-language task descriptor, not only exact entity names. Indexed canonical names, aliases, bare external identifiers, namespaced identifier tokens, mentions, and linked entities are lowercased and whitespace-folded before matching as bounded phrases inside a longer descriptor, so queries like `debug Project Orchid rollout` or `debug BennettSchwartz/orchid rollout` can promote the `Project Orchid` entity root before graph expansion without matching short strings inside unrelated words. Exact entity-term matches rank first; for descriptor containment, more specific phrases like `Project Orchid` rank ahead of generic phrases like `Project`.
+
+Graph retrieval also recognizes explicit entity identifier tokens in the descriptor. Tokens such as `github:BennettSchwartz/orchid` or `repo_path:pkg/auth` use the entity identifier index before root reranking, and exact identifier matches receive the strongest entity-root boost. This lets callers jump directly to a canonical entity even when the natural-language name is absent.
+
+When `trust.scopes` is restricted, entity root lookup still considers unscoped entity terms alongside scoped terms. This keeps globally visible entities available as graph roots while still filtering every returned record through the trust rules above. When `trust.scopes` is empty, graph retrieval searches entity terms and explicit identifier tokens across all indexed scopes before applying sensitivity and redaction rules, so unrestricted callers can seed roots from scoped entities too.
+
+Root reranking also treats Membrane graph predicates as task evidence. Subject
+and object links get the strongest relation boost; mention links and common
+relation candidates such as `supports`, `depends_on`, `uses`, `caused_by`,
+`contradicts`, `supersedes`, and `contested_by` also boost linked entity
+matches. Equal root reranking scores use the same fresher-`updated_at`, then
+record-ID tie-breaker as flat retrieval.
+
 ### Request fields
 
 <ParamField path="task_descriptor" type="string">
   Natural-language description of the current task. With embeddings configured, this drives semantic similarity search.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]">
+  Optional precomputed query embedding. When supplied, retrieval uses this vector directly instead of generating one from `task_descriptor`. Non-empty vectors must contain finite values and at least one non-zero value.
 </ParamField>
 
 <ParamField path="trust" type="TrustContext" required>
@@ -53,20 +76,20 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
       Whether the caller has been authenticated.
     </ParamField>
     <ParamField path="trust.actor_id" type="string">
-      Identifier of the requesting user, agent, or service.
+      Identifier of the requesting user, agent, or service. The public daemon API enforces the standard string size limit.
     </ParamField>
     <ParamField path="trust.scopes" type="string[]">
-      Allowed scopes. An empty list means scoped filtering is not applied.
+      Allowed scopes. An empty list means scoped filtering is not applied. When present, each scope must be non-empty and within the standard string size limit.
     </ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField path="memory_types" type="string[]">
-  Optional memory type filter. Valid values are `episodic`, `working`, `semantic`, `competence`, `plan_graph`, and `entity`.
+  Optional memory type filter. Valid values are `episodic`, `working`, `semantic`, `competence`, `plan_graph`, and `entity`. Duplicate values are ignored, and retrieval still applies the canonical layer order for the requested types.
 </ParamField>
 
 <ParamField path="min_salience" type="number">
-  Minimum salience threshold. Records below this value are excluded before graph expansion.
+  Minimum salience threshold from `0` to `1`. Records below this value are excluded before graph expansion.
 </ParamField>
 
 <ParamField path="root_limit" type="number">
@@ -82,7 +105,7 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
 </ParamField>
 
 <ParamField path="max_hops" type="number">
-  Number of relation hops to expand from each root. `0` returns only roots; SDKs default to `1`.
+  Number of relation hops to expand from each root. In the daemon API, `0` uses the configured default and `-1` returns ranked roots only. Values below `-1` are rejected. SDKs default to `1` and expose roots-only retrieval as `rootOnly` or `root_only`.
 </ParamField>
 
 ### Response fields
@@ -101,6 +124,14 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
 
 <ResponseField name="selection" type="SelectionResult">
   Optional selector metadata when competence or plan graph candidates were scored.
+</ResponseField>
+
+<ResponseField name="diagnostics" type="RetrievalDiagnostic[]">
+  Optional non-fatal fallback reasons, such as `embedding_query_failed`, `vector_rank_failed`, `graph_expand_failed`, or `response_byte_limit_applied`. Normal projection does not emit a warning; the byte-limit diagnostic appears only when truncation occurred.
+</ResponseField>
+
+<ResponseField name="projection" type="RecordProjection">
+  Structured omission metadata. `history_omitted` is true for graph records. Roots-only responses set `relations_omitted`; expanded responses set `relations_truncated`. `records_truncated` reports actual aggregate byte-budget truncation, including selection copies.
 </ResponseField>
 
 ### Examples
@@ -192,7 +223,7 @@ const roots = graph.nodes.filter((node) => node.root).map((node) => node.record)
 const context = roots.map((record) => JSON.stringify(record)).join("\n");
 ```
 
-Use `rootLimit`, `nodeLimit`, and `maxHops` to keep prompt context bounded.
+Use `rootLimit`, `nodeLimit`, and `maxHops` to choose a smaller prompt projection. The service still enforces its count and aggregate byte ceilings for larger requests.
 
 ---
 
@@ -202,12 +233,12 @@ Use `rootLimit`, `nodeLimit`, and `maxHops` to keep prompt context bounded.
 rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
 ```
 
-Fetches a single record by UUID. The same trust rules apply. If the record does not exist or trust denies access, the RPC returns an error.
+Fetches a single record by UUID. The same trust rules apply. The public RPC returns a byte-bounded projection that omits relations, audit entries, and provenance sources before production storage hydrates the record. A projected record that cannot fit within the 16 MiB response budget returns `RESOURCE_EXHAUSTED`. The trusted in-process Go `Membrane.RetrieveByID` method remains the complete-record API.
 
 ### Request fields
 
 <ParamField path="id" type="string" required>
-  UUID of the record to retrieve.
+  UUID of the record to retrieve. Empty IDs are rejected before lookup.
 </ParamField>
 
 <ParamField path="trust" type="TrustContext" required>
@@ -217,7 +248,11 @@ Fetches a single record by UUID. The same trust rules apply. If the record does 
 ### Response fields
 
 <ResponseField name="record" type="MemoryRecord">
-  The requested typed memory record.
+  The requested typed memory record with append-only history and relations omitted.
+</ResponseField>
+
+<ResponseField name="projection" type="RecordProjection">
+  Truthful omission metadata. For a successful `RetrieveByID` RPC, `relations_omitted` and `history_omitted` are `true`.
 </ResponseField>
 
 ### Example
@@ -266,7 +301,7 @@ record = client.retrieve_by_id(
 
 ## Layer Order
 
-When no `memory_types` filter is supplied, graph retrieval starts from the same layered ranking model used internally:
+Graph retrieval starts from the same layered ranking model used internally. A `memory_types` filter narrows this list but does not reorder it:
 
 ```text
 working -> entity -> semantic -> competence -> plan_graph -> episodic

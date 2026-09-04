@@ -21,7 +21,9 @@ func NewServiceWithEmbedding(store storage.Store, selector *Selector, embedding 
 func NewServiceWithVectorRanker(store storage.Store, selector *Selector, embedding EmbeddingService, ranker VectorRanker) *Service
 ```
 
-`membrane.New` chooses the right constructor based on `Config`. With Postgres + pgvector and embeddings configured, the service uses hybrid vector and salience ranking.
+`membrane.New` chooses the right constructor based on `Config`. With Postgres + pgvector and embeddings configured, the service uses hybrid vector and salience ranking. When `Config.EmbeddingModel` is set, pgvector search only considers embeddings stored for that model.
+
+Flat retrieval orders records by the strongest available primary signal: hybrid vector score when pgvector results are available, selector score for competence and plan graph candidates, or salience when retrieval falls back. After memory type, trust, and salience filters run, stores that implement candidate-restricted vector ranking search only those candidate IDs in pgvector, which keeps unrelated embeddings from consuming the vector search window. Legacy global rankers are intersected with the filtered candidate set before hybrid scores are assigned, so outside records do not dilute the vector rank of accessible candidates. Equal primary scores are ordered by fresher `UpdatedAt` values and then by record ID so repeated prompt context does not depend on store iteration order.
 
 ---
 
@@ -33,10 +35,40 @@ func (svc *Service) RetrieveGraph(ctx context.Context, req *RetrieveGraphRequest
 
 Retrieves ranked root memories for a task descriptor, then expands a bounded graph neighborhood from each root.
 
+Expansion spends constrained graph budgets on stronger links first: outgoing and incoming stored relations are considered by descending relation weight, then by recency, predicate, source ID, and target ID for equal weights. Incoming traversal lets an entity root pull in facts, episodes, and revisions that point at it even when a writer did not materialize the reverse edge. If incoming relation lookup fails for a root, Membrane reports a `graph_expand_failed` diagnostic and still returns any outgoing edges it already loaded for that root. If a root already has the inverse outgoing relation to the same neighbor, the inbound reverse pair is skipped so bidirectional writes do not double-spend the edge budget. Returned nodes are ordered by root status, hop, salience, then record ID for stable prompt context. This matters when `NodeLimit` or `EdgeLimit` is small because the returned neighborhood should prefer meaningful edges over incidental insertion order.
+
+Entity root lookup and root reranking accept natural-language task descriptors. Canonical entity names, aliases, bare external identifiers, namespaced identifier tokens, mentions, and linked entities are lowercased and whitespace-folded before being matched as bounded phrases inside the descriptor, so `debug Project Orchid rollout` or `debug BennettSchwartz/orchid rollout` can promote a `Project Orchid` entity root even when the descriptor is not an exact entity name, without matching short strings inside unrelated words. Exact entity-term matches rank first; for descriptor containment, more specific phrases like `Project Orchid` rank ahead of generic phrases like `Project`.
+
+Descriptors may also include explicit entity identifier tokens such as `github:BennettSchwartz/orchid` or `repo_path:pkg/auth`. Graph retrieval looks these up through the entity identifier index before root reranking, which lets callers seed graph retrieval from stable external IDs.
+
+Scoped trust contexts still search unscoped entity terms alongside scoped terms, matching the trust rule that empty-scope records are globally visible to allowed callers. Trust contexts with an empty `Scopes` slice search entity terms and explicit identifiers across every indexed scope before sensitivity and redaction filtering, so unrestricted graph retrieval can promote scoped entity roots.
+
+Root reranking also recognizes Membrane's graph predicate constants as task
+evidence. Subject/object links get the strongest relation boost; mention links
+and common relation candidates such as `supports`, `depends_on`, `uses`,
+`caused_by`, `contradicts`, `supersedes`, and `contested_by` also boost linked
+entity matches. Root scoring uses only byte-bounded relation lookups; stores
+that expose only legacy unbounded graph methods are skipped instead of being
+called. Equal root reranking scores use the same fresher `UpdatedAt`, then
+record ID tie-breaker as flat retrieval.
+
+The lower-level service normalizes zero or negative root, node, and edge limits before ranking. The embedded `membrane.Membrane` facade is stricter: zero still applies configured defaults, but negative graph limits are rejected and the caller's request struct is left unchanged. Entity lookup receives the same effective root limit used to trim final roots, so descriptor-based entity matching does not fan out beyond the graph budget.
+
+All effective count limits are capped at 10,000 before allocation. Bounded
+retrieval also applies a 16 MiB aggregate projected-response budget across
+records, graph edges, emitted relation metadata, and selector record copies.
+Postgres caps the candidate prefix from that budget before JSON size preflight
+and hydrates only the deterministic prefix that fits. Graph expansion also
+uses request-wide storage-work and relation-hydration budgets.
+
 ### RetrieveGraphRequest
 
 <ParamField path="TaskDescriptor" type="string">
   Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="QueryEmbedding" type="[]float32">
+  Optional precomputed query embedding. When supplied, graph retrieval uses it directly for root ranking and selector scoring instead of generating one from `TaskDescriptor`. Non-empty vectors must contain finite values and at least one non-zero value.
 </ParamField>
 
 <ParamField path="Trust" type="*TrustContext" required>
@@ -44,11 +76,11 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
 </ParamField>
 
 <ParamField path="MemoryTypes" type="[]schema.MemoryType">
-  Optional filter. Valid values are `episodic`, `working`, `semantic`, `competence`, `plan_graph`, and `entity`.
+  Optional filter. Valid values are `episodic`, `working`, `semantic`, `competence`, `plan_graph`, and `entity`. Duplicate values are ignored, and retrieval still applies the canonical layer order for the requested types.
 </ParamField>
 
 <ParamField path="MinSalience" type="float64">
-  Minimum salience threshold.
+  Minimum salience threshold from `0` to `1`.
 </ParamField>
 
 <ParamField path="RootLimit" type="int">
@@ -64,7 +96,7 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
 </ParamField>
 
 <ParamField path="MaxHops" type="int">
-  Graph expansion depth. `0` returns roots only.
+  Graph expansion depth. On the embedded `membrane.Membrane` facade, `0` applies `GraphDefaultMaxHops` and `-1` returns roots only; on the lower-level `retrieval.Service`, `0` and `-1` both return roots only. Values below `-1` are rejected.
 </ParamField>
 
 ### RetrieveGraphResponse
@@ -83,6 +115,14 @@ Retrieves ranked root memories for a task descriptor, then expands a bounded gra
 
 <ResponseField name="Selection" type="*SelectionResult">
   Selector metadata when competence or plan graph candidates were scored.
+</ResponseField>
+
+<ResponseField name="Diagnostics" type="[]RetrievalDiagnostic">
+  Non-fatal fallback reasons from root ranking or graph expansion. Normal field projection does not emit a warning. `response_byte_limit_applied` appears only when the aggregate byte budget actually truncates the response.
+</ResponseField>
+
+<ResponseField name="Projection" type="RecordProjection">
+  Structured omission metadata. `HistoryOmitted` is true for graph nodes. Roots-only responses set `RelationsOmitted`; expanded responses set `RelationsTruncated`. `RecordsTruncated` reports actual aggregate byte-budget truncation, including selector copies.
 </ResponseField>
 
 ```go
@@ -123,7 +163,8 @@ for _, node := range resp.Nodes {
 func (svc *Service) Retrieve(ctx context.Context, req *RetrieveRequest) (*RetrieveResponse, error)
 ```
 
-Lower-level layered retrieval used by graph retrieval. It returns a flat list of records and optional selector metadata.
+Lower-level layered retrieval used by graph retrieval. It returns a flat list of bounded record projections and optional selector metadata. The projections omit relations, audit entries, and provenance sources so a record with append-only history cannot turn a bounded query into unbounded storage or response work. The store must implement `BoundedListStore`; retrieval returns `ErrBoundedRetrievalUnsupported` instead of falling back to an unbounded legacy `List`. Service-side sanitization still enforces the projection when a custom bounded store ignores individual `ListOptions` hints. Use `RetrieveByID` for the complete in-process representation of a selected record.
+When embedding generation or vector ranking fails, `Retrieve` falls back to salience-based ranking and reports the non-fatal degradation in `RetrieveResponse.Diagnostics`.
 
 ### RetrieveRequest
 
@@ -132,7 +173,7 @@ Lower-level layered retrieval used by graph retrieval. It returns a flat list of
 </ParamField>
 
 <ParamField path="QueryEmbedding" type="[]float32">
-  Optional precomputed query embedding.
+  Optional precomputed query embedding. Non-empty vectors must contain finite values and at least one non-zero value. Invalid vectors returned by an embedding service are reported as `embedding_query_failed` diagnostics and retrieval falls back to salience or selector ranking.
 </ParamField>
 
 <ParamField path="Trust" type="*TrustContext" required>
@@ -140,15 +181,15 @@ Lower-level layered retrieval used by graph retrieval. It returns a flat list of
 </ParamField>
 
 <ParamField path="MemoryTypes" type="[]schema.MemoryType">
-  Restricts retrieval to the specified memory types. Empty means all types in canonical layer order.
+  Restricts retrieval to the specified memory types. Empty means all types in canonical layer order. Non-empty filters are validated, de-duplicated, and reordered to that same canonical layer order.
 </ParamField>
 
 <ParamField path="MinSalience" type="float64">
-  Records below this salience are excluded.
+  Records below this salience are excluded. Must be finite and in the `0` to `1` range.
 </ParamField>
 
 <ParamField path="Limit" type="int">
-  Maximum number of records. `0` means no limit.
+  Maximum number of records. Values greater than `0` apply that limit; `0` uses the hard 10,000-record safety cap.
 </ParamField>
 
 ### RetrieveResponse
@@ -161,6 +202,27 @@ Lower-level layered retrieval used by graph retrieval. It returns a flat list of
   Non-nil when competence or plan graph candidates were evaluated.
 </ResponseField>
 
+<ResponseField name="Diagnostics" type="[]RetrievalDiagnostic">
+  Non-fatal fallback reasons, such as `embedding_query_failed` or `vector_rank_failed`. Empty means retrieval did not encounter a reportable ranking degradation.
+</ResponseField>
+
+<ResponseField name="Projection" type="RecordProjection">
+  Declares the fields omitted from bounded results. `RelationsOmitted` and `HistoryOmitted` are true for `Retrieve`; `RecordsTruncated` is true only when the aggregate 16 MiB budget removed records or selector copies.
+</ResponseField>
+
+---
+
+### RetrievalDiagnostic
+
+```go
+type RetrievalDiagnostic struct {
+    Code    string
+    Message string
+}
+```
+
+Diagnostics are intended for observability and client-side logging. Retrieval still returns records when it can safely fall back to selector or salience ranking, and graph retrieval still returns roots when relation expansion degrades.
+
 ---
 
 ## RetrieveByID
@@ -169,7 +231,7 @@ Lower-level layered retrieval used by graph retrieval. It returns a flat list of
 func (svc *Service) RetrieveByID(ctx context.Context, id string, trust *TrustContext) (*schema.MemoryRecord, error)
 ```
 
-Fetches a single record by ID and checks it against trust. Returns `storage.ErrNotFound` when missing and `ErrAccessDenied` when trust denies access.
+Fetches one complete record by ID, including its relations, audit log, and provenance sources, and checks it against trust. This is the trusted in-process full-history path after a caller selects a bounded retrieval result. The public gRPC `RetrieveByID` handler instead uses `RetrieveProjectedByID`, which requires `BoundedListStore`, applies the 16 MiB pre-hydration budget, and omits relations and append-only history. Returns `storage.ErrNotFound` when missing and `ErrAccessDenied` when trust denies access.
 
 ```go
 rec, err := m.RetrieveByID(ctx, "550e8400-e29b-41d4-a716-446655440000", trust)
@@ -194,6 +256,8 @@ type TrustContext struct {
 
 func NewTrustContext(maxSensitivity schema.Sensitivity, authenticated bool, actorID string, scopes []string) *TrustContext
 ```
+
+At the public gRPC boundary, `MaxSensitivity` is required and must be one of the public sensitivity values. `ActorID` must fit within the standard string size limit, and any supplied scope must be non-empty and fit within that same limit.
 
 Access is allowed when:
 
@@ -225,6 +289,10 @@ The selector ranks competence and plan graph candidates using:
 2. Observed success rate from competence or plan metrics.
 3. Recency, based on last reinforcement time.
 
+Embedding similarity is used only when the stored record vector and query vector have the same dimension, contain finite values, and include at least one non-zero component. Otherwise the selector falls back to record confidence for that candidate.
+
+Equal composite selector scores use the same freshness-then-ID tie-breaker as flat retrieval.
+
 ### SelectionResult
 
 <ResponseField name="Selected" type="[]*schema.MemoryRecord">
@@ -247,7 +315,7 @@ The selector ranks competence and plan graph candidates using:
 
 ## Layer Order
 
-When no memory type filter is supplied, retrieval uses this canonical order:
+Retrieval uses this canonical order. A memory type filter narrows the list but does not reorder it:
 
 ```text
 working -> entity -> semantic -> competence -> plan_graph -> episodic

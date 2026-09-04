@@ -183,7 +183,7 @@ const graph = await client.retrieveGraph("database operations", {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "ts-agent",
-    scopes: []
+    scopes: ["project-orion"]
   },
   memoryTypes: ["entity", "semantic", "competence"],
   rootLimit: 10,

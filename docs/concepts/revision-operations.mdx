@@ -54,7 +54,7 @@ type AuditEntry struct {
 
 ## Supersede
 
-Atomically replaces an old record with a new version. The old record is retracted (salience set to 0, semantic status set to `retracted`). The new record is linked to the old via a `supersedes` relation and provenance source.
+Atomically replaces an old record with a new version. The old record is retracted (salience set to 0, semantic status set to `retracted`). The new record is linked to the old via a `supersedes` relation and provenance source; the old record receives the inverse `superseded_by` relation.
 
 ```go
 // From README.md
@@ -66,9 +66,10 @@ superseded, _ := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version upda
 1. Old record is fetched and checked as revisable.
 2. Old record's salience is set to 0; semantic status set to `retracted`; `SupersededBy` set to the new record's ID.
 3. New record gets a `supersedes` relation pointing to the old record ID.
-4. New record's provenance includes the old record as a source.
-5. Audit entry (`revise`) is added to the old record; audit entry (`create`) is added to the new record.
-6. Both updates are committed in a single transaction.
+4. Old record gets a `superseded_by` relation pointing to the replacement.
+5. New record's provenance includes the old record as a source.
+6. Audit entry (`revise`) is added to the old record; audit entry (`create`) is added to the new record.
+7. Both updates are committed in a single transaction.
 
 ```go
 // From pkg/revision/supersede.go
@@ -88,7 +89,7 @@ The new record must include at least one evidence reference or provenance source
 
 ## Fork
 
-Creates a new record derived from an existing source record. Unlike Supersede, both the source and the forked record remain active. Fork is used for conditional variants — facts that are true under specific conditions (`ValidityModeConditional`).
+Creates a new record derived from an existing source record. Unlike Supersede, both the source and the forked record remain active. Fork is used for conditional variants — facts that are true under specific conditions (`ValidityModeConditional`). For semantic payloads, the forked record's revision status is set to `active`.
 
 ```go
 // From README.md
@@ -99,8 +100,9 @@ forked, _ := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev e
 
 1. Source record is fetched and checked as revisable.
 2. Forked record gets a `derived_from` relation pointing to the source.
-3. Audit entry (`fork`) is added to the source record; audit entry (`create`) is added to the forked record.
-4. Both records remain active with their original salience.
+3. Source record gets a `derived_semantic` relation pointing to the fork.
+4. Audit entry (`fork`) is added to the source record; audit entry (`create`) is added to the forked record.
+5. Both records remain active with their original salience.
 
 ```go
 // From pkg/revision/fork.go
@@ -135,7 +137,7 @@ forkedRec := &schema.MemoryRecord{
 
 ## Contest
 
-Marks a record as contested, indicating that conflicting evidence exists. The record remains visible but its semantic status is set to `contested`. A `contested_by` relation is added pointing to the conflicting record or evidence reference.
+Marks a record as contested, indicating that conflicting evidence exists. The record remains visible but its semantic status is set to `contested`. A `contested_by` relation is added pointing to the conflicting record, and that record receives the inverse `contests` relation.
 
 ```go
 // From README.md
@@ -147,7 +149,8 @@ m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts
 1. Target record is fetched and checked as revisable.
 2. Semantic revision status is set to `contested`.
 3. A `contested_by` relation is added from the target to `contestingRef`.
-4. Audit entry (`revise`) is added to the target record.
+4. A `contests` relation is added from `contestingRef` back to the target.
+5. Audit entry (`revise`) is added to the target record.
 
 ```go
 // From pkg/revision/contest.go
@@ -196,7 +199,7 @@ Retracted records are not deleted. They remain in the store with salience 0 and 
 
 ## Merge
 
-Combines multiple source records into a single consolidated record. All source records are retracted, and the merged record receives `derived_from` relations to each source.
+Combines multiple unique source records into a single consolidated record. All source records are retracted, the merged record receives `derived_from` relations to each source, and each source receives a `derived_semantic` relation to the merged record. For semantic payloads, the merged record's revision status is set to `active`.
 
 ```go
 // From README.md
@@ -208,8 +211,9 @@ merged, _ := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolid
 1. All source records are fetched and checked as revisable.
 2. Each source record's salience is set to 0; semantic status set to `retracted`.
 3. Merged record gets `derived_from` relations to each source.
-4. Audit entry (`merge`) is added to each source; audit entry (`create`) is added to the merged record.
-5. All changes are committed in a single transaction.
+4. Each source gets a `derived_semantic` relation to the merged record.
+5. Audit entry (`merge`) is added to each source; audit entry (`create`) is added to the merged record.
+6. All changes are committed in a single transaction.
 
 ```go
 // From pkg/revision/merge.go
@@ -250,8 +254,8 @@ Supersede and merge operations automatically append the old record's ID as a `Pr
 
 | Operation | Source fate | Target status | Relation created |
 |-----------|------------|---------------|------------------|
-| Supersede | Retracted | `active` | `supersedes` (new → old) |
-| Fork | Stays active | `active` | `derived_from` (fork → source) |
-| Contest | Status → `contested` | — | `contested_by` (target → evidence) |
+| Supersede | Retracted | `active` | `supersedes` (new -> old), `superseded_by` (old -> new) |
+| Fork | Stays active | `active` | `derived_from` (fork -> source), `derived_semantic` (source -> fork) |
+| Contest | Status → `contested` | — | `contested_by` (target -> evidence), `contests` (evidence -> target) |
 | Retract | Retracted | — | none |
-| Merge | All retracted | `active` | `derived_from` (merged → each source) |
+| Merge | All retracted | `active` | `derived_from` (merged -> each source), `derived_semantic` (source -> merged) |

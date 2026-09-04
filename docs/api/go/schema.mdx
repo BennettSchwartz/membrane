@@ -20,7 +20,7 @@ The atomic unit of storage. Every stored memory item must conform to this shape 
 </ParamField>
 
 <ParamField path="Type" type="MemoryType" required>
-  Memory category. One of `episodic`, `working`, `semantic`, `competence`, `plan_graph`.
+  Memory category. One of `episodic`, `working`, `entity`, `semantic`, `competence`, or `plan_graph`.
 </ParamField>
 
 <ParamField path="Sensitivity" type="Sensitivity" required>
@@ -64,7 +64,7 @@ The atomic unit of storage. Every stored memory item must conform to this shape 
 </ParamField>
 
 <ParamField path="Payload" type="Payload" required>
-  Type-specific structured content. One of `EpisodicPayload`, `WorkingPayload`, `SemanticPayload`, `CompetencePayload`, or `PlanGraphPayload`.
+  Type-specific structured content. One of `EpisodicPayload`, `WorkingPayload`, `EntityPayload`, `SemanticPayload`, `CompetencePayload`, or `PlanGraphPayload`.
 </ParamField>
 
 <ParamField path="AuditLog" type="[]AuditEntry" required>
@@ -78,6 +78,17 @@ func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, pay
 ```
 
 Convenience constructor. Sets `Confidence` and `Salience` to `1.0`, initialises `Lifecycle` with exponential decay (half-life 86 400 s), and appends a `create` audit entry.
+
+### Entity helpers
+
+```go
+func NormalizeEntityTerm(value string) string
+func NormalizeEntityIdentifierNamespace(value string) string
+func ParseEntityIdentifierTokens(text string) []EntityIdentifier
+func EntityTermMatchesQuery(indexedTerm, query string) bool
+```
+
+`ParseEntityIdentifierTokens` extracts explicit `namespace:value` entity identifiers from descriptors and mention text while skipping ordinary URLs, email addresses, and clock times. Retrieval and capture resolution both use this parser, so a token such as `github:BennettSchwartz/orchid` resolves against the same entity identifier index in both paths.
 
 ---
 
@@ -171,7 +182,7 @@ type Relation struct { ... }
 ```
 
 <ParamField path="Predicate" type="string" required>
-  Relationship type. Common values: `supports`, `contradicts`, `derived_from`, `supersedes`, `contested_by`.
+  Relationship type. Predicates are normalized to lower snake case before storage and must not be empty. Common values: `supports`, `contradicts`, `derived_from`, `supersedes`, `contested_by`.
 </ParamField>
 
 <ParamField path="TargetID" type="string" required>
@@ -179,12 +190,56 @@ type Relation struct { ... }
 </ParamField>
 
 <ParamField path="Weight" type="float64">
-  Strength of the relationship. Range: `[0, 1]`.
+  Strength of the relationship. Must be finite and in range `[0, 1]`; omitted/zero weights are stored as the default edge strength.
 </ParamField>
 
 <ParamField path="CreatedAt" type="time.Time">
   When this relation was established.
 </ParamField>
+
+### Graph Predicate Constants
+
+The schema package exports constants for Membrane-generated graph predicates so ingestion, retrieval, revision, SDKs, and tests do not drift on raw strings:
+
+```go
+schema.GraphPredicateMentionsEntity
+schema.GraphPredicateMentionedIn
+schema.GraphPredicateDerivedSemantic
+schema.GraphPredicateDerivedFrom
+schema.GraphPredicateSubjectEntity
+schema.GraphPredicateFactSubjectOf
+schema.GraphPredicateObjectEntity
+schema.GraphPredicateFactObjectOf
+schema.GraphPredicateReferencesRecord
+schema.GraphPredicateReferencedBy
+schema.GraphPredicateDependsOn
+schema.GraphPredicateDependencyOf
+schema.GraphPredicateUses
+schema.GraphPredicateUsedBy
+schema.GraphPredicateCausedBy
+schema.GraphPredicateCauses
+schema.GraphPredicateSupports
+schema.GraphPredicateSupportedBy
+schema.GraphPredicateContradicts
+schema.GraphPredicateContradictedBy
+schema.GraphPredicateSupersedes
+schema.GraphPredicateSupersededBy
+schema.GraphPredicateContestedBy
+schema.GraphPredicateContests
+```
+
+Use `schema.NormalizeGraphPredicate(predicate)` for graph predicates from external
+or model-generated input. It lowercases input, splits camelCase, and treats
+punctuation, whitespace, hyphens, and underscores as separators, so
+`"Depends On"`, `"depends-on"`, `"depends_on"`, and `"dependsOn"` store the same
+predicate. Postgres storage and the internal test store apply this normalization
+again at relation write boundaries, including `Create`, `Update`, and
+`AddRelation`.
+
+Use `schema.InverseGraphPredicate(predicate)` when materializing reverse edges. It
+normalizes input before matching. Unknown predicates return
+`inverse_of_<normalized_predicate>`, matching capture-time relation candidate
+behavior.
 
 ---
 
@@ -220,9 +275,14 @@ type AuditEntry struct { ... }
 |---|---|---|
 | `episodic` | `MemoryTypeEpisodic` | Raw experience: user inputs, tool calls, errors, and observations. Intentionally short-lived. |
 | `working` | `MemoryTypeWorking` | Current state of an ongoing task. Enables resumption across sessions. |
+| `entity` | `MemoryTypeEntity` | Canonical graph spine: projects, files, services, people, tools, and aliases that connect other memory records. |
 | `semantic` | `MemoryTypeSemantic` | Stable knowledge: preferences, environment facts, and relationships. Supports revisability. |
 | `competence` | `MemoryTypeCompetence` | Procedural knowledge: how to achieve goals reliably under specific conditions. |
 | `plan_graph` | `MemoryTypePlanGraph` | Reusable solution structures stored as directed graphs of actions. |
+
+Semantic payloads require non-empty `Subject` and canonicalizable `Predicate` fields, a non-nil `Object`, and a `Validity.Mode` of `global`, `conditional`, or `timeboxed`. Semantic predicates normalize to lower snake case before storage and exact-fact matching. `MemoryRecord.Validate` rejects malformed direct semantic records before storage.
+
+Entity payloads require a non-empty `CanonicalName`. Any supplied `EntityIdentifier` must also have a non-empty `Namespace` and `Value`, so direct entity records cannot silently skip identifier indexing. `MemoryRecord.Validate` rejects malformed direct entity records before storage.
 
 ### Sensitivity
 

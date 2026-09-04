@@ -136,15 +136,22 @@ type EntityPayload struct {
 }
 ```
 
+Identifier namespaces are normalized to lowercase before storage and lookup;
+identifier values are trimmed but remain case-sensitive.
+Capture and retrieval both recognize explicit identifier tokens such as
+`github:BennettSchwartz/orchid` and `repo_path:pkg/auth`, so identifiers can
+seed canonical entity resolution even when the display name is absent.
+
 Built-in entity types include `Person`, `Organization`, `Agent`, `Project`, `Repository`, `File`, `Symbol`, `API`, `Service`, `Database`, `Tool`, `Task`, `Incident`, `Document`, `URL`, `Concept`, `Event`, and `Other`. The ontology is open, so applications may use project-specific strings.
 
 Entity records are usually created by `CaptureMemory` during interpretation, but they can also be represented directly as `MemoryRecord` values for revision operations.
+Direct entity records must include a non-empty `canonical_name`; the schema validator rejects entity payloads without one before they can be stored.
 
 ---
 
 ## Semantic
 
-Semantic memory stores durable facts as subject-predicate-object triples.
+Semantic memory stores durable facts as subject-predicate-object triples. Predicates are canonicalized to lower snake case before storage and duplicate matching, which keeps model- or user-provided spellings aligned.
 
 ```go
 type SemanticPayload struct {
@@ -174,7 +181,9 @@ _, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
 })
 ```
 
+When observations create semantic records, subject terms and string object terms are canonicalized to entity IDs when a same-scope entity exists, or when an unscoped global entity is the best match.
 Semantic records support supersede, fork, contest, retract, and merge.
+Direct semantic records must include non-empty `subject` and `predicate` fields, a non-null `object`, and a validity mode of `global`, `conditional`, or `timeboxed`; `MemoryRecord.Validate` rejects malformed semantic payloads before storage.
 
 ---
 

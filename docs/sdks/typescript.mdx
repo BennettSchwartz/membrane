@@ -49,7 +49,7 @@ const graph = await client.retrieveGraph("debug auth", {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "agent-1",
-    scopes: [],
+    scopes: ["project-openclaw"],
   },
   memoryTypes: ["entity", "semantic", "competence", "episodic"],
   rootLimit: 10,
@@ -81,7 +81,13 @@ new MembraneClient(addr?: string, options?: MembraneClientOptions)
 </ParamField>
 
 <ParamField path="options.apiKey" type="string">
-  Bearer token sent in gRPC metadata.
+  Bearer token sent in gRPC metadata. The SDK refuses to send this over
+  plaintext gRPC to non-loopback addresses unless explicitly allowed.
+</ParamField>
+
+<ParamField path="options.allowInsecureCredentials" type="boolean">
+  Permit sending `apiKey` over plaintext gRPC to a non-loopback address. Use
+  only for trusted development networks; production deployments should use TLS.
 </ParamField>
 
 <ParamField path="options.timeoutMs" type="number">
@@ -91,6 +97,11 @@ new MembraneClient(addr?: string, options?: MembraneClientOptions)
 <ParamField path="options.transport" type="RpcTransport">
   Custom transport used by tests or advanced integrations.
 </ParamField>
+
+For a credential-bearing plaintext connection allowed only because its address
+is loopback, the SDK disables gRPC HTTP proxying so proxy environment variables
+cannot route the connection off-host. TLS and the explicit insecure development
+override retain normal proxy behavior.
 
 ```typescript
 const client = new MembraneClient("membrane.example.com:443", {
@@ -112,7 +123,7 @@ async captureMemory(
 ): Promise<CaptureMemoryResult>
 ```
 
-Captures a rich memory candidate. `content` is encoded as `google.protobuf.Value`; the response contains typed memory records and graph edges.
+Captures a rich memory candidate. `content` is encoded as `google.protobuf.Value`; the response contains typed memory records and graph edges. The SDK validates `source`, `sourceKind`, `proposedType`, `sensitivity`, `reasonToRemember`, `summary`, `timestamp`, `scope`, and `tags` before sending the RPC, so dynamic callers fail before protobuf transport construction.
 
 <ParamField path="content" type="unknown" required>
   JSON-compatible content to capture.
@@ -122,8 +133,8 @@ Captures a rich memory candidate. `content` is encoded as `google.protobuf.Value
   Actor or system that produced the content.
 </ParamField>
 
-<ParamField path="options.sourceKind" type="SourceKind | string" default="agent_turn">
-  Capture shape: `event`, `tool_output`, `observation`, `working_state`, or `agent_turn`.
+<ParamField path="options.sourceKind" type="SourceKind | string" default="event">
+  Capture shape: `event`, `tool_output`, `observation`, `working_state`, or `agent_turn`. The snake_case alias `source_kind` is also accepted.
 </ParamField>
 
 <ParamField path="options.context" type="unknown">
@@ -131,11 +142,11 @@ Captures a rich memory candidate. `content` is encoded as `google.protobuf.Value
 </ParamField>
 
 <ParamField path="options.reasonToRemember" type="string">
-  Reason this content should be retained.
+  Reason this content should be retained. The snake_case alias `reason_to_remember` is also accepted.
 </ParamField>
 
 <ParamField path="options.proposedType" type="MemoryType | string">
-  Optional requested memory type: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, or `entity`.
+  Optional requested memory type: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, or `entity`. The snake_case alias `proposed_type` is also accepted.
 </ParamField>
 
 <ParamField path="options.summary" type="string">
@@ -180,7 +191,9 @@ console.log(capture.created_records.length);
 console.log(capture.edges.length);
 ```
 
-`capture_memory` is an alias for callers that prefer snake_case.
+`CaptureMemoryResult` is normalized to snake_case fields. When adapting JSON fixtures or non-gRPC envelopes, the parser also accepts Go-style response keys such as `PrimaryRecord`, `CreatedRecords`, `Edges`, `SourceID`, and `TargetID`, plus protobuf JSON lower-camel fields such as `primaryRecord`, `createdRecords`, `sourceId`, and `targetId`. This keeps repeated-observation semantic reuse visible as `derived_semantic` / `derived_from` edges even when the envelope came from direct Go fixtures.
+
+`capture_memory` is an alias for callers that prefer snake_case. `CaptureMemoryOptions` accepts both camelCase and protobuf-style snake_case option names for fields whose wire names differ.
 
 ---
 
@@ -195,36 +208,48 @@ async retrieveGraph(
 
 Retrieves ranked root memories and a bounded graph neighborhood around them.
 
+The daemon can seed entity roots from both natural-language descriptors and explicit identifier tokens such as `github:BennettSchwartz/orchid` or `repo_path:pkg/auth`. When `trust.scopes` is empty, entity root seeding searches across all indexed scopes before trust filtering; when scopes are supplied, it searches those scopes plus unscoped global entities.
+
+`RetrieveGraphResult` is returned with snake_case fields. The SDK also accepts Go-style graph fixture keys such as `Nodes`, `Edges`, `RootIDs`, `Record`, `SourceID`, `TargetID`, and `Diagnostics`, plus protobuf JSON lower-camel fields such as `rootIds`, `sourceId`, `targetId`, and `needsMore`, before normalizing them for TypeScript callers. Nested memory records, interpretation metadata, and payload oneofs are normalized from the same casing variants for fields such as `CreatedAt`, `Relations`, `AuditLog`, `proposedType`, `canonicalEntityId`, `relationCandidates`, `referenceCandidates`, and `extractionConfidence`. Semantic payloads normalize `revisionPolicy`, `supersededBy`, `object`, and validity condition `google.protobuf.Value` maps. Protobuf lower-camel plan graph payloads are normalized from `planGraph`, `planId`, `inputsSchema`, `outputsSchema`, and metrics such as `avgLatencyMs` into the snake_case SDK shape. Non-fatal retrieval fallbacks are exposed as `diagnostics`.
+
 <ParamField path="taskDescriptor" type="string" required>
-  Natural-language task or query.
+  Natural-language task or query. The SDK validates that this is a string before sending the RPC; pass an empty string only when you intentionally want salience-only root ranking.
 </ParamField>
 
 <ParamField path="options.trust" type="TrustContext">
-  Trust context controlling sensitivity and scope visibility. Defaults to unauthenticated low-sensitivity access.
+  Trust context controlling sensitivity and scope visibility. Defaults to unauthenticated low-sensitivity access. `trust.max_sensitivity` is validated before sending the RPC, `trust.authenticated` must be boolean, `trust.actor_id` must be a string, and `trust.scopes` must be an array of non-empty strings.
+</ParamField>
+
+<ParamField path="options.queryEmbedding" type="number[]">
+  Optional precomputed query embedding. Supplying it avoids an embedding API call and uses the vector directly for graph root ranking. Non-empty vectors must contain finite values and at least one non-zero value; the SDK validates this before sending the RPC. The snake_case alias `query_embedding` is also accepted.
+</ParamField>
+
+<ParamField path="options.rootOnly" type="boolean">
+  When `true`, returns ranked root records without expanding neighbors. This maps to the daemon's `max_hops = -1` sentinel and takes precedence over `maxHops`. Must be boolean. The snake_case alias `root_only` is also accepted.
 </ParamField>
 
 <ParamField path="options.memoryTypes" type="Array<MemoryType | string>">
-  Optional filter: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, `entity`.
+  Optional filter: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, `entity`. Values are validated, de-duplicated, and sent in canonical layer order before the RPC. The snake_case alias `memory_types` is also accepted.
 </ParamField>
 
 <ParamField path="options.minSalience" type="number">
-  Minimum salience threshold.
+  Minimum salience threshold. Must be finite and between `0` and `1`. The snake_case alias `min_salience` is also accepted.
 </ParamField>
 
 <ParamField path="options.rootLimit" type="number" default="10">
-  Maximum number of root records.
+  Maximum number of root records. Must be an integer from `0` to `10000`. The snake_case alias `root_limit` is also accepted.
 </ParamField>
 
 <ParamField path="options.nodeLimit" type="number" default="25">
-  Maximum total graph nodes.
+  Maximum total graph nodes. Must be an integer from `0` to `10000`. The snake_case alias `node_limit` is also accepted.
 </ParamField>
 
 <ParamField path="options.edgeLimit" type="number" default="100">
-  Maximum graph edges.
+  Maximum graph edges. Must be an integer from `0` to `10000`. The snake_case alias `edge_limit` is also accepted.
 </ParamField>
 
 <ParamField path="options.maxHops" type="number" default="1">
-  Graph expansion depth from each root.
+  Graph expansion depth from each root. Use `rootOnly: true` for roots-only retrieval. The SDK rejects non-integer values and values below `-1` before the RPC; `-1` is reserved for the daemon roots-only sentinel. The snake_case alias `max_hops` is also accepted.
 </ParamField>
 
 ```typescript
@@ -235,6 +260,8 @@ const graph = await client.retrieveGraph("debug auth retry failures", {
     actor_id: "auth-agent",
     scopes: ["project-auth"],
   },
+  queryEmbedding: [0.25, 0.5, 0.75],
+  rootOnly: false,
   memoryTypes: ["entity", "semantic", "competence", "episodic"],
   rootLimit: 8,
   nodeLimit: 20,
@@ -246,7 +273,7 @@ const roots = graph.nodes
   .map((node) => node.record);
 ```
 
-`retrieve_graph` is the snake_case alias.
+`retrieve_graph` is the snake_case alias. `RetrieveGraphOptions` accepts both camelCase and protobuf-style snake_case option names; when both forms are supplied, camelCase takes precedence.
 
 ---
 
@@ -272,6 +299,8 @@ const record = await client.retrieveById(recordId, {
 
 `retrieve_by_id` is the snake_case alias.
 
+`recordId` must be a non-empty string after trimming whitespace. The SDK rejects empty IDs before sending the RPC, matching daemon-side lookup validation.
+
 ---
 
 ## Revision
@@ -286,6 +315,8 @@ await client.contest(recordId, conflictingRef, "agent", "conflicting evidence");
 
 `newRecord`, `forkedRecord`, and `mergedRecord` may be plain JSON objects matching the `MemoryRecord` wire shape or `MemoryRecord` values.
 
+Revision methods reject empty required record IDs before transport. `merge` also requires at least one source ID, validates each source ID, and rejects duplicate source IDs; `contest` keeps `contestingRef` optional so external evidence references can still be recorded without a graph relation. Replacement records are checked against the daemon's semantic, entity, and relation invariants before transport: semantic payloads need subject, predicate, object, and a `validity.mode`; entity payloads need `canonical_name`, and any entity identifiers need non-empty `namespace` and `value` fields; relations need a non-empty normalized predicate, non-empty `target_id`, and a finite weight in `[0, 1]` when supplied. Outbound semantic and entity payloads accept both SDK snake_case fields and Go-style JSON fields such as `Kind`, `Subject`, `Predicate`, `Object`, `Validity`, `CanonicalName`, `PrimaryType`, and `Identifiers`; the SDK normalizes them into the protobuf oneof before sending the RPC.
+
 ## Reinforcement
 
 ```typescript
@@ -293,14 +324,17 @@ await client.reinforce(recordId, "agent", "used successfully");
 await client.penalize(recordId, 0.2, "agent", "not useful for this task");
 ```
 
+`reinforce` and `penalize` reject empty record IDs before transport. `penalize` also rejects negative, `NaN`, and infinite amounts before sending the RPC, matching daemon-side validation.
+
 ## Metrics
 
 ```typescript
 const metrics = await client.getMetrics();
 console.log(metrics.total_records);
+console.log(metrics.embedding_coverage);
 ```
 
-`get_metrics` is the snake_case alias.
+`getMetrics()` returns a typed `MetricsSnapshot`, including pgvector coverage fields such as `embedded_records`, `missing_embeddings`, and `embedding_coverage`. `get_metrics` is the snake_case alias.
 
 ---
 
@@ -335,6 +369,30 @@ MemoryType.ENTITY;
 ```
 
 Built-in entity ontology constants are open-ended. Use `EntityType.OTHER` or any project-specific string when none of the built-ins fit.
+Entity payloads returned by `retrieveGraph` and capture helpers are normalized to the documented snake_case shape, including typed `aliases` and `identifiers`, even when the daemon sends protobuf lower-camel or Go-style field names.
+
+Graph predicate constants cover Membrane-generated structural edges and common relation candidates:
+
+```typescript
+GraphPredicate.MENTIONS_ENTITY;
+GraphPredicate.DERIVED_SEMANTIC;
+GraphPredicate.DEPENDS_ON;
+GraphPredicate.DEPENDENCY_OF;
+GraphPredicate.SUPPORTS;
+GraphPredicate.SUPPORTED_BY;
+GraphPredicate.SUPERSEDES;
+GraphPredicate.SUPERSEDED_BY;
+GraphPredicate.CONTESTED_BY;
+GraphPredicate.CONTESTS;
+```
+
+`normalizeGraphPredicate(value)` lowercases model- or user-provided predicate
+names, splits camelCase, and treats punctuation, whitespace, hyphens, and
+underscores as separators.
+`normalizeSemanticPredicate(value)` applies the same canonical spelling for
+semantic subject-predicate-object facts before capture or direct record writes.
+`inverseGraphPredicate(value)` returns the reverse-edge predicate for Membrane's built-ins and
+`inverse_of_<normalized_predicate>` for custom predicates.
 
 ---
 

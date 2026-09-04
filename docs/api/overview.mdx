@@ -12,7 +12,7 @@ Membrane exposes a gRPC service backed by protoc-generated stubs. Public API env
 | Default address | `localhost:9090` |
 | Protocol | gRPC (HTTP/2) |
 | Payload encoding | Typed protobuf messages; `google.protobuf.Value` for arbitrary content |
-| TLS | Optional — set `tls_cert_file` and `tls_key_file` in config |
+| TLS | Optional on loopback; required for API-key-authenticated non-loopback listeners unless explicitly overridden |
 | Authentication | Bearer token via `authorization` metadata header |
 | Rate limiting | Token bucket; configurable via `rate_limit_per_second` |
 
@@ -43,6 +43,10 @@ tls_key_file: "/path/to/server.key"
 ```
 
 When TLS is enabled, use `-insecure` instead of `-plaintext` with grpcurl, or supply the CA certificate with `--cacert`.
+
+The server rejects API-key authentication over plaintext on non-loopback
+listeners by default. `allow_insecure_credentials: true` is an explicit escape
+hatch for trusted development networks; production deployments should use TLS.
 
 ## All methods
 
@@ -89,7 +93,7 @@ const graph = await client.retrieveGraph("auth debugging", {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "ts-agent",
-    scopes: [],
+    scopes: ["project-orion"],
   },
   memoryTypes: ["entity", "semantic", "competence"],
 });

@@ -24,18 +24,20 @@ The binary is written to `./bin/membraned`. Verify the build:
 ## Starting the daemon
 
 <Steps>
-  <Step title="Default SQLite storage">
-    Zero-configuration start. Membrane creates `membrane.db` in the working directory.
+  <Step title="Start Postgres + pgvector">
+    Start the bundled development database.
 
     ```bash
-    ./bin/membraned
+    export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+    export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
+    docker compose up -d
     ```
   </Step>
-  <Step title="With Postgres">
-    Pass a PostgreSQL DSN to switch backends and enable concurrent writers.
+  <Step title="Start Membrane">
+    Pass a PostgreSQL DSN. Membrane requires Postgres with the `vector` extension.
 
     ```bash
-    ./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+    ./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
     ```
   </Step>
   <Step title="With custom config file">
@@ -46,10 +48,10 @@ The binary is written to `./bin/membraned`. Verify the build:
     ```
   </Step>
   <Step title="Override specific settings">
-    Override database path and listen address without a config file.
+    Override the DSN and listen address without a config file.
 
     ```bash
-    ./bin/membraned --db /data/membrane.db --addr :8080
+    ./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN" --addr 127.0.0.1:8080
     ```
   </Step>
 </Steps>
@@ -61,20 +63,19 @@ The binary is written to `./bin/membraned`. Verify the build:
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--config` | `string` | `""` | Path to YAML config file |
-| `--db` | `string` | `"membrane.db"` | SQLite database path (overrides config) |
-| `--postgres-dsn` | `string` | `""` | PostgreSQL DSN; also switches backend to postgres |
-| `--addr` | `string` | `":9090"` | gRPC listen address (overrides config) |
+| `--postgres-dsn` | `string` | `""` | PostgreSQL DSN; required unless `postgres_dsn` or `MEMBRANE_POSTGRES_DSN` is set |
+| `--addr` | `string` | `"127.0.0.1:9090"` | gRPC listen address (overrides config) |
 | `--version` | `bool` | `false` | Print version and exit |
 
 <Note>
-`--postgres-dsn` implicitly sets `Backend = "postgres"`. You do not need to also set `backend: postgres` in the config file when using this flag.
+SQLite is not supported for daemon storage. The Postgres schema creates `CREATE EXTENSION IF NOT EXISTS vector` on startup.
 </Note>
 
 ---
 
 ## Docker Compose setup
 
-The repository includes a `docker-compose.yml` for running the Postgres + pgvector backend:
+The repository includes a `docker-compose.yml` for running the Postgres + pgvector store:
 
 ```yaml
 services:
@@ -83,22 +84,27 @@ services:
     environment:
       POSTGRES_DB: membrane_test
       POSTGRES_USER: membrane
-      POSTGRES_PASSWORD: membrane
+      POSTGRES_PASSWORD: ${MEMBRANE_POSTGRES_PASSWORD:?set MEMBRANE_POSTGRES_PASSWORD to a generated development secret}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 ```
 
 Start the database:
 
 ```bash
+export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
 docker compose up -d
 ```
 
 Then start the daemon pointing at it:
 
 ```bash
-./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
 ```
+
+The bundled service is development-only. Its host port is loopback-bound, and
+Compose refuses to start until `MEMBRANE_POSTGRES_PASSWORD` is supplied.
 
 ---
 
@@ -112,11 +118,10 @@ If you are using an existing Postgres instance, install the extension:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-Membrane runs schema migrations automatically on startup when the Postgres backend is selected.
+Membrane runs Postgres schema migrations automatically on startup.
+Embedding vectors are stored in a fixed-dimension `pgvector` column. The configured `embedding_dimensions` value must match the embedding model, and Membrane rejects empty, non-finite, all-zero, or wrong-dimension vectors before they reach Postgres. Dimension changes require a database migration because pgvector columns are typed by size, but same-dimension `embedding_model` changes are accepted: Membrane updates embedding metadata, filters lookup and search to the configured model, and lets startup backfill refresh records that only have stale vectors. Ordinary list queries use a stable salience, creation-time, and record-ID order. Vector searches use cosine distance and a stable `record_id` tie-breaker so equal-distance results stay deterministic.
 
-<Warning>
-Set `MEMBRANE_ENCRYPTION_KEY` before first run when using SQLite. Changing the key after records are written will make the database unreadable.
-</Warning>
+Use your database provider's volume encryption, backups, and access controls for at-rest protection.
 
 ---
 
@@ -124,14 +129,24 @@ Set `MEMBRANE_ENCRYPTION_KEY` before first run when using SQLite. Changing the k
 
 | Variable | Purpose |
 |----------|---------|
-| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the SQLite database |
-| `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN, used when `backend: postgres` |
+| `MEMBRANE_POSTGRES_DSN` | PostgreSQL DSN |
+| `MEMBRANE_EMBEDDING_ENDPOINT` | Embedding endpoint when `embedding_endpoint` is unset |
+| `MEMBRANE_EMBEDDING_MODEL` | Embedding model when `embedding_model` is unset |
+| `MEMBRANE_EMBEDDING_DIMENSIONS` | Embedding dimensions when the config value is still the default |
 | `MEMBRANE_EMBEDDING_API_KEY` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_ENDPOINT` | Semantic extraction endpoint when `llm_endpoint` is unset |
+| `MEMBRANE_LLM_MODEL` | Semantic extraction model when `llm_model` is unset |
 | `MEMBRANE_LLM_API_KEY` | API key for the semantic extraction LLM endpoint |
+| `MEMBRANE_INGEST_LLM_ENDPOINT` | Ingest interpretation endpoint when `ingest_llm_endpoint` is unset |
+| `MEMBRANE_INGEST_LLM_MODEL` | Ingest interpretation model when `ingest_llm_model` is unset |
 | `MEMBRANE_INGEST_LLM_API_KEY` | API key for the ingest-side interpretation endpoint |
 | `MEMBRANE_API_KEY` | Bearer token for gRPC client authentication |
+| `MEMBRANE_READ_MAX_SENSITIVITY` | Read sensitivity ceiling when `read_max_sensitivity` is empty |
+| `MEMBRANE_READ_SCOPES` | Comma-separated gRPC read scopes; overrides the configured list when non-empty |
+| `MEMBRANE_WRITE_MAX_SENSITIVITY` | Write sensitivity ceiling when `write_max_sensitivity` is empty |
+| `MEMBRANE_WRITE_SCOPES` | Comma-separated gRPC write scopes; overrides the configured list when non-empty |
 
-Environment variables are read at startup. If the same value is set both in the config file and an environment variable, the config file value takes precedence for most fields. Exception: `MEMBRANE_API_KEY` is read only from the environment when `api_key` is empty in the config.
+Environment variables are read at startup for the DSN, optional endpoint/model pairs, default embedding dimensions, secrets, and gRPC policy. Config file values take precedence over endpoint/model and sensitivity environment variables unless the matching field is empty; `MEMBRANE_EMBEDDING_DIMENSIONS` overrides only the default dimensions value; API-key environment variables are read only when the matching config field is empty. The comma-separated read/write scope variables replace the configured lists when non-empty. Endpoint and model values must still be configured as complete pairs, and API-key variables do not enable an embedding or LLM subsystem by themselves.
 
 ---
 
@@ -140,12 +155,15 @@ Environment variables are read at startup. If the same value is set both in the 
 Create a config file and pass it with `--config`:
 
 ```yaml
-backend: postgres
-postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
-listen_addr: ":9090"
+postgres_dsn: "" # set MEMBRANE_POSTGRES_DSN in the environment
+listen_addr: "127.0.0.1:9090"
 decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
+read_max_sensitivity: "low"
+read_scopes: ["default"]
+write_max_sensitivity: "low"
+write_scopes: ["default"]
 selection_confidence_threshold: 0.7
 graph_default_root_limit: 10
 graph_default_node_limit: 25
@@ -172,6 +190,8 @@ tls_cert_file: "/etc/membrane/tls.crt"
 tls_key_file:  "/etc/membrane/tls.key"
 ```
 
+The default loopback listener is appropriate for a local client or a colocated reverse proxy. Binding to a non-loopback address requires `api_key`; when API-key authentication is enabled on a non-loopback listener, configure the TLS files as well. `allow_insecure_credentials: true` is an explicit development-only escape hatch for trusted private networks.
+
 ```bash
 ./bin/membraned --config /etc/membrane/config.yaml
 ```
@@ -182,24 +202,20 @@ tls_key_file:  "/etc/membrane/tls.key"
 
 Choose a tier based on your concurrency and feature requirements:
 
-| Tier | Backend | Embedding | LLM | When to use |
-|------|---------|-----------|-----|--------------|
-| **1** | SQLite | — | — | Single-process agents, development, zero-infra deployments |
-| **2** | Postgres | — | — | Multiple concurrent writers, production with existing Postgres |
-| **3** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types; recommended for production |
-| **4** | Postgres + pgvector | Yes | Yes | Full system: background LLM extraction turns episodic traces into semantic facts |
+| Tier | Store | Embedding | LLM | When to use |
+|------|-------|-----------|-----|--------------|
+| **1** | Postgres + pgvector | — | — | Typed storage, graph edges, trust gating, decay, and revisions |
+| **2** | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types |
+| **3** | Postgres + pgvector | Yes | Yes | Full system: background LLM extraction turns episodic traces into semantic facts |
 
 <CardGroup cols={2}>
-  <Card title="Tier 1 — SQLite" icon="database">
-    Default. Zero dependencies, embedded store, confidence-based applicability fallback. Ideal for single-agent workloads.
+  <Card title="Tier 1 — Database core" icon="database">
+    Required Postgres + pgvector store with typed records, graph edges, trust gating, decay, and revision history.
   </Card>
-  <Card title="Tier 2 — Postgres" icon="server">
-    Concurrent writers, JSONB storage, same retrieval semantics as tier 1. Use when multiple agents or processes share one substrate.
-  </Card>
-  <Card title="Tier 3 — pgvector (recommended)" icon="chart-scatter">
+  <Card title="Tier 2 — Vector ranking" icon="chart-scatter">
     Adds hybrid vector+salience ranking for all record types. Retrieval quality matches pure RAG while preserving Membrane's lifecycle advantages (decay, retraction, reinforcement, supersession).
   </Card>
-  <Card title="Tier 4 — Full" icon="brain">
+  <Card title="Tier 3 — Full" icon="brain">
     Adds LLM-backed consolidation that automatically extracts typed semantic facts from episodic traces during background consolidation runs.
   </Card>
 </CardGroup>
@@ -210,8 +226,11 @@ Choose a tier based on your concurrency and feature requirements:
 
 The daemon handles `SIGINT` and `SIGTERM`. On receipt, it:
 
-1. Cancels the background context to stop decay and consolidation schedulers.
+1. Cancels the background context for decay, consolidation, and startup embedding backfill.
 2. Drains in-flight gRPC requests.
-3. Closes the database.
+3. Waits for Membrane background jobs to finish.
+4. Closes the database.
+
+Startup embedding backfill keeps processing after individual record failures, then logs an aggregate error with the number of failed records. Pair this with `embedding_coverage` from `GetMetrics` to alert when pgvector coverage remains incomplete after startup.
 
 This ordering prevents handlers from hitting a closed database. Avoid sending `SIGKILL` during an active consolidation run.

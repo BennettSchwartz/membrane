@@ -7,6 +7,10 @@ Import path: `github.com/BennettSchwartz/membrane/pkg/revision`
 
 The `revision` package provides atomic, auditable operations for modifying the state of memory records. All operations are executed inside a single storage transaction so that partial revisions are never externally visible (RFC 15.7).
 
+New revision records do not retain caller-supplied audit history, lifecycle policy, or semantic lineage. The service generates audit identity and timestamps, rebuilds operation-derived lineage, and inherits lifecycle policy from stored source records while resetting `LastReinforcedAt`. Evidence kinds, opaque references, and hashes are preserved as attributed assertions. At the gRPC boundary, caller-supplied replacement records are limited to 100 relations and every persisted target is preflighted against the exact existing record and server write policy; opaque provenance and semantic values are not treated as record IDs.
+
+The public daemon validates replacement records for `Supersede`, `Fork`, and `Merge` before delegating to this package. Replacement records must satisfy the same `MemoryRecord.Validate` invariants as stored records, including semantic validity fields and entity identifier integrity.
+
 <Warning>
   Episodic records are append-only and cannot be revised, forked, retracted, merged, or contested. All revision operations return `ErrEpisodicImmutable` when called on an episodic record.
 </Warning>
@@ -46,6 +50,7 @@ func (s *Service) Supersede(
 
 Atomically replaces `oldID` with `newRecord`. The old record is retracted (salience set to `0`, semantic `RevisionStatus` set to `retracted`). The new record receives:
 - A `supersedes` relation pointing to the old record.
+- The old record receives the inverse `superseded_by` relation pointing to the replacement.
 - A `ProvenanceSource` referencing the old record.
 - For semantic payloads: `Revision.Supersedes = oldID` and `Revision.Status = active`.
 
@@ -106,7 +111,7 @@ func (s *Service) Fork(
 ) (*schema.MemoryRecord, error)
 ```
 
-Creates a new record derived from `sourceID`. Unlike `Supersede`, the source record remains active — both records coexist. The forked record receives a `derived_from` relation pointing to the source.
+Creates a new record derived from `sourceID`. Unlike `Supersede`, the source record remains active — both records coexist. The forked record receives a `derived_from` relation pointing to the source, and the source receives the inverse `derived_semantic` relation pointing to the fork. For semantic payloads, the forked record's revision status is set to `active`.
 
 Use `Fork` to create conditional variants of a fact or plan without invalidating the original.
 
@@ -203,7 +208,7 @@ func (s *Service) Merge(
 ) (*schema.MemoryRecord, error)
 ```
 
-Atomically combines multiple source records into a single merged record. All source records are retracted. The merged record receives a `derived_from` relation for each source, and each source receives a `merge` audit entry.
+Atomically combines multiple source records into a single merged record. All source records are retracted. The merged record receives a `derived_from` relation for each source, each source receives the inverse `derived_semantic` relation pointing to the merged record, and each source receives a `merge` audit entry. For semantic payloads, the merged record's revision status is set to `active`.
 
 <ParamField path="ids" type="[]string" required>
   IDs of the source records to merge. Must contain at least one entry.
@@ -260,14 +265,14 @@ func (s *Service) Contest(
 ) error
 ```
 
-Marks a record as contested, indicating conflicting evidence exists. For semantic records, `Payload.Revision.Status` is set to `contested`. A `contested_by` relation is added pointing to `contestingRef`.
+Marks a record as contested, indicating conflicting evidence exists. For semantic records, `Payload.Revision.Status` is set to `contested`. Trusted in-process `Contest` materializes relations for stored references. The gRPC path uses `ContestWithAccess`: only a write-authorized stored reference receives `contested_by`/`contests` relations, while external, missing, and policy-denied references follow the same non-relational evidence path.
 
 <ParamField path="id" type="string" required>
   ID of the record to contest.
 </ParamField>
 
 <ParamField path="contestingRef" type="string" required>
-  ID of the conflicting record or evidence reference.
+  ID of the conflicting record, or an external evidence reference. Graph relations are created only when this resolves to an existing memory record.
 </ParamField>
 
 <ParamField path="actor" type="string" required>

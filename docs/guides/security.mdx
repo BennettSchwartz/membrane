@@ -7,40 +7,20 @@ Membrane provides multiple layers of defense: encrypted storage, authenticated t
 
 ## Encryption at rest
 
-Membrane's SQLite backend uses **SQLCipher** to encrypt the database file. The encryption key is applied via `PRAGMA key` at database open time.
+Membrane stores records, graph edges, audit logs, and embeddings in Postgres. At-rest encryption is handled by the database layer rather than an application-level database-file key.
 
 <Steps>
-  <Step title="Set the encryption key">
-    Set the key via the environment variable (recommended) or in the config file.
-
-    ```bash
-    export MEMBRANE_ENCRYPTION_KEY="your-strong-key-here"
-    ./bin/membraned
-    ```
-
-    Or in `config.yaml`:
-
-    ```yaml
-    encryption_key: "your-strong-key-here"
-    ```
+  <Step title="Use encrypted database storage">
+    Enable encrypted disks or managed database encryption for the Postgres cluster that stores Membrane data.
   </Step>
-  <Step title="Verify the database is encrypted">
-    Without the correct key, the database file is unreadable binary. Any attempt to open it with a missing or wrong key returns an error at startup.
+  <Step title="Restrict database access">
+    Use a dedicated database user, least-privilege network access, and secret-managed DSNs.
   </Step>
 </Steps>
 
 <Warning>
-Set the encryption key before the first run. Records written without a key cannot be read back after adding one. The key cannot be changed in-place without re-encrypting the database.
+Anyone with direct database access can read records according to their database privileges. Keep `MEMBRANE_POSTGRES_DSN` in a secret manager and restrict Postgres access to trusted services.
 </Warning>
-
-In Go, pass the key directly in `Config`:
-
-```go
-cfg := membrane.DefaultConfig()
-cfg.EncryptionKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
-```
-
-The Postgres backend does not use SQLCipher. Encryption at rest for Postgres should be handled at the infrastructure level (encrypted volumes, managed database encryption).
 
 ---
 
@@ -53,7 +33,7 @@ tls_cert_file: "/etc/membrane/tls.crt"
 tls_key_file:  "/etc/membrane/tls.key"
 ```
 
-When both fields are set, the gRPC server starts with TLS. When either is empty, the server runs without TLS.
+When both fields are set, the gRPC server starts with TLS. When both are empty, the server runs without TLS. Supplying only one of the two fields is rejected at startup to avoid accidental plaintext downgrades. An API-key-authenticated non-loopback listener also requires TLS unless `allow_insecure_credentials: true` is explicitly configured for a trusted development network.
 
 <Tip>
 In production, use a certificate issued by a trusted CA or managed through your infrastructure's certificate manager. The `tls_cert_file` and `tls_key_file` paths accept any PEM-encoded certificate and RSA/ECDSA private key.
@@ -97,13 +77,13 @@ Membrane supports bearer-token authentication for gRPC clients via the `authoriz
   </Step>
 </Steps>
 
-When `api_key` is empty in both config and environment, authentication is disabled and all gRPC requests are accepted.
+When `api_key` is empty in both config and environment, authentication is disabled. The server rejects unauthenticated non-loopback listeners. It also rejects API-key authentication over plaintext on non-loopback listeners unless TLS is configured or `allow_insecure_credentials: true` is explicitly set. The Python and TypeScript clients independently enforce the same plaintext-credential guard. When they accept credential-bearing plaintext solely because the target is loopback, they disable gRPC HTTP proxying so proxy environment variables cannot move that connection off-host; TLS and the explicit insecure development override retain normal proxy behavior.
 
 ---
 
 ## Rate limiting
 
-Membrane uses a token bucket rate limiter applied per client. Configure the rate via `rate_limit_per_second`:
+Membrane uses a token bucket rate limiter. API-key-authenticated traffic is keyed by a stable SHA-256 fingerprint of the configured principal, so changing connections or peer IP addresses does not mint a new quota and the raw secret is never retained as a bucket key. When API-key authentication is disabled, the bucket is keyed by normalized source IP; changing only the source port does not reset it. Configure the rate via `rate_limit_per_second`:
 
 ```yaml
 rate_limit_per_second: 100
@@ -111,7 +91,7 @@ rate_limit_per_second: 100
 
 | Value | Behavior |
 |-------|----------|
-| `100` (default) | 100 requests per second per client |
+| `100` (default) | 100 requests per second per authenticated key principal, or per source IP without API-key authentication |
 | `0` | Rate limiting disabled |
 
 Requests that exceed the limit receive a gRPC `ResourceExhausted` error.
@@ -191,3 +171,5 @@ type AuditEntry struct {
 ```
 
 Audit entries are immutable once written and are included in the `GetMetrics` snapshot via `TotalAuditEntries`. This provides a full, queryable provenance trail for every record's lifecycle.
+
+For supersede, fork, and merge operations, the revision service discards caller-supplied audit history and rebuilds actor, timestamps, semantic lineage, and lifecycle metadata from the authenticated operation and stored source records. Evidence references and hashes remain attributed assertions rather than authenticated historical events. Persisted relation targets are authorized by exact ID before mutation; opaque provenance and semantic strings are not probed as record IDs.

@@ -17,6 +17,8 @@ rpc CaptureMemory(CaptureMemoryRequest) returns (CaptureMemoryResponse);
 
 Captures a memory candidate for interpretation, validation, storage, and graph linking. The server always returns the primary record that was stored. When entity resolution or relation extraction creates additional records or edges, those are returned in the same response.
 
+Interpretation work is request-bounded before any lookup or transaction write. Membrane retains at most 64 mentions, 64 reference candidates, and 64 relation candidates, with a shared ceiling of 128 items across those collections. It also caps aliases, labels, candidate query terms, and entity lookups; the same bounds are reapplied after second-pass resolver output. When an interpreter supplies more, deterministic prefixes are retained rather than allowing one capture to amplify into unbounded database work.
+
 ### Request fields
 
 <ParamField path="source" type="string">
@@ -24,7 +26,7 @@ Captures a memory candidate for interpretation, validation, storage, and graph l
 </ParamField>
 
 <ParamField path="source_kind" type="string">
-  Shape of the captured content. Common values are `event`, `tool_output`, `observation`, `working_state`, and `agent_turn`.
+  Shape of the captured content: `event`, `tool_output`, `observation`, `working_state`, or `agent_turn`. Omit or leave empty to use the default `event` shape.
 </ParamField>
 
 <ParamField path="content" type="google.protobuf.Value" required>
@@ -35,12 +37,14 @@ Captures a memory candidate for interpretation, validation, storage, and graph l
   Optional JSON-compatible execution context, such as agent ID, session ID, thread ID, or project metadata.
 </ParamField>
 
+Each `content` or `context` value is limited to 10 MiB of encoded JSON, 64 nesting levels, and 100,000 values (including containers). Requests exceeding these limits return `InvalidArgument` before content interpretation.
+
 <ParamField path="reason_to_remember" type="string">
   Human-readable reason this content should be retained. This helps LLM-backed interpretation choose durable facts and entities.
 </ParamField>
 
 <ParamField path="proposed_type" type="string">
-  Optional requested memory type: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, or `entity`. When omitted, Membrane infers the primary type from `source_kind` and content.
+  Optional requested memory type: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, or `entity`. Invalid non-empty values are rejected; when omitted, Membrane infers the primary type from `source_kind` and content.
 </ParamField>
 
 <ParamField path="summary" type="string">
@@ -56,7 +60,7 @@ Captures a memory candidate for interpretation, validation, storage, and graph l
 </ParamField>
 
 <ParamField path="sensitivity" type="string">
-  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`. SDKs default to `low`.
+  Sensitivity classification: `public`, `low`, `medium`, `high`, or `hyper`. When omitted at the server, `default_sensitivity` applies to both the primary record and every newly derived record. Explicit values override that default; SDKs that send `low` explicitly retain that classification.
 </ParamField>
 
 <ParamField path="timestamp" type="string">
@@ -161,7 +165,7 @@ print(capture.primary_record.id)
 
 ## Content Shapes
 
-`content` is intentionally flexible. These conventions give the interpreter enough structure to produce useful typed records and graph links.
+`content` is intentionally flexible. These conventions give the interpreter enough structure to produce useful typed records and graph links. Interpreted graph predicates are normalized before capture response de-duplication, so equivalent spellings such as `mentionsEntity`, `mentions entity`, and `mentions_entity` collapse to one edge.
 
 ### Event
 
@@ -197,7 +201,7 @@ Use `source_kind: "tool_output"` for tool invocations. Membrane stores the tool 
 }
 ```
 
-Use `source_kind: "observation"` for subject-predicate-object facts. These usually become semantic records, with entity links when subjects or objects resolve to known entities.
+Use `source_kind: "observation"` for subject-predicate-object facts. These usually become semantic records, with entity links when subjects or string objects resolve to known entities. Scoped observations prefer entities in the same scope, then fall back to unscoped global entities before writing semantic facts. Semantic predicates are normalized to the same lower snake case as graph predicates, so `deployTargetFor`, `Deploy Target For`, and `deploy_target_for` match the same fact. Trusted in-process capture can reinforce an exact semantic fact in the same visibility scope, append the new primary record to its evidence and provenance, and return `derived_semantic` / `derived_from` edges instead of creating a duplicate. Policy-restricted capture, including the public gRPC API, deliberately creates a fresh semantic record instead: it never hydrates an existing record's potentially unbounded append-only history merely to decide or perform reuse, and it will not update a bounded projection that could erase omitted history. Matching remains scope-aware, so a project-scoped observation does not reinforce or link to another project's semantic fact even when both facts share a global entity ID. String objects are matched by trimmed text; structured objects and arrays use stable JSON in the trusted exact-reuse path.
 
 ### Working State
 
@@ -230,4 +234,14 @@ When interpretation is configured, Membrane can extract mentions, resolve them t
 }
 ```
 
-Capture responses include both the created entity records and the edges connecting them to the primary record.
+Identifier namespaces are normalized to lowercase before indexing and lookup, so
+`GitHub` and `github` share one namespace. Identifier values are trimmed but
+otherwise preserved because source systems may treat values as case-sensitive.
+Direct entity payloads must include a non-empty `canonical_name`. Any supplied
+identifier must include both a non-empty `namespace` and a non-empty `value`;
+malformed identifier pairs are rejected instead of being stored without an index
+entry.
+
+Capture resolution first honors direct canonical entity IDs, then explicit identifier tokens such as `github:BennettSchwartz/orchid` or `repo_path:pkg/auth`, and then compares canonical names and aliases with whitespace-folded, bounded descriptor matching. A mention such as `Orchid` can resolve to an entity indexed as `Project Orchid`, while short substrings do not match inside unrelated words. Capture responses include both the created entity records and the deduplicated edges connecting them to the primary record.
+
+When an ingest interpreter implements second-pass resolution, Membrane sends it a bounded set of existing candidates ordered by match score, recency, then record ID. Scoped captures can resolve against records in the same scope plus unscoped global records; unscoped captures resolve only against unscoped records. That keeps entity, reference, and relation resolution stable across repeated captures while preventing a global capture from linking to project-specific records. In policy-restricted capture, resolver-returned direct IDs and mention fallback matches must be present in that bounded candidate set. Their current scope and sensitivity are rechecked through a field-only query inside the write transaction before `CanRead` and `CanWrite` are applied; missing, changed, unsupported, or unrelated targets remain unresolved without a full-record lookup.

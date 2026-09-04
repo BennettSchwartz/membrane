@@ -17,6 +17,8 @@ message MetricsResponse {
 }
 ```
 
+The gRPC `GetMetrics` handler aggregates only records visible under the server's configured read policy, including its scope and maximum-sensitivity constraints. Counts and derived rates therefore describe the caller-visible record set rather than leaking global store characteristics. For trusted in-process administration, `m.GetMetrics(ctx)` intentionally remains global; use `m.GetMetricsForTrust(ctx, trust)` when an in-process caller also needs a policy-filtered snapshot.
+
 ### Response fields
 
 <ResponseField name="collected_at" type="string">
@@ -24,11 +26,11 @@ message MetricsResponse {
 </ResponseField>
 
 <ResponseField name="total_records" type="number">
-  Total number of records in the store across all memory types.
+  Total number of policy-visible records across all memory types.
 </ResponseField>
 
 <ResponseField name="records_by_type" type="object">
-  Count of records broken down by memory type.
+  Count of records broken down by memory type. The object always includes all six memory type keys, with zero values for absent types, so dashboards can depend on a stable shape.
   <Expandable title="properties">
     <ResponseField name="episodic" type="number">
       Count of episodic records.
@@ -52,11 +54,11 @@ message MetricsResponse {
 </ResponseField>
 
 <ResponseField name="avg_salience" type="number">
-  Mean salience across all records. Range [0, 1].
+  Mean salience across policy-visible records. Range [0, 1].
 </ResponseField>
 
 <ResponseField name="avg_confidence" type="number">
-  Mean confidence across all records. Range [0, 1].
+  Mean confidence across policy-visible records. Range [0, 1].
 </ResponseField>
 
 <ResponseField name="salience_distribution" type="object">
@@ -89,7 +91,23 @@ message MetricsResponse {
 </ResponseField>
 
 <ResponseField name="total_audit_entries" type="number">
-  Total number of audit log entries across all records.
+  Total number of audit log entries across policy-visible records.
+</ResponseField>
+
+<ResponseField name="embedding_model" type="string">
+  Configured embedding model for vector coverage reporting. Omitted when the store is not model-scoped.
+</ResponseField>
+
+<ResponseField name="embedded_records" type="number">
+  Number of records with a stored embedding for the configured model. When no model is configured, counts all stored embeddings.
+</ResponseField>
+
+<ResponseField name="missing_embeddings" type="number">
+  Number of records that do not have a usable embedding for the configured model.
+</ResponseField>
+
+<ResponseField name="embedding_coverage" type="number">
+  Fraction of records with a usable current-model embedding: `embedded_records / total_records`, normalized to the `0.0` to `1.0` range. A low value means retrieval may be falling back to salience even though Postgres is healthy.
 </ResponseField>
 
 <ResponseField name="memory_growth_rate" type="number">
@@ -121,6 +139,7 @@ message MetricsResponse {
 | `competence_success_rate` | Average success rate across competence records |
 | `plan_reuse_frequency` | Average execution count across plan graph records |
 | `revision_rate` | Fraction of audit entries that are revisions (supersede, fork, merge) |
+| `embedding_coverage` | Fraction of records with usable pgvector embeddings for the configured model |
 
 ### Example snapshot
 
@@ -148,6 +167,10 @@ message MetricsResponse {
   "active_records": 148,
   "pinned_records": 3,
   "total_audit_entries": 890,
+  "embedding_model": "openai/text-embedding-3-small",
+  "embedded_records": 152,
+  "missing_embeddings": 8,
+  "embedding_coverage": 0.95,
   "memory_growth_rate": 0.15,
   "retrieval_usefulness": 0.42,
   "competence_success_rate": 0.85,

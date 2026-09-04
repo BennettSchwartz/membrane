@@ -50,26 +50,25 @@ Membrane makes memory **selective** and **revisable**. It captures raw experienc
     Time-based salience decay keeps memory useful; background consolidation extracts structured knowledge from raw experience.
   </Card>
   <Card title="Vector-aware retrieval" icon="chart-scatter">
-    With Postgres + pgvector, competence and plan-graph applicability are scored with embedding similarity.
+    Postgres + pgvector is the required runtime store; when embeddings are configured, all record types can use hybrid vector+salience ranking.
   </Card>
   <Card title="gRPC API" icon="server">
     Typed gRPC service with TypeScript and Python client SDKs, or use Membrane as an embedded Go library.
   </Card>
   <Card title="Security and operations" icon="lock">
-    SQLCipher encryption at rest, optional TLS, API key authentication, configurable rate limiting, full audit logs.
+    Postgres-backed persistence, optional TLS, API key authentication, configurable rate limiting, full audit logs.
   </Card>
 </CardGroup>
 
 ## Deployment tiers
 
-Membrane scales from a zero-infrastructure SQLite default to a full Postgres + pgvector + LLM pipeline:
+Membrane is Postgres + pgvector first. Embedding and LLM services add ranking and extraction quality on top of the same required database substrate:
 
-| Tier | Backend | Embedding | LLM | Behavior |
-|------|---------|-----------|-----|----------|
-| 1 | SQLite | — | — | Zero-infra default, confidence-based applicability fallback |
-| 2 | Postgres | — | — | Concurrent writers, JSONB storage, same retrieval semantics as tier 1 |
-| 3 | Postgres + pgvector | Yes | — | Recommended: hybrid vector+salience ranking for all record types |
-| 4 | Postgres + pgvector | Yes | Yes | Full system with LLM-backed episodic to semantic extraction |
+| Tier | Store | Embedding | LLM | Behavior |
+|------|-------|-----------|-----|----------|
+| 1 | Postgres + pgvector | — | — | Typed records, graph edges, trust gating, decay, and revision history |
+| 2 | Postgres + pgvector | Yes | — | Hybrid vector+salience ranking for all record types |
+| 3 | Postgres + pgvector | Yes | Yes | Full system with LLM-backed episodic to semantic extraction |
 
 ## Get started
 

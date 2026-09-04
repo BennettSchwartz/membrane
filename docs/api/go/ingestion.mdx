@@ -28,6 +28,8 @@ func (s *Service) CaptureMemory(ctx context.Context, req CaptureMemoryRequest) (
 
 Captures a graph-aware memory candidate. It creates a primary record, attaches interpretation metadata, resolves mentions and references, and can create linked entity records.
 
+Capture enforces exported work ceilings before lookup and again immediately before its transaction: `MaxCaptureMentions`, `MaxCaptureReferenceCandidates`, and `MaxCaptureRelationCandidates` are 64 each; `MaxCaptureInterpretationWorkItems` is a shared 128-item ceiling; and entity lookups, aliases, topical labels, and candidate terms have their own finite caps. Interpreter and resolver output is deterministically truncated to those limits, so custom model output cannot turn one call into proportional record and edge creation.
+
 ### CaptureMemoryRequest
 
 <ParamField path="Source" type="string">
@@ -35,7 +37,7 @@ Captures a graph-aware memory candidate. It creates a primary record, attaches i
 </ParamField>
 
 <ParamField path="SourceKind" type="string">
-  Capture shape: `event`, `tool_output`, `observation`, `working_state`, or `agent_turn`.
+  Capture shape: `event`, `tool_output`, `observation`, `working_state`, or `agent_turn`. Leave empty to use the default `event` shape.
 </ParamField>
 
 <ParamField path="Content" type="any" required>
@@ -51,7 +53,7 @@ Captures a graph-aware memory candidate. It creates a primary record, attaches i
 </ParamField>
 
 <ParamField path="ProposedType" type="schema.MemoryType">
-  Optional requested memory type.
+  Optional requested memory type: `episodic`, `working`, `semantic`, `competence`, `plan_graph`, or `entity`. Invalid non-empty values are rejected before interpretation.
 </ParamField>
 
 <ParamField path="Summary" type="string">
@@ -119,13 +121,19 @@ type CandidateResolver interface {
 }
 ```
 
-When configured, the interpreter proposes summaries, memory types, mentions, relation candidates, and reference candidates. If it also implements `CandidateResolver`, capture performs a second pass with bounded existing-record candidates before writing graph edges.
+When configured, the interpreter proposes summaries, memory types, mentions, relation candidates, and reference candidates. If it also implements `CandidateResolver`, capture performs a second pass with bounded existing-record candidates before writing graph edges. The candidate set is ranked by match score, recency, and ID so repeated captures give the resolver stable context even when scores tie. With `CaptureMemoryWithAccess`, direct resolver IDs and entity matches must come from that bounded set, and a field-only authorization lookup inside the transaction rechecks current scope and sensitivity before both access callbacks run. A missing, changed, unsupported, or out-of-policy target remains unresolved without a full-record lookup. Trusted `CaptureMemory` retains legacy entity lookup and exact semantic reuse: explicit observations can reinforce an existing exact fact after entity canonicalization, append evidence and provenance, and return provenance edges. Policy-restricted capture instead creates a fresh semantic fact so it never hydrates unbounded append-only history or overwrites a projection with omitted history. Scoped observations canonicalize subjects and string objects through same-scope entities first, then unscoped global entities. Exact semantic reuse in the trusted path compares string objects by trimmed text and structured objects by stable JSON. Capture finalization deduplicates repeated `(source, predicate, target)` edges before returning the response and updating the primary record.
 
 ---
 
-## Lower-Level Helpers
+## Compatibility Helpers
 
-The package still exposes specialized ingestion helpers used by capture and tests. These are service-level APIs, not daemon RPCs.
+The package still exposes the older one-method-per-shape helpers for embedded
+callers and for `CaptureMemory` internals. Treat them as compatibility APIs:
+new capture code should prefer `Service.CaptureMemory` or
+`membrane.Membrane.CaptureMemory` so interpretation, entity resolution,
+semantic fact reuse, and graph edges all stay on the same path. `IngestOutcome`
+is the exception here; it updates an existing episodic record and remains the
+lower-level implementation behind `membrane.Membrane.RecordOutcome`.
 
 ### IngestEvent
 
@@ -133,7 +141,8 @@ The package still exposes specialized ingestion helpers used by capture and test
 func (s *Service) IngestEvent(ctx context.Context, req IngestEventRequest) (*schema.MemoryRecord, error)
 ```
 
-Creates an episodic record from a discrete event.
+Creates an episodic record from a discrete event. Prefer `CaptureMemory` with
+`SourceKind: "event"` for new capture code.
 
 ```go
 rec, err := svc.IngestEvent(ctx, ingestion.IngestEventRequest{
@@ -151,7 +160,8 @@ rec, err := svc.IngestEvent(ctx, ingestion.IngestEventRequest{
 func (s *Service) IngestToolOutput(ctx context.Context, req IngestToolOutputRequest) (*schema.MemoryRecord, error)
 ```
 
-Creates an episodic record with a populated tool graph node.
+Creates an episodic record with a populated tool graph node. Prefer
+`CaptureMemory` with `SourceKind: "tool_output"` for new capture code.
 
 ```go
 rec, err := svc.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
@@ -168,7 +178,11 @@ rec, err := svc.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
 func (s *Service) IngestObservation(ctx context.Context, req IngestObservationRequest) (*schema.MemoryRecord, error)
 ```
 
-Creates a semantic record from a subject-predicate-object observation.
+Creates a semantic record from a subject-predicate-object observation. Subject
+terms and string object terms are linked to a same-scope entity when one exists,
+otherwise to a matching global entity. Prefer `CaptureMemory` with
+`SourceKind: "observation"` for new capture code because it can also reuse
+exact semantic facts and return provenance edges.
 
 ```go
 rec, err := svc.IngestObservation(ctx, ingestion.IngestObservationRequest{
@@ -202,7 +216,8 @@ updated, err := svc.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
 func (s *Service) IngestWorkingState(ctx context.Context, req IngestWorkingStateRequest) (*schema.MemoryRecord, error)
 ```
 
-Creates a working record from a snapshot of current task state.
+Creates a working record from a snapshot of current task state. Prefer
+`CaptureMemory` with `SourceKind: "working_state"` for new capture code.
 
 ```go
 rec, err := svc.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{

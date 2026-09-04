@@ -287,8 +287,7 @@ Use `rootLimit`, `nodeLimit`, `edgeLimit`, and `maxHops` instead of retrieving a
 `CaptureMemory` uses a separate ingest-side interpreter configuration. Enable it when you want capture-time summaries, mentions, relation candidates, entity resolution, and proposed linked facts.
 
 ```yaml
-backend: postgres
-postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+postgres_dsn: "" # set MEMBRANE_POSTGRES_DSN in the environment
 
 ingest_llm_enabled: true
 ingest_llm_endpoint: "https://api.openai.com/v1/chat/completions"
@@ -313,8 +312,7 @@ The consolidation scheduler promotes eligible episodic traces into semantic fact
 With Postgres + pgvector and an embedding endpoint configured, graph roots are ranked with hybrid vector and salience scoring.
 
 ```yaml
-backend: postgres
-postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
+postgres_dsn: "" # set MEMBRANE_POSTGRES_DSN in the environment
 
 embedding_endpoint: "https://api.openai.com/v1/embeddings"
 embedding_model: "text-embedding-3-small"

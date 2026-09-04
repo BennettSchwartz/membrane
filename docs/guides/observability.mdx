@@ -7,7 +7,7 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
 
 ## GetMetrics
 
-`GetMetrics` returns a point-in-time `*metrics.Snapshot` collected by scanning all records in the store.
+`GetMetrics` returns a point-in-time `*metrics.Snapshot`. The daemon's Postgres path uses a fixed number of aggregate queries instead of hydrating every record. gRPC results are filtered by the server's `read_max_sensitivity` and `read_scopes` policy, so unauthorized records do not contribute to counts, audit-derived metrics, payload-derived metrics, or embedding coverage. The trusted in-process `m.GetMetrics` method retains full-store visibility; use `m.GetMetricsForTrust` when an in-process caller needs the same explicit visibility boundary.
 
 <Tabs>
   <Tab title="Go">
@@ -50,6 +50,10 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
   "active_records": 148,
   "pinned_records": 3,
   "total_audit_entries": 890,
+  "embedding_model": "openai/text-embedding-3-small",
+  "embedded_records": 152,
+  "missing_embeddings": 8,
+  "embedding_coverage": 0.95,
   "memory_growth_rate": 0.15,
   "retrieval_usefulness": 0.42,
   "competence_success_rate": 0.85,
@@ -58,6 +62,8 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
 }
 ```
 
+`records_by_type` always includes the six memory type keys (`working`, `entity`, `semantic`, `competence`, `plan_graph`, and `episodic`) even when a count is zero.
+
 ---
 
 ## Metrics reference
@@ -65,14 +71,18 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
 | Metric | Type | Description |
 |--------|------|-------------|
 | `collected_at` | `string` | RFC 3339 timestamp when the snapshot was collected |
-| `total_records` | `int` | Total number of records in the store |
+| `total_records` | `int` | Total records visible to the snapshot's policy |
 | `records_by_type` | `map[string]int` | Count of records per memory type |
-| `avg_salience` | `float64` | Mean salience across all records |
-| `avg_confidence` | `float64` | Mean confidence across all records |
+| `avg_salience` | `float64` | Mean salience across policy-visible records |
+| `avg_confidence` | `float64` | Mean confidence across policy-visible records |
 | `salience_distribution` | `map[string]int` | Record counts in 0.2-wide salience buckets |
 | `active_records` | `int` | Records with `salience > 0` |
 | `pinned_records` | `int` | Records with `lifecycle.pinned = true` |
-| `total_audit_entries` | `int` | Total audit log entries across all records |
+| `total_audit_entries` | `int` | Total audit entries across policy-visible records |
+| `embedding_model` | `string` | Configured embedding model for vector coverage reporting |
+| `embedded_records` | `int` | Records with usable embeddings for the configured model |
+| `missing_embeddings` | `int` | Records missing current-model embeddings |
+| `embedding_coverage` | `float64` | Fraction of records with current-model pgvector embeddings |
 | `memory_growth_rate` | `float64` | Fraction of records created in the last 24 hours |
 | `retrieval_usefulness` | `float64` | Ratio of reinforce audit actions to total audit entries |
 | `competence_success_rate` | `float64` | Average `SuccessRate` across all competence records |
@@ -87,6 +97,8 @@ Membrane exposes behavioral metrics via `GetMetrics` and ships a comprehensive e
 
 **`revision_rate`** — Measures how often the knowledge base is being revised. A very low rate may indicate the agent isn't learning from feedback; a very high rate may indicate instability in the knowledge base.
 
+**`embedding_coverage`** — Tracks whether records have usable current-model pgvector embeddings. The collector normalizes impossible provider stats so coverage stays between `0.0` and `1.0`. If coverage drops after ingestion or a model change, retrieval can look healthy while quietly falling back to salience for many records.
+
 ---
 
 ## Evaluation suite
@@ -99,7 +111,9 @@ The eval suite covers functional correctness across all major subsystems.
 make eval-all
 ```
 
-This runs all Go-based eval tests and the vector end-to-end evaluation script.
+This runs all Go-based eval tests, the vector end-to-end evaluation script, and the lifecycle comparison eval. The vector and lifecycle evals require `MEMBRANE_POSTGRES_DSN` and `MEMBRANE_EMBEDDING_API_KEY`.
+
+The scheduled GitHub eval workflow uses the same Make targets. It requires the `MEMBRANE_EMBEDDING_API_KEY` repository secret and fails early if the secret is missing, so eval runs cannot silently skip the pgvector-backed checks.
 
 ### Targeted capability evals
 
@@ -110,6 +124,8 @@ make eval-decay          # Decay curves and pruning
 make eval-trust          # Trust-gated retrieval
 make eval-competence     # Competence learning
 make eval-plan           # Plan graph operations
+make eval-vector         # Postgres + pgvector recall metrics
+make eval-lifecycle      # Lifecycle semantics against flat vector search
 make eval-consolidation  # Episodic consolidation
 make eval-metrics        # Observability metrics
 make eval-invariants     # System invariants
@@ -134,12 +150,22 @@ This test checks recall@k for a fixed set of records and queries, failing if rec
 
 ## Vector end-to-end metrics
 
-The vector E2E evaluation requires Python and measures recall, precision, MRR, and NDCG over a synthetic corpus with pgvector-backed retrieval.
+The vector E2E evaluation measures recall, precision, MRR, and NDCG over a synthetic corpus with Postgres + pgvector-backed retrieval. It requires the same database/vector substrate as the daemon plus an embedding API key; local sentence-transformer fallback mode is intentionally not supported. Dataset records can cover all six memory types, including explicit `entity` records with aliases and external identifiers, so evals can exercise entity-root retrieval directly rather than relying only on entities inferred from semantic observations. When a record omits `text`, the eval CLI builds embedding input from the typed payload fields, so entity aliases and identifiers still participate in pgvector ranking.
 
 <Steps>
-  <Step title="Install Python dependencies">
+  <Step title="Start Postgres + pgvector">
     ```bash
-    python3 -m pip install -r tools/eval/requirements.txt
+    export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+    export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
+    docker compose up -d
+    ```
+  </Step>
+  <Step title="Configure embeddings">
+    ```bash
+    export MEMBRANE_EMBEDDING_API_KEY="..."
+    export MEMBRANE_EMBEDDING_ENDPOINT="https://openrouter.ai/api/v1/embeddings"
+    export MEMBRANE_EMBEDDING_MODEL="openai/text-embedding-3-small"
+    export MEMBRANE_EMBEDDING_DIMENSIONS="1536"
     ```
   </Step>
   <Step title="Run the eval">
@@ -147,12 +173,14 @@ The vector E2E evaluation requires Python and measures recall, precision, MRR, a
     make eval
     ```
 
-    This invokes `tools/eval/run.sh`, which spins up the eval corpus and measures retrieval metrics at multiple k values.
+    This invokes `tools/eval/run.sh`, which ingests the eval corpus into Postgres, stores embeddings in pgvector, and measures retrieval metrics at multiple k values. Missing `MEMBRANE_POSTGRES_DSN` or `MEMBRANE_EMBEDDING_API_KEY` fails fast.
   </Step>
   <Step title="Check the results">
-    The script reports `recall@k`, `precision@k`, `MRR@k`, and `NDCG@k` and fails with a non-zero exit code if any metric falls below its threshold.
+    The script reports `recall@k`, `precision@k`, `MRR@k`, and `NDCG@k` for flat RAG and Membrane, then fails with a non-zero exit code if any Membrane metric falls below its threshold.
   </Step>
 </Steps>
+
+The eval CLI rejects invalid quality-gate configuration before opening Postgres: `k` and embedding dimensions must be positive, metric thresholds must be finite values between `0.0` and `1.0`, and the embedding endpoint/model strings must be non-empty. Embeddings returned by the provider must match the configured dimensions, contain only finite values, and include at least one non-zero component.
 
 ### Metric definitions
 
@@ -162,6 +190,14 @@ The vector E2E evaluation requires Python and measures recall, precision, MRR, a
 | `precision@k` | Fraction of top-k results that are relevant |
 | `MRR@k` | Mean reciprocal rank of the first relevant result in top-k |
 | `NDCG@k` | Normalized discounted cumulative gain; measures ranking quality |
+
+### Lifecycle comparison eval
+
+```bash
+make eval-lifecycle
+```
+
+This target runs `cmd/membrane-eval-lifecycle` against the same Postgres DSN and embedding configuration. It compares Membrane's revision, reinforcement, supersession, and decay behavior against flat pgvector similarity search.
 
 ### Environment variable overrides
 

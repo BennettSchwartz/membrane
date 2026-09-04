@@ -19,7 +19,7 @@ Initializes all subsystems from `Config` and returns a ready-to-start `Membrane`
 
 ```go
 cfg := membrane.DefaultConfig()
-cfg.DBPath = "my-agent.db"
+cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
 
 m, err := membrane.New(cfg)
 if err != nil {
@@ -38,7 +38,7 @@ if err := m.Start(context.Background()); err != nil {
 func DefaultConfig() *Config
 ```
 
-Returns defaults for SQLite storage, daemon listen address, schedulers, retrieval limits, and policy settings.
+Returns defaults for Postgres-backed storage, daemon listen address, schedulers, retrieval limits, and policy settings. `PostgresDSN` must be set directly or through `MEMBRANE_POSTGRES_DSN` before constructing a `Membrane`.
 
 ### LoadConfig
 
@@ -46,7 +46,7 @@ Returns defaults for SQLite storage, daemon listen address, schedulers, retrieva
 func LoadConfig(path string) (*Config, error)
 ```
 
-Reads a YAML config file and overlays it onto `DefaultConfig`.
+Reads a YAML config file and overlays it onto `DefaultConfig`. Unknown YAML fields are rejected so removed keys and typos fail during startup.
 
 ## Lifecycle
 
@@ -55,7 +55,7 @@ func (m *Membrane) Start(ctx context.Context) error
 func (m *Membrane) Stop() error
 ```
 
-`Start` begins background decay and consolidation schedulers. If embeddings are configured, it also backfills missing embeddings. `Stop` shuts down schedulers and closes the store.
+`Start` begins background decay and consolidation schedulers. If embeddings are configured, it also launches one missing-embedding backfill for embeddable records, including first-class entities. Backfill continues past individual record failures but reports an aggregate error in the startup log so incomplete vector coverage is visible. Repeated `Start` calls do not launch duplicate background work. `Stop` cancels the Membrane-owned background context, waits for schedulers and backfill to finish, and then closes the store; starting again after `Stop` returns an error.
 
 ---
 
@@ -99,7 +99,7 @@ func (m *Membrane) RetrieveGraph(ctx context.Context, req *retrieval.RetrieveGra
 func (m *Membrane) RetrieveByID(ctx context.Context, id string, trust *retrieval.TrustContext) (*schema.MemoryRecord, error)
 ```
 
-`RetrieveGraph` returns ranked roots and a bounded graph neighborhood. When request limits are zero, the facade applies the graph defaults from `Config`.
+`RetrieveGraph` returns ranked roots and a bounded graph neighborhood. When request limits are zero, the facade applies the graph defaults from `Config` on an internal copy of the request, so the caller's struct is not mutated. Negative root, node, and edge limits are rejected; use `MaxHops: -1` for roots-only retrieval.
 
 ```go
 graph, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
@@ -159,7 +159,7 @@ Use these after a record helps or misleads a downstream workflow.
 func (m *Membrane) GetMetrics(ctx context.Context) (*metrics.Snapshot, error)
 ```
 
-Returns a point-in-time metrics snapshot.
+Returns a point-in-time metrics snapshot, including record counts, learning signals, and pgvector embedding coverage for the configured model.
 
 ---
 
@@ -171,24 +171,44 @@ type Config struct { ... }
 
 Important fields:
 
-<ParamField path="Backend" type="string" default="sqlite">
-  Storage backend: `sqlite` or `postgres`.
-</ParamField>
-
-<ParamField path="DBPath" type="string" default="membrane.db">
-  SQLite database path.
-</ParamField>
-
 <ParamField path="PostgresDSN" type="string">
   PostgreSQL connection string. Falls back to `MEMBRANE_POSTGRES_DSN`.
 </ParamField>
 
-<ParamField path="ListenAddr" type="string" default=":9090">
+<ParamField path="ListenAddr" type="string" default="127.0.0.1:9090">
   Daemon gRPC listen address.
 </ParamField>
 
 <ParamField path="DefaultSensitivity" type="string" default="low">
   Default sensitivity assigned during capture.
+</ParamField>
+
+<ParamField path="ReadMaxSensitivity" type="string" default="low">
+  Highest record sensitivity visible through gRPC read operations. Falls back
+  to `MEMBRANE_READ_MAX_SENSITIVITY` when the config field is empty.
+</ParamField>
+
+<ParamField path="ReadScopes" type="[]string" default='["default"]'>
+  Scopes visible through gRPC read operations. `MEMBRANE_READ_SCOPES` accepts
+  a comma-separated replacement list.
+</ParamField>
+
+<ParamField path="WriteMaxSensitivity" type="string" default="low">
+  Highest record sensitivity mutable through gRPC. Falls back to
+  `MEMBRANE_WRITE_MAX_SENSITIVITY` when the config field is empty.
+</ParamField>
+
+<ParamField path="WriteScopes" type="[]string" default='["default"]'>
+  Scopes mutable through gRPC. `MEMBRANE_WRITE_SCOPES` accepts a
+  comma-separated replacement list.
+</ParamField>
+
+<ParamField path="DecayInterval" type="time.Duration" default="1h">
+  How often the background decay scheduler runs.
+</ParamField>
+
+<ParamField path="ConsolidationInterval" type="time.Duration" default="6h">
+  How often the background consolidation scheduler runs.
 </ParamField>
 
 <ParamField path="GraphDefaultRootLimit" type="int" default="10">
@@ -208,27 +228,47 @@ Important fields:
 </ParamField>
 
 <ParamField path="SelectionConfidenceThreshold" type="float64" default="0.7">
-  Minimum selector confidence for competence and plan graph candidates.
+  Minimum finite selector confidence for competence and plan graph candidates. Range: `0` to `1`.
 </ParamField>
 
 <ParamField path="EmbeddingEndpoint" type="string">
-  HTTP endpoint used to generate embeddings. Semantic search is disabled when empty.
+  HTTP endpoint used to generate embeddings. `EmbeddingModel` is required when this is set. Falls back to `MEMBRANE_EMBEDDING_ENDPOINT`. Semantic search is disabled when empty.
+</ParamField>
+
+<ParamField path="EmbeddingModel" type="string">
+  Embedding model name sent to the embedding endpoint. Falls back to `MEMBRANE_EMBEDDING_MODEL`.
+</ParamField>
+
+<ParamField path="EmbeddingDimensions" type="int" default="1536">
+  Expected embedding vector length. Falls back to `MEMBRANE_EMBEDDING_DIMENSIONS` when the value is still the default. Must match the configured model and the fixed pgvector column shape.
+</ParamField>
+
+<ParamField path="EmbeddingAPIKey" type="string">
+  Authentication key for the embedding endpoint. Falls back to `MEMBRANE_EMBEDDING_API_KEY`.
 </ParamField>
 
 <ParamField path="LLMEndpoint" type="string">
-  HTTP endpoint used for LLM-backed semantic extraction during consolidation.
+  HTTP endpoint used for LLM-backed semantic extraction during consolidation. `LLMModel` is required when this is set. Falls back to `MEMBRANE_LLM_ENDPOINT`.
+</ParamField>
+
+<ParamField path="LLMModel" type="string">
+  Chat model name sent to the consolidation LLM endpoint. Falls back to `MEMBRANE_LLM_MODEL`.
+</ParamField>
+
+<ParamField path="LLMAPIKey" type="string">
+  Authentication key for the consolidation LLM endpoint. Falls back to `MEMBRANE_LLM_API_KEY`.
 </ParamField>
 
 <ParamField path="IngestLLMEnabled" type="bool" default="false">
-  Enables ingest-side interpretation during `CaptureMemory`.
+  Enables ingest-side interpretation during `CaptureMemory`. `IngestLLMEndpoint` and `IngestLLMModel` are required when enabled.
 </ParamField>
 
 <ParamField path="IngestLLMEndpoint" type="string">
-  HTTP endpoint used for ingest-side interpretation.
+  HTTP endpoint used for ingest-side interpretation. Falls back to `MEMBRANE_INGEST_LLM_ENDPOINT`.
 </ParamField>
 
 <ParamField path="IngestLLMModel" type="string">
-  Chat model name sent to the ingest-side interpretation endpoint.
+  Chat model name sent to the ingest-side interpretation endpoint. Falls back to `MEMBRANE_INGEST_LLM_MODEL`.
 </ParamField>
 
 <ParamField path="IngestLLMAPIKey" type="string">
@@ -236,22 +276,35 @@ Important fields:
 </ParamField>
 
 <ParamField path="APIKey" type="string">
-  Bearer token for gRPC clients. Falls back to `MEMBRANE_API_KEY`.
+  Bearer token for gRPC clients. Falls back to `MEMBRANE_API_KEY`. A
+  non-loopback listener requires TLS when this is set unless
+  `AllowInsecureCredentials` is explicitly enabled.
 </ParamField>
 
-<ParamField path="EncryptionKey" type="string">
-  SQLCipher key for SQLite. Falls back to `MEMBRANE_ENCRYPTION_KEY`.
+<ParamField path="AllowInsecureCredentials" type="bool" default="false">
+  Permits API-key authentication over plaintext gRPC on non-loopback listeners.
+  Use only for trusted development networks; production deployments should use TLS.
+</ParamField>
+
+<ParamField path="RateLimitPerSecond" type="int" default="100">
+  Per-principal gRPC request rate limit. API-key-authenticated requests share a
+  stable, non-secret key fingerprint bucket across peer addresses; when API-key
+  authentication is disabled, the bucket uses normalized source IP. Changing a
+  source port does not reset either quota. `0` disables rate limiting.
 </ParamField>
 
 ### YAML Example
 
 ```yaml membrane.yaml
-backend: postgres
-postgres_dsn: "postgres://user:pass@localhost:5432/membrane"
-listen_addr: ":9090"
+postgres_dsn: "" # set MEMBRANE_POSTGRES_DSN in the environment
+listen_addr: "127.0.0.1:9090"
 decay_interval: 1h
 consolidation_interval: 6h
 default_sensitivity: low
+read_max_sensitivity: low
+read_scopes: [default]
+write_max_sensitivity: low
+write_scopes: [default]
 selection_confidence_threshold: 0.7
 graph_default_root_limit: 10
 graph_default_node_limit: 25

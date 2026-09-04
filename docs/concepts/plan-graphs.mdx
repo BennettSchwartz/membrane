@@ -76,7 +76,7 @@ Plan graphs are extracted automatically by `PlanGraphConsolidator` during each c
     Only episodic records with a `tool_graph` containing **3 or more nodes** are considered (`minToolGraphNodes = 3`). Trivial single-tool invocations are excluded.
   </Step>
   <Step title="Avoid duplicates">
-    The consolidator checks existing plan graph records for `derived_from` relations. If a plan graph already exists for a given episodic source, that episode is skipped.
+    The consolidator checks existing plan graph records for `derived_from` relations. Relation predicates are normalized before this check, so legacy casing or separator variants still count. If a plan graph already exists for a given episodic source, that episode is skipped.
   </Step>
   <Step title="Convert tool graph to plan graph">
     Each `ToolNode` becomes a `PlanNode` (ID → ID, Tool → Op, Args → Params). Each `DependsOn` relationship in the tool graph becomes a `control` edge.
@@ -134,7 +134,7 @@ The `plan_reuse_frequency` observability metric reports the average `execution_c
 
 At retrieval time, plan graphs are scored by the `Selector` using three equally weighted signals:
 
-1. **Applicability** — `record.Confidence` field, or vector cosine similarity against the query embedding when pgvector is enabled.
+1. **Applicability** — `record.Confidence` field, or vector cosine similarity against the query embedding when embeddings are configured.
 2. **Success rate** — derived from `1.0 − PlanMetrics.FailureRate`:
 
 ```go
@@ -234,7 +234,7 @@ if len(resp.RootIDs) > 0 {
     Can be superseded, forked, contested, retracted, or merged like any non-episodic record.
   </Card>
   <Card title="Vector-scored" icon="vector-square">
-    On Postgres + pgvector, applicability is scored via embedding similarity against the task descriptor.
+    When embeddings are configured, applicability is scored via Postgres + pgvector similarity against the task descriptor.
   </Card>
 </CardGroup>
 

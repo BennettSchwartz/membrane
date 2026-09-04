@@ -142,23 +142,27 @@ decay_interval: "1h"
 
 ## Consolidation pipeline
 
-Consolidation promotes raw episodic experience into durable knowledge. The pipeline runs every `6h` by default and consists of four stages:
+Consolidation promotes raw episodic experience into durable knowledge. The pipeline runs every `6h` by default and consists of five stages:
+
+Derived records retain their source scope and the highest sensitivity of the consumed snapshots and current source records. New evidence can reinforce an existing record only when both its snapshot and current sensitivity meet that record's sensitivity. Lower-sensitivity contributions leave the existing record unchanged; competence aggregation checks each contribution separately. Previously recorded evidence can still raise a derived record's classification without incrementing evidence counts or salience again. These policy checks and promotion audits occur in the write transaction.
+
+Entity resolution uses only same-scope or global entities whose sensitivity is no higher than the derived record. Forward links to those entities are permitted; inverse links require the same scope and sensitivity. When a record is promoted, incompatible known inverse links are removed in the same transaction.
 
 <Steps>
   <Step title="Episodic compression">
     Reduces salience of episodic records that have exceeded their age threshold, making room for new experience.
   </Step>
   <Step title="Structural semantic consolidation">
-    Scans episodic records with successful outcomes. For each timeline event with a summary, creates a new semantic record (subject: event kind, predicate: `observed_in`, object: summary) or reinforces an existing one.
+    Scans episodic records with successful outcomes. For each timeline event with a summary, creates a semantic fact (subject: event kind, predicate: `observed_in`, object: summary). Consolidation reinforces only an existing exact subject-predicate-object fact in the source episode's same scope; a different summary, a different scoped project, or an unscoped global fact is stored separately so scoped evidence does not become globally visible. When entity linking canonicalizes a subject or object to an entity ID, duplicate detection uses the canonical entity-aware fact key across later consolidation runs. Scoped consolidation prefers same-scope entities and then falls back to unscoped global entities, matching capture-time observation behavior. Structured semantic objects are compared by stable JSON, so object field order does not decide whether a fact is a duplicate. Reinforcement appends semantic evidence, provenance, and a `derived_from` graph relation for the newly observed source. Reinforcement is source-idempotent: once an episodic record is recorded as evidence for a fact, later scheduler passes skip that same source/fact pair instead of repeatedly inflating salience.
   </Step>
-  <Step title="LLM-backed semantic extraction (Tier 4 only)">
-    When `llm_endpoint` is configured (Postgres + LLM tier), sends episodic summaries to an OpenAI-compatible chat completions API. The LLM extracts structured subject-predicate-object triples that are stored as semantic records.
+  <Step title="LLM-backed semantic extraction (Tier 3 only)">
+    When `llm_endpoint` and `llm_model` are configured (Postgres + LLM tier), sends episodic summaries to an OpenAI-compatible chat completions API. The LLM extracts structured subject-predicate-object triples that are stored as semantic records.
   </Step>
   <Step title="Competence extraction">
-    Groups successful episodic records by their tool signature. Patterns that appear at least twice are promoted into competence records with a recipe derived from the tool sequence.
+    Groups successful episodic records by their tool signature. Patterns that appear at least twice are promoted into competence records with a recipe derived from the tool sequence. Duplicate detection is scope-aware: an existing competence is reinforced only when both the skill name and derived scope match newly recorded episode evidence.
   </Step>
   <Step title="Plan graph extraction">
-    Episodic records with tool graphs containing 3 or more nodes are promoted into plan graph records. Tool nodes become plan nodes; `DependsOn` relationships become control-flow edges.
+    Episodic records with tool graphs containing 3 or more nodes are promoted into plan graph records. Tool nodes become plan nodes; `DependsOn` relationships become control-flow edges. Duplicate prevention inspects existing `derived_from` relations first; if those relations cannot be loaded, consolidation fails closed instead of creating another plan for the same source episode.
   </Step>
 </Steps>
 
@@ -204,7 +208,7 @@ type ConsolidationResult struct {
 
 ## LLM-backed semantic extraction
 
-On the Postgres + LLM tier (Tier 4), episodic records can be converted into typed semantic facts asynchronously. The extractor sends episodic content to an OpenAI-compatible endpoint:
+On the Postgres + embeddings + LLM tier (Tier 3), episodic records can be converted into typed semantic facts asynchronously. The extractor sends episodic content to an OpenAI-compatible endpoint:
 
 ```go
 // System prompt used by the LLM extractor (pkg/consolidation/llm.go)
@@ -215,7 +219,8 @@ const semanticExtractorPrompt = "You are a fact extraction system. Given a descr
     + "preferences, learned capabilities, environment facts, and recurring patterns."
 ```
 
-Each extracted triple becomes a semantic record with `created_by: "consolidation/semantic-extractor"`.
+Each extracted triple becomes a semantic record with `created_by: "consolidation/semantic_extractor"`. Predicates are normalized to lower snake case before de-duplication, so model spellings such as `prefersLanguage`, `Prefers Language`, and `prefers_language` reinforce the same fact. Before insertion, the extractor checks for an existing exact subject-predicate-object fact. It first preserves compatibility with raw triples, then retries using the same entity-canonical subject and object IDs used when new extracted facts are linked into the graph. When an existing fact is reinforced, the extractor records the claimed episodic source as semantic evidence, provenance, and graph lineage in the same transaction as the salience update. It retains the policy of the source snapshot supplied to the LLM and rechecks current source, destination, and entity policy before updating. The queue records the number of unique triples processed, including triples that reinforced existing facts or were skipped because their evidence did not meet the destination's sensitivity.
+If any triple in a claimed episode fails to insert or reinforce, Membrane preserves the successful triples but releases the episode claim instead of marking it extracted, so the failed work can retry idempotently.
 
 Configure the LLM endpoint in `config.yaml`:
 

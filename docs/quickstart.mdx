@@ -7,8 +7,9 @@ description: "Build and run a working Membrane instance in under five minutes."
 
 - **Go 1.24+** to build the daemon and use the Go library
 - **Make** to run build and test targets
+- **Docker Compose** for the local Postgres + pgvector quickstart database
 - **protoc >= 3.20** only if you plan to regenerate gRPC stubs
-- **Node.js 20+** for the TypeScript SDK
+- **Node.js 20.19+** for the TypeScript SDK
 - **Python 3.10+** for the Python SDK
 
 ## Run Membrane
@@ -29,6 +30,15 @@ description: "Build and run a working Membrane instance in under five minutes."
         go get github.com/BennettSchwartz/membrane
         ```
       </Step>
+      <Step title="Start Postgres + pgvector">
+        ```bash
+        export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+        export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
+        docker compose up -d
+        ```
+
+        The sample below connects to the repository's local `pgvector/pgvector:pg16` service.
+      </Step>
       <Step title="Write your first memory loop">
         ```go main.go
         package main
@@ -37,6 +47,7 @@ description: "Build and run a working Membrane instance in under five minutes."
             "context"
             "fmt"
             "log"
+            "os"
 
             "github.com/BennettSchwartz/membrane/pkg/ingestion"
             "github.com/BennettSchwartz/membrane/pkg/membrane"
@@ -46,7 +57,7 @@ description: "Build and run a working Membrane instance in under five minutes."
 
         func main() {
             cfg := membrane.DefaultConfig()
-            cfg.DBPath = "my-agent.db"
+            cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
 
             m, err := membrane.New(cfg)
             if err != nil {
@@ -132,7 +143,7 @@ description: "Build and run a working Membrane instance in under five minutes."
         go run main.go
         ```
 
-        Membrane creates `my-agent.db` on first run. Background decay and consolidation schedulers start with `m.Start(ctx)` and stop when `m.Stop()` is called.
+        Membrane connects to the configured Postgres database and ensures the pgvector-backed schema exists on startup. `m.Start(ctx)` starts background decay, consolidation, and one startup embedding backfill when embeddings are configured; individual backfill failures are logged as an aggregate error so incomplete vector coverage is visible. `m.Stop()` cancels that background context, waits for jobs to finish, and then closes Postgres.
       </Step>
     </Steps>
   </Tab>
@@ -151,17 +162,12 @@ description: "Build and run a working Membrane instance in under five minutes."
       </Step>
       <Step title="Start the daemon">
         <Tabs>
-          <Tab title="SQLite (default)">
-            ```bash
-            ./bin/membraned
-            ```
-
-            Starts with `membrane.db` in the current directory and listens on `:9090`.
-          </Tab>
           <Tab title="Postgres + pgvector">
             ```bash
+            export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+            export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
             docker compose up -d
-            ./bin/membraned --postgres-dsn postgres://membrane:membrane@localhost:5432/membrane_test?sslmode=disable
+            ./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
             ```
           </Tab>
           <Tab title="Custom config file">
@@ -174,7 +180,7 @@ description: "Build and run a working Membrane instance in under five minutes."
         </Tabs>
       </Step>
       <Step title="Verify startup">
-        The daemon logs `membraned: listening on :9090` when it starts successfully. Send `SIGINT` or `SIGTERM` to trigger graceful shutdown.
+        The daemon logs `membraned: listening on 127.0.0.1:9090` when it starts successfully. Send `SIGINT` or `SIGTERM` to trigger graceful shutdown.
       </Step>
     </Steps>
 
@@ -215,7 +221,7 @@ const graph = await client.retrieveGraph("debug auth", {
     max_sensitivity: Sensitivity.MEDIUM,
     authenticated: true,
     actor_id: "ts-agent",
-    scopes: [],
+    scopes: ["project-orion"],
   },
   memoryTypes: ["entity", "semantic", "competence", "episodic"],
   rootLimit: 5,
@@ -283,12 +289,16 @@ pip install -e clients/python
 Override defaults using a YAML config file or CLI flags. Secrets should come from environment variables.
 
 ```yaml config.yaml
-backend: "sqlite"
-db_path: "membrane.db"
-listen_addr: ":9090"
+# Prefer MEMBRANE_POSTGRES_DSN so credentials stay out of committed config.
+postgres_dsn: ""
+listen_addr: "127.0.0.1:9090"
 decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
+read_max_sensitivity: "low"
+read_scopes: ["default"]
+write_max_sensitivity: "low"
+write_scopes: ["default"]
 selection_confidence_threshold: 0.7
 
 # Graph retrieval defaults
@@ -297,13 +307,13 @@ graph_default_node_limit: 25
 graph_default_edge_limit: 100
 graph_default_max_hops: 1
 
-# Optional embedding-backed retrieval (Postgres only)
+# Embedding-backed retrieval over required pgvector storage
 # embedding_endpoint: "https://api.openai.com/v1/embeddings"
 # embedding_model: "text-embedding-3-small"
 # embedding_dimensions: 1536
 # embedding_api_key: ""   # or set MEMBRANE_EMBEDDING_API_KEY
 
-# Optional LLM-backed consolidation (Postgres only)
+# Optional LLM-backed consolidation
 # llm_endpoint: "https://api.openai.com/v1/chat/completions"
 # llm_model: "gpt-5-mini"
 # llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
@@ -315,7 +325,6 @@ graph_default_max_hops: 1
 # ingest_llm_api_key: ""  # or set MEMBRANE_INGEST_LLM_API_KEY
 
 # Security
-# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
 # api_key: ""              # or set MEMBRANE_API_KEY
 # tls_cert_file: ""
 # tls_key_file: ""

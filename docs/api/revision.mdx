@@ -5,6 +5,10 @@ description: "Atomic revision operations with full audit trails: supersede, fork
 
 Revision operations modify the lifecycle and status of existing memory records. All operations are **atomic** — partial revisions are never externally visible. Every operation appends to the record's audit log, preserving a complete history of changes.
 
+For newly created supersede, fork, and merge records, operation metadata is server-owned. Membrane discards supplied audit history, derives the actor and timestamps from the authenticated operation, rebuilds semantic revision lineage, and inherits lifecycle policy from stored source records while resetting the reinforcement clock. Supplied evidence references and hashes remain attributed assertions; opaque evidence values are not probed as memory IDs. The gRPC boundary accepts at most 100 caller-supplied relations and requires every persisted relation target to exist and satisfy the server write policy before the transaction starts.
+
+At the daemon boundary, revision and salience endpoints validate metadata before delegating to the storage layer. Required record identifiers must be non-empty; record IDs, actor names, rationales, merge source IDs, and contesting references must fit within the public string size limit; replacement records for `Supersede`, `Fork`, and `Merge` must satisfy the same `MemoryRecord.Validate` invariants as stored records; and `Penalize` amounts must be non-negative and finite.
+
 <Warning>
 Episodic records are **immutable** and cannot be revised. Attempting to revise an episodic record returns a `FAILED_PRECONDITION` error. This is by design: episodic memory is append-only raw experience and serves as evidence for later knowledge formation.
 </Warning>
@@ -23,7 +27,7 @@ Semantic records carry a `revision.status` field in their payload that transitio
 
 ## Supersede
 
-Atomically replaces an existing record with a new version. The old record's salience is set to 0 and its semantic status is set to `retracted`. The new record is stored with a `supersedes` relation pointing to the old record.
+Atomically replaces an existing record with a new version. The old record's salience is set to 0 and its semantic status is set to `retracted`. The new record is stored with a `supersedes` relation pointing to the old record, and the old record receives the inverse `superseded_by` relation pointing to the replacement.
 
 <Info>
 Both the old and new records are persisted. The old record is not deleted; it is retracted so its audit trail remains queryable.
@@ -70,7 +74,7 @@ fmt.Printf("New record ID: %s\n", superseded.ID)
 
 Creates a new record derived from an existing source record. Unlike `Supersede`, **both the source and the forked record remain active**. Use `Fork` to create conditional variants of a fact or procedure without invalidating the original.
 
-The forked record receives a `derived_from` relation pointing to the source, and an audit entry with action `fork` is appended to the source record.
+The forked record receives a `derived_from` relation pointing to the source, the source receives the inverse `derived_semantic` relation pointing to the fork, and an audit entry with action `fork` is appended to the source record. For semantic payloads, the forked record's `revision.status` is set to `active`.
 
 ### Request fields
 
@@ -147,16 +151,16 @@ if err != nil {
 
 ## Merge
 
-Atomically combines multiple source records into a single merged record. All source records are retracted (salience set to 0, semantic status set to `retracted`). The merged record receives `derived_from` relations for every source, and each source record receives an audit entry with action `merge`.
+Atomically combines multiple source records into a single merged record. All source records are retracted (salience set to 0, semantic status set to `retracted`). The merged record receives `derived_from` relations for every source, each source receives a `derived_semantic` relation pointing to the merged record, and each source record receives an audit entry with action `merge`. For semantic payloads, the merged record's `revision.status` is set to `active`.
 
 <Info>
-At least one source ID is required. All source records must be non-episodic. The entire operation runs in a single transaction.
+At least one unique source ID is required. All source records must be non-episodic. The entire operation runs in a single transaction.
 </Info>
 
 ### Request fields
 
 <ParamField path="ids" type="string[]" required>
-  IDs of the records to merge. Must contain at least one ID and no more than 10 000.
+  IDs of the records to merge. Must contain at least one unique ID and no more than 10 000.
 </ParamField>
 
 <ParamField path="merged_record" type="MemoryRecord" required>
@@ -174,7 +178,7 @@ At least one source ID is required. All source records must be non-episodic. The
 ### Response
 
 <ResponseField name="record" type="MemoryRecord">
-  Typed `MemoryRecord` — the newly created merged record with `derived_from` relations.
+  Typed `MemoryRecord` — the newly created merged record with `derived_from` relations. Source records are updated with inverse `derived_semantic` relations.
 </ResponseField>
 
 ### Example
@@ -198,7 +202,7 @@ fmt.Printf("Merged record ID: %s\n", merged.ID)
 
 ## Contest
 
-Marks a record as contested, indicating that conflicting evidence exists. The record remains active with its salience unchanged, but its semantic revision status transitions to `contested`. A `contested_by` relation is added pointing to the conflicting record.
+Marks a record as contested, indicating that conflicting evidence exists. The record remains active with its salience unchanged, but its semantic revision status transitions to `contested`. When `contesting_ref` names an existing memory record that the server write policy also permits, a `contested_by` relation is added from the contested record to the conflicting record and the conflicting record receives the inverse `contests` relation. External, missing, and policy-denied references all follow the same non-relational evidence path, so the response does not disclose whether an inaccessible record ID exists.
 
 Contested records are still returned by retrieval, but their status signals to the agent that the information should be treated with caution.
 
@@ -209,7 +213,7 @@ Contested records are still returned by retrieval, but their status signals to t
 </ParamField>
 
 <ParamField path="contesting_ref" type="string">
-  ID of the conflicting record or evidence. When provided, a `contested_by` relation is added.
+  ID of the conflicting record or evidence. Graph relations are created only when this resolves to an existing write-authorized memory record.
 </ParamField>
 
 <ParamField path="actor" type="string" required>

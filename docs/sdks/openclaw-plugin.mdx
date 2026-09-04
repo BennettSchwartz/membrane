@@ -55,12 +55,17 @@ description: "OpenClaw plugin that bridges to Membrane with graph-aware capture,
         openclaw-membrane:
           enabled: true
           config:
-            grpc_endpoint: "localhost:4222"
+            grpc_endpoint: "localhost:9090"
+            api_key: "your-api-key"
+            tls: false
+            timeout_ms: 10000
+            scope: "project-openclaw"
+            trust_scopes: ["project-openclaw"]
             default_sensitivity: "low"
             auto_context: true
             context_limit: 5
             min_salience: 0.3
-            context_types: ["episodic", "semantic", "competence"]
+            context_types: ["entity", "episodic", "semantic", "competence"]
     ```
   </Step>
 
@@ -68,7 +73,7 @@ description: "OpenClaw plugin that bridges to Membrane with graph-aware capture,
     Make sure `membraned` is running and reachable at the configured `grpc_endpoint`:
 
     ```bash
-    ./bin/membraned
+    ./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
     ```
   </Step>
 </Steps>
@@ -80,7 +85,31 @@ description: "OpenClaw plugin that bridges to Membrane with graph-aware capture,
 All options live under `plugins.entries.openclaw-membrane.config` in `openclaw.yaml`.
 
 <ParamField path="grpc_endpoint" type="string">
-  Membrane gRPC address. Defaults to `"localhost:4222"`.
+  Membrane gRPC address. Defaults to `"localhost:9090"`.
+</ParamField>
+
+<ParamField path="api_key" type="string">
+  Bearer token sent with Membrane gRPC requests. Leave unset only when the daemon has authentication disabled.
+</ParamField>
+
+<ParamField path="tls" type="boolean">
+  Enables TLS for the Membrane gRPC channel. Defaults to `false`.
+</ParamField>
+
+<ParamField path="tls_ca_cert_path" type="string">
+  Optional CA certificate path for TLS connections.
+</ParamField>
+
+<ParamField path="timeout_ms" type="integer">
+  Per-RPC timeout in milliseconds. Must be positive when set.
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Scope assigned to captured OpenClaw memories. When set and `trust_scopes` is empty, retrieval uses this same scope.
+</ParamField>
+
+<ParamField path="trust_scopes" type="string[]">
+  Scopes allowed during retrieval. Defaults to `[scope]` when `scope` is set. Leave empty only when the plugin should retrieve across all Membrane scopes allowed by sensitivity.
 </ParamField>
 
 <ParamField path="default_sensitivity" type="string">
@@ -92,27 +121,33 @@ All options live under `plugins.entries.openclaw-membrane.config` in `openclaw.y
 </ParamField>
 
 <ParamField path="context_limit" type="integer">
-  Maximum number of memories to inject as context. Minimum `1`. Defaults to `5`.
+  Maximum graph roots to retrieve for injected context. Must be an integer from `1` to `10000`. Bounded graph expansion may include related neighbors. Defaults to `5`.
 </ParamField>
 
 <ParamField path="min_salience" type="number">
-  Minimum salience score (0–1) for retrieval during context injection and search. Defaults to `0.3`.
+  Minimum salience score from `0` to `1` for retrieval during context injection and search. Defaults to `0.3`.
 </ParamField>
 
 <ParamField path="context_types" type="array">
-  Memory types to include in context injection. Valid values: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`. Defaults to `["episodic", "semantic", "competence"]`.
+  Memory types to include in context injection. Valid values: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`. Defaults to `["entity", "episodic", "semantic", "competence"]`.
 </ParamField>
 
 ### Configuration summary table
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `grpc_endpoint` | `localhost:4222` | Membrane gRPC address |
+| `grpc_endpoint` | `localhost:9090` | Membrane gRPC address |
+| `api_key` | unset | Bearer token for Membrane gRPC requests |
+| `tls` | `false` | Use TLS for the gRPC channel |
+| `tls_ca_cert_path` | unset | Optional CA certificate path for TLS |
+| `timeout_ms` | unset | Per-RPC timeout in milliseconds |
+| `scope` | unset | Scope assigned to captured OpenClaw memories |
+| `trust_scopes` | `[]` | Scopes allowed during retrieval; defaults to `[scope]` when `scope` is set |
 | `default_sensitivity` | `low` | Sensitivity for ingested events: `public`, `low`, `medium`, `high`, `hyper` |
 | `auto_context` | `true` | Auto-inject memories before each agent turn |
-| `context_limit` | `5` | Max memories to inject |
-| `min_salience` | `0.3` | Minimum salience score for retrieval |
-| `context_types` | `["episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `entity`, `semantic`, `competence`, `plan_graph` |
+| `context_limit` | `5` | Max graph roots to retrieve for injected context, from `1` to `10000`; related neighbors may also be included |
+| `min_salience` | `0.3` | Minimum salience score for retrieval, from `0` to `1` |
+| `context_types` | `["entity", "episodic", "semantic", "competence"]` | Memory types: `episodic`, `working`, `entity`, `semantic`, `competence`, `plan_graph` |
 
 ---
 
@@ -124,6 +159,10 @@ The plugin registers the `membrane_search` tool, which agents can call to query 
 membrane_search("what happened in yesterday's meeting", { limit: 10 })
 ```
 
+If Membrane reports a non-fatal retrieval diagnostic, such as an embedding, vector ranking, graph expansion, or applied response-byte limit, the plugin logs a warning while still returning the records Membrane could safely retrieve. Normal graph projection is structured metadata and does not generate a warning.
+
+When `scope` is configured, captures write records into that Membrane scope and retrieval uses the same scope by default. Use `trust_scopes` to read from a different set of scopes, such as a project scope plus a shared workspace scope.
+
 ### Parameters
 
 <ParamField path="query" type="string" required>
@@ -131,15 +170,15 @@ membrane_search("what happened in yesterday's meeting", { limit: 10 })
 </ParamField>
 
 <ParamField path="limit" type="integer">
-  Maximum results to return. Defaults to the configured `context_limit` (5).
+  Maximum flattened records to return. Must be an integer from `1` to `10000` and defaults to the configured `context_limit` (5). The plugin still uses graph expansion internally, caps expanded node/edge budgets at Membrane SDK limits, then caps the flattened root-plus-neighbor list to this limit. Root records keep Membrane's relevance order, followed by neighbors in graph response order.
 </ParamField>
 
 <ParamField path="memory_types" type="array">
-  Filter by memory type: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`.
+  Filter by memory type: `"episodic"`, `"working"`, `"entity"`, `"semantic"`, `"competence"`, `"plan_graph"`. Invalid values are rejected before retrieval instead of being silently dropped.
 </ParamField>
 
 <ParamField path="min_salience" type="number">
-  Minimum salience score (0–1). Defaults to the configured `min_salience` (0.3).
+  Minimum salience score from `0` to `1`. Defaults to the configured `min_salience` (0.3). Invalid overrides are rejected before retrieval.
 </ParamField>
 
 ```javascript
@@ -166,13 +205,17 @@ When `auto_context: true` (the default), the plugin hooks into `before_agent_sta
 The injected context looks like:
 
 ```text
-Episodic memory from Membrane:
-1. [episodic] Agent reply: Refactored the auth middleware to use...
-2. [semantic] User prefers TypeScript for new services
-3. [competence] To fix linker cache error: clear cache, rebuild with flags
+Membrane graph context:
+Roots:
+1. [entity] Orchid deploy target
+Neighbors:
+1. [hop=1] [episodic] Used Orchid during rollout verification
+Relations:
+1. Orchid deploy target --mentioned_in--> Used Orchid during rollout verification
 ```
 
 Context injection uses the `context_types` and `min_salience` config values. Set `auto_context: false` to disable.
+Retrieval diagnostics are logged for operators and are not inserted into the agent prompt.
 
 <Tip>
 Increase `context_limit` for long-running sessions with deep history, or lower `min_salience` to surface less-reinforced memories.
@@ -186,8 +229,10 @@ Check connection status and memory stats at any time:
 
 ```text
 /membrane
-→ Membrane: connected (localhost:4222) | 1,247 records | 3 memory types
+→ Membrane: connected (localhost:9090) | 1,247 records | 3 memory types | embedding coverage 95%
 ```
+
+When `GetMetrics` reports missing current-model embeddings, the status payload includes a warning so pgvector coverage gaps are visible from the agent surface.
 
 If the daemon is unreachable, the command reports the disconnected state without crashing the agent.
 
@@ -203,7 +248,7 @@ The plugin maps OpenClaw hooks to `captureMemory` source kinds:
 | `after_agent_reply` | `event` | Always |
 | Other hooks | `observation` | Fallback |
 
-Tags are automatically built from the event: `hook:<name>`, `agent:<id>`, `tool:<name>`, `session:<key>`.
+Tags are automatically built from non-secret event metadata: `hook:<name>`, `agent:<id>`, `tool:<name>`.
 
 Ingestion failures are logged as warnings and do not interrupt the agent.
 
@@ -224,7 +269,7 @@ OpenClaw Agent
                           Membrane (gRPC)
                           ┌─────────────┐
                           │  membraned   │
-                          │  SQLCipher   │
+                          │  pgvector    │
                           │  Embeddings  │
                           └─────────────┘
 ```

@@ -10,26 +10,29 @@ Membrane is configured via a YAML file, command-line flags, and environment vari
 Full example with all available fields:
 
 ```yaml
-backend: "sqlite"
-db_path: "membrane.db"
-# postgres_dsn: "postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable"
-listen_addr: ":9090"
+# Prefer MEMBRANE_POSTGRES_DSN so credentials stay out of committed config.
+postgres_dsn: ""
+listen_addr: "127.0.0.1:9090"
 decay_interval: "1h"
 consolidation_interval: "6h"
 default_sensitivity: "low"
+read_max_sensitivity: "low"
+read_scopes: ["default"]
+write_max_sensitivity: "low"
+write_scopes: ["default"]
 selection_confidence_threshold: 0.7
 graph_default_root_limit: 10
 graph_default_node_limit: 25
 graph_default_edge_limit: 100
 graph_default_max_hops: 1
 
-# Optional embedding-backed retrieval (Postgres only)
+# Embedding-backed retrieval over required pgvector storage
 # embedding_endpoint: "https://api.openai.com/v1/embeddings"
 # embedding_model: "text-embedding-3-small"
 # embedding_dimensions: 1536
 # embedding_api_key: ""   # or set MEMBRANE_EMBEDDING_API_KEY
 
-# Optional LLM-backed semantic extraction (Postgres only)
+# Optional LLM-backed semantic extraction
 # llm_endpoint: "https://api.openai.com/v1/chat/completions"
 # llm_model: "gpt-5-mini"
 # llm_api_key: ""         # or set MEMBRANE_LLM_API_KEY
@@ -41,10 +44,10 @@ graph_default_max_hops: 1
 # ingest_llm_api_key: ""  # or set MEMBRANE_INGEST_LLM_API_KEY
 
 # Security (prefer environment variables for keys)
-# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
 # api_key: ""              # or set MEMBRANE_API_KEY
 # tls_cert_file: ""
 # tls_key_file: ""
+# allow_insecure_credentials: false
 rate_limit_per_second: 100
 ```
 
@@ -57,7 +60,9 @@ if err != nil {
 }
 ```
 
-`LoadConfig` starts from `DefaultConfig()` and unmarshals the YAML on top, so fields not present in the file retain their defaults.
+`LoadConfig` starts from `DefaultConfig()` and unmarshals the YAML on top, so fields not present in the file retain their defaults. Unknown fields are rejected; this catches stale keys and typos before the daemon starts.
+
+`membrane.New` validates runtime-sensitive values before opening Postgres. Scheduler intervals and embedding dimensions must be positive, selection confidence must be finite and stay between `0` and `1`, rate limits must be non-negative, graph default limits cannot be negative, read/write sensitivities must be valid, read/write scope lists must be non-empty, TLS certificate/key files must be configured together, and embedding or LLM subsystems must include both endpoint and model settings when either field is set. Postgres with pgvector is always required; embedding settings control automatic vector population and hybrid ranking on that required store.
 
 ---
 
@@ -67,15 +72,18 @@ Calling `membrane.DefaultConfig()` produces:
 
 | Field | Default value |
 |-------|---------------|
-| `Backend` | `"sqlite"` |
-| `DBPath` | `"membrane.db"` |
-| `ListenAddr` | `":9090"` |
+| `PostgresDSN` | `""` (required via config, flag, or `MEMBRANE_POSTGRES_DSN`) |
+| `ListenAddr` | `"127.0.0.1:9090"` |
 | `DecayInterval` | `1h` |
 | `ConsolidationInterval` | `6h` |
 | `DefaultSensitivity` | `"low"` |
+| `ReadMaxSensitivity` | `"low"` |
+| `ReadScopes` | `["default"]` |
+| `WriteMaxSensitivity` | `"low"` |
+| `WriteScopes` | `["default"]` |
 | `SelectionConfidenceThreshold` | `0.7` |
-| `EncryptionKey` | `""` (unencrypted) |
 | `EmbeddingDimensions` | `1536` |
+| `AllowInsecureCredentials` | `false` |
 | `RateLimitPerSecond` | `100` |
 | `GraphDefaultRootLimit` | `10` |
 | `GraphDefaultNodeLimit` | `25` |
@@ -89,24 +97,16 @@ Calling `membrane.DefaultConfig()` produces:
 
 ### Storage
 
-<ParamField path="backend" type="string">
-Storage backend. Options: `"sqlite"` (default) or `"postgres"`.
-</ParamField>
-
-<ParamField path="db_path" type="string">
-SQLite database file path. Default: `"membrane.db"`. Ignored when `backend` is `"postgres"`.
-</ParamField>
-
 <ParamField path="postgres_dsn" type="string">
-PostgreSQL connection string. Required when `backend` is `"postgres"`. Falls back to the `MEMBRANE_POSTGRES_DSN` environment variable if not set in config.
+PostgreSQL connection string. Required unless supplied by `--postgres-dsn` or `MEMBRANE_POSTGRES_DSN`. The database must allow `CREATE EXTENSION IF NOT EXISTS vector`.
 
-Example: `postgres://membrane:membrane@localhost:5432/membrane?sslmode=disable`
+Example shape: `postgres://membrane:<url-encoded-password>@127.0.0.1:5432/membrane?sslmode=disable`
 </ParamField>
 
 ### Network
 
 <ParamField path="listen_addr" type="string">
-gRPC server listen address. Default: `":9090"`.
+gRPC server listen address. Default: `"127.0.0.1:9090"`, which is reachable only from the local host. A non-loopback listener requires an API key; API-key authentication on a non-loopback listener also requires TLS unless `allow_insecure_credentials` is explicitly enabled for a trusted development network.
 </ParamField>
 
 ### Scheduling
@@ -130,7 +130,7 @@ Valid values: `public`, `low`, `medium`, `high`, `hyper`.
 ### Retrieval
 
 <ParamField path="selection_confidence_threshold" type="float64">
-Minimum confidence for competence and plan_graph candidates to pass the selector. Default: `0.7`.
+Minimum finite confidence for competence and plan_graph candidates to pass the selector. Range: `0` to `1`. Default: `0.7`.
 </ParamField>
 
 <ParamField path="graph_default_root_limit" type="int">
@@ -152,15 +152,15 @@ Default graph expansion depth applied by the Go facade when `RetrieveGraphReques
 ### Embedding
 
 <ParamField path="embedding_endpoint" type="string">
-HTTP endpoint for generating record and query embeddings. Requires `backend: postgres` and `embedding_model`. Example: `https://api.openai.com/v1/embeddings`.
+HTTP endpoint for generating record and query embeddings. `embedding_endpoint` and `embedding_model` must be configured together. Falls back to `MEMBRANE_EMBEDDING_ENDPOINT`. Example: `https://api.openai.com/v1/embeddings`.
 </ParamField>
 
 <ParamField path="embedding_model" type="string">
-Embedding model name sent to the embedding endpoint. Example: `text-embedding-3-small`.
+Embedding model name sent to the embedding endpoint. `embedding_endpoint` and `embedding_model` must be configured together. Falls back to `MEMBRANE_EMBEDDING_MODEL`. Same-dimension model rotations are accepted; Membrane filters vector lookup/search by this value and backfills stale records for the configured model. Example: `text-embedding-3-small`.
 </ParamField>
 
 <ParamField path="embedding_dimensions" type="int">
-Output dimension of the embedding model. Default: `1536`. Must match the model's actual output dimensions.
+Output dimension of the embedding model. Default: `1536`. Falls back to `MEMBRANE_EMBEDDING_DIMENSIONS` when the config value is still the default. Must match the model's actual output dimensions. Dimension changes require a database migration because the pgvector column is fixed-size. Stored and query embeddings must be finite, non-zero vectors with this exact dimension.
 </ParamField>
 
 <ParamField path="embedding_api_key" type="string">
@@ -170,11 +170,11 @@ API key for the embedding endpoint. Prefer setting `MEMBRANE_EMBEDDING_API_KEY` 
 ### LLM
 
 <ParamField path="llm_endpoint" type="string">
-HTTP endpoint for the LLM used in semantic extraction during consolidation. Requires `backend: postgres`. Example: `https://api.openai.com/v1/chat/completions`.
+HTTP endpoint for the LLM used in semantic extraction during consolidation. `llm_endpoint` and `llm_model` must be configured together. Falls back to `MEMBRANE_LLM_ENDPOINT`. Example: `https://api.openai.com/v1/chat/completions`.
 </ParamField>
 
 <ParamField path="llm_model" type="string">
-Chat model name sent to the LLM endpoint. Example: `gpt-5-mini`.
+Chat model name sent to the LLM endpoint. `llm_endpoint` and `llm_model` must be configured together. Falls back to `MEMBRANE_LLM_MODEL`. Example: `gpt-5-mini`.
 </ParamField>
 
 <ParamField path="llm_api_key" type="string">
@@ -184,15 +184,15 @@ API key for the LLM endpoint. Prefer setting `MEMBRANE_LLM_API_KEY` instead.
 ### Ingest LLM
 
 <ParamField path="ingest_llm_enabled" type="bool">
-Enables ingest-side interpretation during `CaptureMemory`. Default: `false`.
+Enables ingest-side interpretation during `CaptureMemory`. When true, `ingest_llm_endpoint` and `ingest_llm_model` are required. Default: `false`.
 </ParamField>
 
 <ParamField path="ingest_llm_endpoint" type="string">
-HTTP endpoint for capture-time interpretation and candidate resolution.
+HTTP endpoint for capture-time interpretation and candidate resolution. Falls back to `MEMBRANE_INGEST_LLM_ENDPOINT`.
 </ParamField>
 
 <ParamField path="ingest_llm_model" type="string">
-Chat model name sent to the ingest-side interpretation endpoint.
+Chat model name sent to the ingest-side interpretation endpoint. Falls back to `MEMBRANE_INGEST_LLM_MODEL`.
 </ParamField>
 
 <ParamField path="ingest_llm_api_key" type="string">
@@ -201,24 +201,40 @@ API key for the ingest-side interpretation endpoint. Prefer setting `MEMBRANE_IN
 
 ### Security
 
-<ParamField path="encryption_key" type="string">
-SQLCipher `PRAGMA key` value for encrypting the SQLite database at rest. Falls back to `MEMBRANE_ENCRYPTION_KEY`. When empty, the database is unencrypted.
+<ParamField path="read_max_sensitivity" type="string">
+Highest record sensitivity visible through gRPC read operations, including `GetMetrics`. Default: `"low"`. Valid values: `public`, `low`, `medium`, `high`, and `hyper`.
+</ParamField>
+
+<ParamField path="read_scopes" type="string[]">
+Non-empty list of scopes visible through gRPC read operations. Default: `["default"]`. A requested scope outside this server policy is rejected; `"*"` explicitly permits every scope.
+</ParamField>
+
+<ParamField path="write_max_sensitivity" type="string">
+Highest record sensitivity that gRPC mutation operations may create or modify. Default: `"low"`. Valid values: `public`, `low`, `medium`, `high`, and `hyper`.
+</ParamField>
+
+<ParamField path="write_scopes" type="string[]">
+Non-empty list of scopes that gRPC mutation operations may create or modify. Default: `["default"]`. Referenced records in revision and capture operations are checked against their exact persisted IDs and this policy; `"*"` explicitly permits every non-empty scope. Unscoped records remain readable according to read policy but are never mutable over gRPC.
 </ParamField>
 
 <ParamField path="tls_cert_file" type="string">
-Path to TLS certificate PEM file. TLS is disabled when empty.
+Path to TLS certificate PEM file. TLS is disabled only when both TLS file fields are empty.
 </ParamField>
 
 <ParamField path="tls_key_file" type="string">
-Path to TLS private key PEM file. Required when `tls_cert_file` is set.
+Path to TLS private key PEM file. `tls_cert_file` and `tls_key_file` must be configured together; setting only one is rejected at startup.
 </ParamField>
 
 <ParamField path="api_key" type="string">
-Shared secret for gRPC client authentication via bearer token. Falls back to `MEMBRANE_API_KEY`. Authentication is disabled when empty.
+Shared secret for gRPC client authentication via bearer token. Falls back to `MEMBRANE_API_KEY`. Authentication is disabled when empty. Non-loopback listeners require TLS when this is set unless `allow_insecure_credentials` is explicitly enabled.
+</ParamField>
+
+<ParamField path="allow_insecure_credentials" type="bool">
+Permits API-key authentication over plaintext gRPC on a non-loopback listener. Default: `false`. Use only for trusted development networks; production deployments should use TLS. This does not permit an unauthenticated non-loopback listener.
 </ParamField>
 
 <ParamField path="rate_limit_per_second" type="int">
-Maximum gRPC requests per second per client. `0` disables rate limiting. Default: `100`.
+Maximum gRPC requests per second per authenticated API-key principal, or per normalized source IP when API-key authentication is disabled. Reconnecting, changing source ports, or changing peer IPs while using the same key does not create a new authenticated quota. `0` disables rate limiting. Default: `100`.
 </ParamField>
 
 ---
@@ -227,12 +243,24 @@ Maximum gRPC requests per second per client. `0` disables rate limiting. Default
 
 | Variable | Config field | Description |
 |----------|-------------|-------------|
-| `MEMBRANE_ENCRYPTION_KEY` | `encryption_key` | SQLCipher encryption key for the SQLite database |
-| `MEMBRANE_POSTGRES_DSN` | `postgres_dsn` | PostgreSQL DSN, read when `backend: postgres` |
+| `MEMBRANE_POSTGRES_DSN` | `postgres_dsn` | PostgreSQL DSN |
+| `MEMBRANE_EMBEDDING_ENDPOINT` | `embedding_endpoint` | Embedding endpoint |
+| `MEMBRANE_EMBEDDING_MODEL` | `embedding_model` | Embedding model |
+| `MEMBRANE_EMBEDDING_DIMENSIONS` | `embedding_dimensions` | Embedding dimensions when the config value is still the default |
 | `MEMBRANE_EMBEDDING_API_KEY` | `embedding_api_key` | API key for the embedding endpoint |
+| `MEMBRANE_LLM_ENDPOINT` | `llm_endpoint` | LLM semantic extraction endpoint |
+| `MEMBRANE_LLM_MODEL` | `llm_model` | LLM semantic extraction model |
 | `MEMBRANE_LLM_API_KEY` | `llm_api_key` | API key for the LLM semantic extraction endpoint |
+| `MEMBRANE_INGEST_LLM_ENDPOINT` | `ingest_llm_endpoint` | Ingest-side interpretation endpoint |
+| `MEMBRANE_INGEST_LLM_MODEL` | `ingest_llm_model` | Ingest-side interpretation model |
 | `MEMBRANE_INGEST_LLM_API_KEY` | `ingest_llm_api_key` | API key for the ingest-side interpretation endpoint |
 | `MEMBRANE_API_KEY` | `api_key` | Bearer token for gRPC client authentication |
+| `MEMBRANE_READ_MAX_SENSITIVITY` | `read_max_sensitivity` | Read sensitivity ceiling when the config field is empty |
+| `MEMBRANE_READ_SCOPES` | `read_scopes` | Comma-separated read scopes; overrides the configured scope list when non-empty |
+| `MEMBRANE_WRITE_MAX_SENSITIVITY` | `write_max_sensitivity` | Write sensitivity ceiling when the config field is empty |
+| `MEMBRANE_WRITE_SCOPES` | `write_scopes` | Comma-separated write scopes; overrides the configured scope list when non-empty |
+
+Sensitivity environment variables fill an empty matching config field. The scope environment variables are comma-separated, trim whitespace and duplicates, and replace the configured scope list when non-empty.
 
 ---
 
@@ -243,7 +271,6 @@ Flags override values set in the config file.
 | Flag | Overrides | Description |
 |------|-----------|-------------|
 | `--config <path>` | — | Load YAML config file from `<path>` |
-| `--db <path>` | `db_path` | SQLite database path |
-| `--postgres-dsn <dsn>` | `postgres_dsn` + `backend` | PostgreSQL DSN; also sets `backend = "postgres"` |
+| `--postgres-dsn <dsn>` | `postgres_dsn` | PostgreSQL DSN |
 | `--addr <addr>` | `listen_addr` | gRPC listen address |
 | `--version` | — | Print version and exit |
