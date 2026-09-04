@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const defaultSchedulerInterval = time.Minute
+
 // Scheduler runs periodic decay sweeps across all records.
 type Scheduler struct {
 	service    *Service
@@ -19,14 +21,22 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new decay scheduler that runs ApplyDecayAll
-// at the given interval.
+// at the given interval. Non-positive intervals are normalized to a
+// safe default so Start cannot panic when called directly.
 func NewScheduler(service *Service, interval time.Duration) *Scheduler {
 	return &Scheduler{
 		service:  service,
-		interval: interval,
+		interval: normalizeSchedulerInterval(interval),
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+}
+
+func normalizeSchedulerInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultSchedulerInterval
+	}
+	return interval
 }
 
 // Start begins the periodic decay loop in a goroutine. It runs until

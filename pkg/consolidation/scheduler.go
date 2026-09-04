@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const defaultSchedulerInterval = time.Minute
+
 // Scheduler runs periodic consolidation sweeps in the background.
 // It follows the same pattern as the decay scheduler: sync.Once for
 // Start, panic recovery in the goroutine, and safe Stop semantics.
@@ -21,14 +23,22 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new consolidation scheduler that runs RunAll
-// at the given interval.
+// at the given interval. Non-positive intervals are normalized to a
+// safe default so Start cannot panic when called directly.
 func NewScheduler(service *Service, interval time.Duration) *Scheduler {
 	return &Scheduler{
 		service:  service,
-		interval: interval,
+		interval: normalizeSchedulerInterval(interval),
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+}
+
+func normalizeSchedulerInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultSchedulerInterval
+	}
+	return interval
 }
 
 // Start begins the periodic consolidation loop in a goroutine. It
