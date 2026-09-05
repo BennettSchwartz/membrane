@@ -15,9 +15,7 @@ npm install @bennettschwartz/membrane
 ```ts
 import { MembraneClient, MemoryType, Sensitivity, SourceKind } from "@bennettschwartz/membrane";
 
-const client = new MembraneClient("localhost:9090", {
-  apiKey: "your-api-key"
-});
+const client = new MembraneClient("localhost:9090");
 
 const capture = await client.captureMemory(
   {
@@ -30,18 +28,19 @@ const capture = await client.captureMemory(
     reasonToRemember: "Keep the auth refactor in long-term memory",
     summary: "Refactored auth middleware",
     sensitivity: Sensitivity.LOW,
+    scope: "default",
     tags: ["auth", "typescript"]
   }
 );
 
 const graph = await client.retrieveGraph("debug auth", {
   trust: {
-    max_sensitivity: Sensitivity.MEDIUM,
-    authenticated: true,
-    actor_id: "agent-1",
-    scopes: ["project-openclaw"]
+    max_sensitivity: Sensitivity.LOW,
+    authenticated: false,
+    actor_id: "",
+    scopes: ["default"]
   },
-  memoryTypes: [MemoryType.ENTITY, MemoryType.SEMANTIC, MemoryType.COMPETENCE],
+  memoryTypes: [MemoryType.EPISODIC, MemoryType.ENTITY],
   rootLimit: 10,
   nodeLimit: 25,
   edgeLimit: 100,

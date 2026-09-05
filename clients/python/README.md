@@ -36,14 +36,14 @@ capture = client.capture_memory(
     reason_to_remember="Keep the auth refactor available for future debugging",
     summary="Refactored authentication module",
     sensitivity=Sensitivity.LOW,
+    scope="default",
 )
 print(f"Created record: {capture.primary_record.id}")
 
 # Retrieve memories relevant to a task
 trust = TrustContext(
-    max_sensitivity=Sensitivity.MEDIUM,
-    authenticated=True,
-    actor_id="agent-1",
+    max_sensitivity=Sensitivity.LOW,
+    scopes=["default"],
 )
 graph = client.retrieve_graph("fix the login bug", trust=trust, root_limit=5)
 for node in graph.nodes:

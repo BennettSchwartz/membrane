@@ -1,379 +1,158 @@
-# Membrane
+<p align="center">
+  <img src="static/img/logo-mark.svg" width="72" height="72" alt="Membrane logo">
+</p>
+
+<h1 align="center">Membrane</h1>
+
+<p align="center">
+  <strong>Memory that agents can connect, revise, and learn from.</strong>
+</p>
+
+<p align="center">
+  <a href="https://membrane.gustycube.com">Documentation</a> ·
+  <a href="https://membrane.gustycube.com/quickstart">Quickstart</a> ·
+  <a href="https://membrane.gustycube.com/architecture">Architecture</a> ·
+  <a href="https://membrane.gustycube.com/api/overview">API reference</a>
+</p>
 
 [![CI](https://github.com/BennettSchwartz/membrane/actions/workflows/ci.yml/badge.svg)](https://github.com/BennettSchwartz/membrane/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/BennettSchwartz/membrane)](https://goreportcard.com/report/github.com/BennettSchwartz/membrane)
 [![Go Reference](https://pkg.go.dev/badge/github.com/BennettSchwartz/membrane.svg)](https://pkg.go.dev/github.com/BennettSchwartz/membrane)
 [![License: MIT](https://img.shields.io/github/license/BennettSchwartz/membrane)](LICENSE)
 
-Membrane is a selective learning and memory substrate for LLM agents. It gives
-agents typed, revisable memory instead of an append-only transcript or a flat
-vector store.
+Membrane gives LLM agents persistent, structured memory. An agent can remember
+what happened, connect it to existing knowledge, retrieve the context a task
+needs, and correct that knowledge when circumstances change.
 
-Use it when an agent needs to remember facts, retrieve prior context, revise
-stale knowledge, preserve task state, and cite the records that informed an
-answer.
+Use it for agents that carry work across sessions, maintain changing facts,
+reuse successful procedures, or need to explain which memories informed an answer.
 
-## What It Provides
+## What changes when an agent has memory?
 
-- **Five memory layers plus entities**: episodic, working, semantic,
-  competence, plan graph, and canonical entity nodes that connect them.
-- **Entity-connected retrieval**: `RetrieveGraph` returns ranked records plus
-  bounded graph neighborhoods, with descriptor and identifier-based entity
-  root seeding across every allowed scope.
-- **Capture-first ingestion**: `CaptureMemory` accepts events, observations,
-  tool outputs, working state, and facts, then creates linked records and edges.
-- **Revision operations**: supersede, fork, retract, merge, and contest records
-  with audit trails.
-- **Decay and reinforcement**: salience changes over time and can be reinforced
-  or penalized by outcomes.
-- **Trust-aware access**: retrieval filters or redacts records using sensitivity,
-  authentication, and scope checks.
-- **Multiple runtimes**: run `membraned` over gRPC, use the embedded Go API, or
-  call it from TypeScript/Python SDKs.
-- **Self-hosted docs**: docs are Docusaurus-based and deployable to Cloudflare
-  Workers with Wrangler.
+- **Context stays connected.** Facts, episodes, procedures, and plans link through
+  shared entities. Retrieval returns a bounded graph of relevant records.
+- **Knowledge can be corrected.** Supersede stale facts, contest uncertain claims,
+  fork alternatives, or retract a record while retaining its audit history.
+- **Experience influences future work.** Reinforcement, decay, and consolidation
+  change what gets remembered and retrieved over time.
+- **Access follows policy.** Scope and sensitivity rules govern reads and writes;
+  restricted responses omit or redact information the caller cannot access.
 
-## Memory Model
+## How it fits together
 
-| Layer | Purpose | Typical contents |
-| --- | --- | --- |
-| Episodic | Raw experience | Tool calls, incidents, observations, agent turns |
-| Working | Active task state | Current goal, next actions, open questions |
-| Semantic | Durable facts | Preferences, system facts, relationships |
-| Competence | Learned procedures | Debugging playbooks, success rates, applicability |
-| Plan graph | Reusable plans | Rollout DAGs, checkpoints, dependencies |
-| Entity | Graph spine | Projects, services, tools, files, people, databases |
+```mermaid
+flowchart LR
+    Experience["Events, observations<br/>and task state"] --> Memory["Typed memory<br/>+ entity links"]
+    Memory --> Context["Relevant context<br/>within access limits"]
+    Context --> Agent["Agent acts"]
+    Agent -->|"New evidence and outcomes"| Memory
+```
 
-The entity layer is not a replacement for the five memory layers. It is the
-shared graph layer that lets facts, episodes, procedures, plans, and task state
-retrieve together.
+**Five memory layers, connected by entities:**
 
-## Quick Start
+| Memory | The question it answers | Example |
+| :--- | :--- | :--- |
+| **Episodic** | What happened? | An incident, a tool result, an observation |
+| **Working** | What are we doing now? | The current goal, next action, open questions |
+| **Semantic** | What do we know? | A preference, a system fact, a relationship |
+| **Competence** | What has worked before? | A debugging procedure and its success history |
+| **Plan graph** | How should this work unfold? | A rollout with dependencies and checkpoints |
+| **Entity** | What is this about? | The same service, project, file, or person across memories |
 
-### Requirements
+[Explore the memory model →](docs/concepts/memory-types.mdx)
 
-- Go 1.24+
-- Make
-- Node.js 20.19+ for the TypeScript SDK and examples; Node.js 22+ for docs tooling
-- Python 3.10+ for the Python SDK
-- `protoc` for protobuf sync checks and regeneration
+## Choose your integration
 
-### Build And Run
+| Use Membrane from… | Connection | Start here |
+| :--- | :--- | :--- |
+| **Go** | Embed the library in your process | [Go guide](docs/guides/go-library.mdx) · [Package reference](https://pkg.go.dev/github.com/BennettSchwartz/membrane/pkg/membrane) |
+| **TypeScript / JavaScript** | Connect to the gRPC daemon | [SDK and examples](clients/typescript/README.md) |
+| **Python** | Connect to the gRPC daemon | [SDK and examples](clients/python/README.md) |
+| **OpenClaw** | Add memory tools and context through the plugin | [Plugin setup](clients/openclaw/README.md) |
+| **Another language** | Use the protobuf service contract | [gRPC API](api/proto/membrane/v1/membrane.proto) |
+
+For a complete agent loop, see the [agent harness](examples/agent-harness/README.md).
+It exercises capture, graph retrieval, revisions, and access controls against a
+running daemon, with both deterministic and optional live-model scenarios.
+
+## Run it locally
+
+> [!IMPORTANT]
+> **PostgreSQL with pgvector is required**, whether you embed the Go library or
+> run the daemon. Embedding and LLM providers are optional: structured capture,
+> graph retrieval, revisions, and access controls work without a model API key.
+
+<details>
+<summary><strong>Build and start the daemon</strong> — Go, Docker Compose, and Make</summary>
+
+Use the Go toolchain declared in [go.mod](go.mod). From a fresh checkout:
 
 ```bash
 git clone https://github.com/BennettSchwartz/membrane.git
 cd membrane
-
 make build
+
 export MEMBRANE_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
 export MEMBRANE_POSTGRES_DSN="postgres://membrane:${MEMBRANE_POSTGRES_PASSWORD}@127.0.0.1:5432/membrane_test?sslmode=disable"
 docker compose up -d
+until docker compose exec -T postgres pg_isready -U membrane -d membrane_test; do sleep 1; done
 ./bin/membraned --postgres-dsn "$MEMBRANE_POSTGRES_DSN"
 ```
 
-Membrane requires Postgres with the `pgvector` extension. The repository's
-`docker-compose.yml` uses the `pgvector/pgvector:pg16` image and the daemon
-applies the schema on startup.
+The daemon applies its database schema on startup and listens on
+`127.0.0.1:9090`. Its default policy permits the `default` scope at LOW sensitivity.
+See [configuration](docs/guides/configuration.mdx) for scopes, provider settings,
+TLS, and authentication.
 
-Useful commands:
+The [TypeScript](clients/typescript/README.md#quick-start) and
+[Python](clients/python/README.md#quick-start) quickstarts connect to this daemon.
 
-```bash
-make test                 # Go test suite
-make proto                # Regenerate Go protobuf bindings
-make ts-build             # Build the TypeScript SDK
-make openclaw-test        # Test the OpenClaw plugin bridge
-make eval-all             # Targeted evaluation suite
-```
+</details>
 
-## TypeScript SDK
+### Add capabilities as you need them
 
-```bash
-npm --prefix clients/typescript install
-npm --prefix clients/typescript run build
-```
+| Setup | What it enables |
+| :--- | :--- |
+| **PostgreSQL + pgvector** | Typed records, entity links, bounded retrieval, revisions, and salience |
+| **+ Embedding provider** | Automatic vector population and hybrid vector/salience ranking |
+| **+ LLM provider** | Optional interpretation during capture and semantic extraction during consolidation |
 
-```ts
-import {
-  MembraneClient,
-  MemoryType,
-  Sensitivity,
-  SourceKind,
-} from "@bennettschwartz/membrane";
+[Full quickstart](docs/quickstart.mdx) · [Deployment guide](docs/guides/deployment.mdx) · [Security guide](docs/guides/security.mdx)
 
-const client = new MembraneClient("localhost:9090", {
-  apiKey: process.env.MEMBRANE_API_KEY,
-});
+## Explore the project
 
-const capture = await client.captureMemory(
-  {
-    subject: "auth-service",
-    predicate: "uses_database",
-    object: "PostgreSQL",
-  },
-  {
-    source: "agent",
-    sourceKind: SourceKind.OBSERVATION,
-    summary: "auth-service uses PostgreSQL",
-    tags: ["auth-service", "postgres"],
-    scope: "project-orion",
-    sensitivity: Sensitivity.LOW,
-  },
-);
+| I want to… | Read |
+| :--- | :--- |
+| Understand the design | [Architecture](docs/architecture.mdx) · [Specification](rfc.md) |
+| Configure a deployment | [Configuration](docs/guides/configuration.mdx) · [Deployment](docs/guides/deployment.mdx) |
+| Understand retrieval and revision | [Retrieval](docs/api/retrieval.mdx) · [Revision](docs/api/revision.mdx) |
+| Inspect behavior and limitations | [Observability](docs/guides/observability.mdx) · [Trust and sensitivity](docs/concepts/trust-and-sensitivity.mdx) |
+| Change the code | [Contributing](CONTRIBUTING.md) · [Core packages](pkg) · [Integration and evaluation tests](tests) |
 
-const graph = await client.retrieveGraph("debug auth-service latency", {
-  trust: {
-    max_sensitivity: Sensitivity.MEDIUM,
-    authenticated: true,
-    actor_id: "debug-agent",
-    scopes: ["project-orion"],
-  },
-  memoryTypes: [
-    MemoryType.ENTITY,
-    MemoryType.EPISODIC,
-    MemoryType.WORKING,
-    MemoryType.SEMANTIC,
-    MemoryType.COMPETENCE,
-    MemoryType.PLAN_GRAPH,
-  ],
-  rootLimit: 12,
-  nodeLimit: 64,
-  edgeLimit: 160,
-  rootOnly: false,
-  maxHops: 2,
-});
+<details>
+<summary><strong>Development and verification</strong></summary>
 
-if (graph.diagnostics?.length) {
-  console.warn("Retrieval used fallback ranking", graph.diagnostics);
-}
+Go uses the toolchain in [go.mod](go.mod). The TypeScript SDK and examples need
+Node.js 20.19+, the docs toolchain needs Node.js 22+, and the Python SDK needs
+Python 3.10+.
 
-console.log(capture.primary_record.id, graph.nodes.length);
-client.close();
-```
+| Command | What it checks |
+| :--- | :--- |
+| `make build` | Build the daemon |
+| `make test` | Run Go tests |
+| `make verify` | Check storage/protobuf/package contracts, SDKs, harness tools, and the docs build |
+| `make lint` | Run Go vet and Staticcheck |
+| `make agent-harness-deterministic` | Exercise an agent scenario against PostgreSQL |
 
-See [clients/typescript](clients/typescript) for the full SDK. TypeScript option objects accept both camelCase names and protobuf-style snake_case aliases, which keeps `retrieve_graph(...)` and `capture_memory(...)` ergonomic for callers using wire-shaped objects.
+Set disposable PostgreSQL DSNs to include database integration tests. Provider
+credentials enable live embedding and model evaluations. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and the [harness guide](examples/agent-harness/README.md).
 
-## Python SDK
-
-```bash
-python -m pip install -e "clients/python[dev]"
-python -m pytest clients/python/tests
-```
-
-```python
-from membrane import MembraneClient, MemoryType, Sensitivity, SourceKind
-
-client = MembraneClient("localhost:9090")
-
-capture = client.capture_memory(
-    {
-        "thread_id": "incident-42",
-        "state": "investigating auth-service latency",
-        "next_actions": ["check database wait", "hold canary"],
-    },
-    source="agent",
-    source_kind=SourceKind.WORKING_STATE,
-    summary="Incident state updated",
-    tags=["auth-service", "incident"],
-    sensitivity=Sensitivity.LOW,
-)
-
-graph = client.retrieve_graph(
-    "auth-service canary incident",
-    memory_types=[
-        MemoryType.ENTITY,
-        MemoryType.WORKING,
-        MemoryType.SEMANTIC,
-        MemoryType.COMPETENCE,
-        MemoryType.PLAN_GRAPH,
-    ],
-)
-
-print(capture.primary_record.id, len(graph.nodes))
-client.close()
-```
-
-See [clients/python](clients/python) for package details.
-
-## Go Library
-
-Membrane can also run embedded in a Go process:
-
-```go
-package main
-
-import (
-	"context"
-	"log"
-	"os"
-
-	"github.com/BennettSchwartz/membrane/pkg/ingestion"
-	"github.com/BennettSchwartz/membrane/pkg/membrane"
-	"github.com/BennettSchwartz/membrane/pkg/retrieval"
-	"github.com/BennettSchwartz/membrane/pkg/schema"
-)
-
-func main() {
-	cfg := membrane.DefaultConfig()
-	cfg.PostgresDSN = os.Getenv("MEMBRANE_POSTGRES_DSN")
-
-	m, err := membrane.New(cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer m.Stop()
-
-	ctx := context.Background()
-	if err := m.Start(ctx); err != nil {
-		log.Fatal(err)
-	}
-
-	capture, err := m.CaptureMemory(ctx, ingestion.CaptureMemoryRequest{
-		Source:     "agent",
-		SourceKind: "observation",
-		Content: map[string]any{
-			"subject":   "auth-service",
-			"predicate": "uses_database",
-			"object":    "PostgreSQL",
-		},
-		Summary: "auth-service uses PostgreSQL",
-		Tags:    []string{"auth-service", "postgres"},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	graph, err := m.RetrieveGraph(ctx, &retrieval.RetrieveGraphRequest{
-		TaskDescriptor: "debug auth-service latency",
-		Trust: &retrieval.TrustContext{
-			MaxSensitivity: schema.SensitivityMedium,
-			Authenticated:  true,
-		},
-		MemoryTypes: []schema.MemoryType{
-			schema.MemoryTypeEntity,
-			schema.MemoryTypeSemantic,
-			schema.MemoryTypeCompetence,
-		},
-		RootLimit: 10,
-		MaxHops:   2,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("captured=%s graph_nodes=%d", capture.PrimaryRecord.ID, len(graph.Nodes))
-}
-```
-
-## Documentation
-
-The docs site lives in [docs](docs), is built with Docusaurus, and is deployed
-to Cloudflare Workers at <https://membrane.gustycube.com>.
-
-```bash
-npm install
-npm run docs:dev
-npm run docs:build
-
-# Deploy to Cloudflare Workers when Wrangler is configured
-npm run docs:deploy
-```
-
-Cloudflare configuration is in [wrangler.jsonc](wrangler.jsonc). The GitHub
-Actions deploy workflow runs when docs files change and deploys when
-`CLOUDFLARE_API_TOKEN` is present as a repository secret. The
-`membrane.gustycube.com` DNS record must be proxied through Cloudflare for the
-Worker route to receive production traffic. Sidebar and theme configuration live
-in [sidebars.js](sidebars.js) and [docusaurus.config.js](docusaurus.config.js).
-
-## API Surface
-
-The gRPC API is defined in
-[api/proto/membrane/v1/membrane.proto](api/proto/membrane/v1/membrane.proto).
-Core RPCs include:
-
-- `CaptureMemory`
-- `RetrieveGraph`
-- `RetrieveByID`
-- `Supersede`
-- `Fork`
-- `Retract`
-- `Merge`
-- `Contest`
-- `Reinforce`
-- `Penalize`
-- `GetMetrics`
-
-Generated Go, TypeScript, and Python bindings are committed so consumers do not
-need protobuf tooling as library users. The local Go generation path
-bootstraps the Go protobuf plugins with `go run`, so contributors need
-`protoc` but do not need preinstalled `protoc-gen-go` binaries. When editing
-`api/proto/membrane/v1/membrane.proto`, run `make proto`,
-`make check-go-proto-sync`, `npm --prefix clients/typescript run sync:proto`,
-`npm --prefix clients/typescript run check:proto-sync`, and
-`make check-python-proto-sync` before sending the change.
-
-## Storage And Configuration
-
-Membrane runs on Postgres with pgvector. The daemon requires a Postgres DSN
-from `--postgres-dsn`, `postgres_dsn`, or `MEMBRANE_POSTGRES_DSN`; the schema
-creates the `vector` extension and stores embeddings in Postgres.
-
-Common environment variables:
-
-| Variable | Purpose |
-| --- | --- |
-| `MEMBRANE_API_KEY` | Bearer token for gRPC requests |
-| `MEMBRANE_POSTGRES_DSN` | Postgres connection string |
-| `MEMBRANE_EMBEDDING_ENDPOINT` | Embedding endpoint when `embedding_endpoint` is not set |
-| `MEMBRANE_EMBEDDING_MODEL` | Embedding model when `embedding_model` is not set |
-| `MEMBRANE_EMBEDDING_DIMENSIONS` | Embedding dimensions when using the default `embedding_dimensions` |
-| `MEMBRANE_EMBEDDING_API_KEY` | API key for embedding-backed retrieval |
-| `MEMBRANE_LLM_ENDPOINT` | Chat completions endpoint when `llm_endpoint` is not set |
-| `MEMBRANE_LLM_MODEL` | LLM model when `llm_model` is not set |
-| `MEMBRANE_LLM_API_KEY` | API key for background semantic extraction |
-| `MEMBRANE_INGEST_LLM_ENDPOINT` | Ingest interpreter endpoint when `ingest_llm_endpoint` is not set |
-| `MEMBRANE_INGEST_LLM_MODEL` | Ingest interpreter model when `ingest_llm_model` is not set |
-| `MEMBRANE_INGEST_LLM_API_KEY` | API key for ingest-time interpretation |
-
-See [docs/guides/configuration.mdx](docs/guides/configuration.mdx) for full
-configuration details.
-
-## Project Layout
-
-```text
-api/                  Protobuf definitions and generated Go gRPC bindings
-clients/typescript/   TypeScript SDK
-clients/python/       Python SDK
-clients/openclaw/     OpenClaw plugin bridge
-cmd/membraned/        Daemon entrypoint
-docs/                 Docusaurus docs content
-examples/             Reference examples and experiments
-pkg/                  Core Go packages
-tests/                Evaluation and integration tests
-```
-
-## Development
-
-Run the checks most often used before committing:
-
-```bash
-make build
-make test
-make verify
-npm --prefix clients/typescript run build
-make openclaw-test
-npm run docs:build
-```
-
-`make verify` runs the Postgres-only guard and its self-test, protobuf/package
-sync checks, Go tests, SDK checks, OpenClaw checks, agent harness checks, and
-the docs build.
+</details>
 
 ## Contributing
 
-Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local
-workflow and expectations.
+Bug reports, integration feedback, and contributions are welcome.
+[Open an issue](https://github.com/BennettSchwartz/membrane/issues) or read the
+[contribution guide](CONTRIBUTING.md).
 
-## License
-
-MIT. See [LICENSE](LICENSE).
+**MIT licensed.** See [LICENSE](LICENSE).
