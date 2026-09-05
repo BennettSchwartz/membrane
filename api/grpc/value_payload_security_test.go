@@ -87,10 +87,9 @@ func TestValuePayloadPreservesNestedNonFiniteValidation(t *testing.T) {
 
 func TestValuePayloadBudgetMatchesEncodedJSONSize(t *testing.T) {
 	values := map[string]*structpb.Value{
-		"quoted":       structpb.NewStringValue("\"\\\n\r\t\b\f\x00\x1f"),
-		"html":         structpb.NewStringValue("<&>"),
-		"unicode":      structpb.NewStringValue("é🌍\u2028\u2029"),
-		"invalid_utf8": structpb.NewStringValue(string([]byte{0xff, 'a', 0xc0})),
+		"quoted":  structpb.NewStringValue("\"\\\n\r\t\b\f\x00\x1f"),
+		"html":    structpb.NewStringValue("<&>"),
+		"unicode": structpb.NewStringValue("é🌍\u2028\u2029\ufffd"),
 		"object": structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{
 			"<&>\n": structpb.NewStringValue("value"),
 			"empty": structpb.NewStructValue(nil),
@@ -115,6 +114,42 @@ func TestValuePayloadBudgetMatchesEncodedJSONSize(t *testing.T) {
 			budget = jsonPayloadBudget{values: maxJSONValues, bytes: len(encoded) - 1}
 			if err := budget.validate(value, 0); err == nil {
 				t.Fatal("accepted JSON exceeding pre-conversion byte budget")
+			}
+		})
+	}
+}
+
+func TestValuePayloadBudgetConservativelyBoundsInvalidUTF8(t *testing.T) {
+	invalid := string([]byte{0xff, 'a', 0xc0})
+	for name, tc := range map[string]struct {
+		value      *structpb.Value
+		upperBound int
+	}{
+		"string": {structpb.NewStringValue(invalid), 15},
+		"key": {structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{
+			invalid: structpb.NewNullValue(),
+		}}), 22},
+		"key_and_string": {structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{
+			invalid: structpb.NewStringValue(invalid),
+		}}), 33},
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(tc.value.AsInterface())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Both escaped and literal replacement runes are valid JSON. Keep
+			// the allocation bound safe regardless of the encoder's spelling.
+			if len(encoded) > tc.upperBound {
+				t.Fatalf("encoded size %d exceeds conservative bound %d", len(encoded), tc.upperBound)
+			}
+			budget := jsonPayloadBudget{values: maxJSONValues, bytes: tc.upperBound}
+			if err := budget.validate(tc.value, 0); err != nil || budget.bytes != 0 {
+				t.Fatalf("bound %d: budget remaining = %d, error = %v", tc.upperBound, budget.bytes, err)
+			}
+			budget = jsonPayloadBudget{values: maxJSONValues, bytes: tc.upperBound - 1}
+			if err := budget.validate(tc.value, 0); err == nil {
+				t.Fatal("accepted payload exceeding the conservative pre-conversion budget")
 			}
 		})
 	}

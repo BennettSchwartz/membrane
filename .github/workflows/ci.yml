@@ -18,9 +18,9 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Install actionlint
@@ -113,8 +113,10 @@ jobs:
           --health-retries=10
     strategy:
       matrix:
-        go-version: ['1.24', '1.25', '1.26']
+        go-version: ['1.24', '1.26', '1.27']
     env:
+      # Keep compatibility lanes on their selected compiler despite go.mod's preferred toolchain.
+      GOTOOLCHAIN: local
       TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
       MEMBRANE_RUNTIME_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_runtime_test?sslmode=disable
 
@@ -123,7 +125,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -197,9 +199,9 @@ jobs:
         run: go vet ./...
 
       - name: Install and run staticcheck
-        if: matrix.go-version == '1.26'
+        if: matrix.go-version == '1.27'
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           staticcheck ./...
 
   typescript-client:
@@ -235,9 +237,9 @@ jobs:
           cache-dependency-path: clients/typescript/package-lock.json
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download Go dependencies
@@ -336,9 +338,9 @@ jobs:
           node-version: '20.19'
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download Go dependencies
@@ -411,9 +413,9 @@ jobs:
           python-version: '3.11'
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download Go dependencies

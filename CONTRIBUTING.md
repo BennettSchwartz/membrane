@@ -12,12 +12,14 @@ Thank you for your interest in contributing to Membrane!
 
 ### Prerequisites
 
-- Go 1.24 or later
+- Go 1.27.1 for development (selected by the `toolchain` directive in `go.mod`); the library keeps Go 1.24 as its minimum version
 - Make
 - Protocol Buffers compiler (`protoc` >= 3.20) for gRPC work
 - Node.js 20.19+ (for TypeScript client development)
 - Node.js 22+ (for documentation builds and deployment tooling)
 - Python 3.10+ (for Python client development)
+
+CI tests Go 1.24, 1.26, and 1.27 with automatic toolchain switching disabled so each compiler is exercised. Staticcheck 2026.2.1 (`v0.8.1`) runs on Go 1.27.
 
 ### Building
 

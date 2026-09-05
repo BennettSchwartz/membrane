@@ -212,7 +212,9 @@ func (b *jsonPayloadBudget) consumeString(value string) error {
 			r, width := utf8.DecodeRuneInString(value[i:])
 			i += width
 			if r == utf8.RuneError && width == 1 {
-				extra = 5 // invalid UTF-8 becomes \ufffd
+				// Conservatively budget \ufffd; encoding/json may instead emit
+				// the shorter UTF-8 replacement rune, depending on the Go version.
+				extra = 5
 			} else if r == '\u2028' || r == '\u2029' {
 				extra = 3
 			}
