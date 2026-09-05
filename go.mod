@@ -1,6 +1,6 @@
 module github.com/BennettSchwartz/membrane
 
-go 1.24.0
+go 1.27.0
 
 toolchain go1.27.1
 

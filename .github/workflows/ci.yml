@@ -111,12 +111,7 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
-    strategy:
-      matrix:
-        go-version: ['1.24', '1.26', '1.27']
     env:
-      # Keep compatibility lanes on their selected compiler despite go.mod's preferred toolchain.
-      GOTOOLCHAIN: local
       TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_test?sslmode=disable
       MEMBRANE_RUNTIME_TEST_POSTGRES_DSN: postgres://membrane:membrane@127.0.0.1:5432/membrane_runtime_test?sslmode=disable
 
@@ -127,7 +122,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -199,7 +194,6 @@ jobs:
         run: go vet ./...
 
       - name: Install and run staticcheck
-        if: matrix.go-version == '1.27'
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           staticcheck ./...
